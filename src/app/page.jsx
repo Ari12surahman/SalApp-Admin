@@ -354,7 +354,7 @@ import React, {  useState, useEffect, useRef, useCallback  } from "react";
             if (t === 'Pegawai') actualT = 'Data Pegawai';
             
             const { data } = await supabase.from(actualT).select('*');
-            result[t] = data || [];
+            result[t] = data ? data.reverse() : [];
         }
         const jsonString = JSON.stringify(result);
         
@@ -446,7 +446,7 @@ import React, {  useState, useEffect, useRef, useCallback  } from "react";
             if (t === 'Pegawai') actualT = 'Data Pegawai';
             
             const { data } = await supabase.from(actualT).select('*');
-            result[t] = data || [];
+            result[t] = data ? data.reverse() : [];
         }
         const jsonStr = JSON.stringify(result);
         
