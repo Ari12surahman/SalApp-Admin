@@ -4,14 +4,14 @@
 import { createClient } from '@supabase/supabase-js';
 import { formatDateID, formatDateTimeID } from '../lib/utils';
 
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://placeholder.supabase.co";
+const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "placeholder";
 
-if (!supabaseUrl || !supabaseKey) {
+if (supabaseUrl === "https://placeholder.supabase.co") {
   console.error("Missing Supabase Environment Variables!");
 }
 
-const supabase = createClient(supabaseUrl || "", supabaseKey || "");
+const supabase = createClient(supabaseUrl, supabaseKey);
 
 // Helper for saveTableData replacement
 async function supabaseSaveTableData(tableName, dataArr) {
