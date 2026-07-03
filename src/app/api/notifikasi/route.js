@@ -13,7 +13,7 @@ const supabase = createClient(supabaseUrl, supabaseKey);
 
 export async function POST(req) {
   try {
-    const { nis, title, body } = await req.json();
+    const { nis, title, body, icon: reqIcon } = await req.json();
 
     if (!nis) {
       return new Response(JSON.stringify({ error: 'NIS is required' }), { status: 400 });
@@ -60,7 +60,7 @@ export async function POST(req) {
           notification: {
             title: title || "Tagihan Baru SalApp",
             body: body || "Anda memiliki Tagihan Baru",
-            icon: "https://salapp-wali.vercel.app/favicon.ico",
+            icon: reqIcon || "https://salapp-wali.vercel.app/icon.png",
             requireInteraction: true,
             vibrate: [200, 100, 200]
           }

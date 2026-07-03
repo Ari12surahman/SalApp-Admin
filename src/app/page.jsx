@@ -575,6 +575,14 @@ import React, {  useState, useEffect, useRef, useCallback  } from "react";
             };
 
             const showNotification = (msg) => setNotification(msg);
+            const triggerPushNotification = (nis, title, body) => {
+                if (!nis) return;
+                fetch('/api/notifikasi', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ nis, title, body })
+                }).catch(e => console.log('Push notif error:', e));
+            };
             const closeModal = () => { setModalType(null); setFormData({}); setPakasirData({ qrString: null, loading: false, url: '' }); };
             const handleInputChange = (e) => setFormData(prev => ({ ...prev, [e.target.name]: e.target.value }));
             const handleCheckboxChange = (field, value) => setFormData(prev => { const current = prev[field] || []; return { ...prev, [field]: current.includes(value) ? current.filter(i => i !== value) : [...current, value] }; });
@@ -1008,7 +1016,9 @@ import React, {  useState, useEffect, useRef, useCallback  } from "react";
                     });
                     setDataTagihan(prev => [...newTags, ...prev]); setDataPembayaran(prev => [...newTrxs, ...prev]);
                     addLog('CREATE', 'PEMBAYARAN MASSAL', `Menerima ${newTrxs.length} pembayaran massal`);
-                    showNotification(`${newTrxs.length} Transaksi Massal dicatat!`); closeModal(); return;
+                    showNotification(`${newTrxs.length} Transaksi Massal dicatat!`);
+                    // Note: Untuk massal, idealnya notif dikirim ke semua nis. Untuk demo ini kita skip notif massal.
+                    closeModal(); return;
                 }
 
                 const santriTerpilih = dataSantri.find(s => String(s.nis || '').replace(/^0+/, '') === String(formData.nis || '').replace(/^0+/, '')) || { nama: 'Santri Tidak Dikenal' };
@@ -1050,6 +1060,7 @@ import React, {  useState, useEffect, useRef, useCallback  } from "react";
                         setDataPembayaran(prev => [newTrx, ...prev]);
                         addLog('CREATE', 'PEMBAYARAN', `Menerima pembayaran Rp ${nominalAngka.toLocaleString('id-ID')} dari ${santriTerpilih.nama}`);
                         showNotification(`Pembayaran Rp ${nominalAngka.toLocaleString('id-ID')} dicatat!`);
+                        triggerPushNotification(santriTerpilih.nis, 'Pembayaran Tagihan', `Alhamdulillah, pembayaran Rp ${nominalAngka.toLocaleString('id-ID')} untuk ${tRef.tagihan} (${tRef.periode}) Ananda ${santriTerpilih.nama} berhasil dicatat.`);
                     } else {
                         const itemsToPay = []; let totalPayment = 0;
                         const updatedTagsData = [];
@@ -1075,6 +1086,7 @@ import React, {  useState, useEffect, useRef, useCallback  } from "react";
                         setDataPembayaran(prev => [newTrx, ...prev]);
                         addLog('CREATE', 'PEMBAYARAN', `Menerima pembayaran ${itemsToPay.length} tagihan dari ${santriTerpilih.nama}`);
                         showNotification(`Pembayaran ${itemsToPay.length} tagihan sekaligus berhasil!`);
+                        triggerPushNotification(santriTerpilih.nis, 'Pembayaran Tagihan', `Alhamdulillah, pembayaran ${itemsToPay.length} tagihan sekaligus (Total Rp ${totalPayment.toLocaleString('id-ID')}) untuk Ananda ${santriTerpilih.nama} berhasil dicatat.`);
                     }
                     closeModal(); return;
                 }
@@ -1126,6 +1138,7 @@ import React, {  useState, useEffect, useRef, useCallback  } from "react";
                 setDataPembayaran(prev => [newTrx, ...prev]);
                 addLog('CREATE', 'PEMBAYARAN MANUAL', `Menerima pembayaran manual Rp ${totalPayment.toLocaleString('id-ID')} dari ${santriTerpilih.nama}`);
                 showNotification(`Pembayaran Rp ${totalPayment.toLocaleString('id-ID')} dicatat!`);
+                triggerPushNotification(santriTerpilih.nis, 'Pembayaran Tagihan', `Alhamdulillah, pembayaran Rp ${totalPayment.toLocaleString('id-ID')} untuk ${formData.tagihan} Ananda ${santriTerpilih.nama} berhasil dicatat.`);
                 closeModal();
             };
 
@@ -1170,16 +1183,11 @@ import React, {  useState, useEffect, useRef, useCallback  } from "react";
                     setDataTagihan(prev => [...newTags, ...prev]);
                     showNotification(`${newTags.length} Tagihan berhasil dibuat!`);
                     
-                    // Trigger Push Notification
-                    fetch('/api/notifikasi', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                            nis: formData.nis,
-                            title: 'Tagihan Baru',
-                            body: `Ada ${newTags.length} tagihan baru untuk Ananda ${santriTerpilih.nama}`
-                        })
-                    }).catch(e => console.log('Push notif error:', e));
+                    const tNames = Array.from(new Set(newTags.map(t => t.tagihan))).join(', ');
+                    const bodyNotif = newTags.length === 1 
+                        ? `Ada 1 tagihan ${newTags[0].tagihan} (${newTags[0].periode}) untuk Ananda ${santriTerpilih.nama}.` 
+                        : `Ada ${newTags.length} tagihan baru (${tNames}) untuk Ananda ${santriTerpilih.nama}.`;
+                    triggerPushNotification(formData.nis, 'Info Tagihan Baru', bodyNotif);
                 }
                 closeModal();
             };
@@ -1240,7 +1248,9 @@ import React, {  useState, useEffect, useRef, useCallback  } from "react";
                 const nom = parseInt(String(formData.nominal || '').replace(/\D/g, ''), 10) || 0;
                 setDataTabungan(prev => [{ id: `TB-${Date.now()}`, tanggal: new Date().toISOString().split('T')[0], nis: formData.nis, nama: s.nama, jenis: formData.jenis || 'Setor', nominal: nom, keterangan: formData.keterangan || '' }, ...prev]);
                 addLog('CREATE', 'TABUNGAN', `${formData.jenis || 'Setor'} Rp ${nom.toLocaleString('id-ID')} - ${s.nama}`);
-                showNotification(`Tabungan dicatat!`); closeModal();
+                showNotification(`Tabungan dicatat!`); 
+                triggerPushNotification(formData.nis, 'Info Tabungan', `Transaksi ${formData.jenis || 'Setor'} Tabungan Rp ${nom.toLocaleString('id-ID')} untuk Ananda ${s.nama} berhasil dicatat.`);
+                closeModal();
             };
 
             const handleSaveBukuKas = (e) => {
