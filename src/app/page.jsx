@@ -1169,6 +1169,17 @@ import React, {  useState, useEffect, useRef, useCallback  } from "react";
                     }
                     setDataTagihan(prev => [...newTags, ...prev]);
                     showNotification(`${newTags.length} Tagihan berhasil dibuat!`);
+                    
+                    // Trigger Push Notification
+                    fetch('/api/notifikasi', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            nis: formData.nis,
+                            title: 'Tagihan Baru',
+                            body: `Ada ${newTags.length} tagihan baru untuk Ananda ${santriTerpilih.nama}`
+                        })
+                    }).catch(e => console.log('Push notif error:', e));
                 }
                 closeModal();
             };
