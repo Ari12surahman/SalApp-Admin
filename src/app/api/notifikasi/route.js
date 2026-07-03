@@ -49,14 +49,24 @@ export async function POST(req) {
     const payload = {
       message: {
         token: targetToken,
+        notification: {
+          title: title || "Tagihan Baru SalApp",
+          body: body || "Anda memiliki Tagihan Baru"
+        },
         data: {
           title: title || "Tagihan Baru SalApp",
           body: body || "Anda memiliki Tagihan Baru",
-          icon: reqIcon || "https://salapp-wali.vercel.app/icon.png",
         },
         webpush: {
           headers: {
             Urgency: "high"
+          },
+          notification: {
+            title: title || "Tagihan Baru SalApp",
+            body: body || "Anda memiliki Tagihan Baru",
+            icon: reqIcon || "https://salapp-wali.vercel.app/icon.png",
+            requireInteraction: true,
+            vibrate: [200, 100, 200]
           }
         }
       }
