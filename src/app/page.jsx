@@ -700,13 +700,14 @@ import React, {  useState, useEffect, useRef, useCallback  } from "react";
                         const tRef = dataTagihan.find(t => t.id === formData.id);
                         const targetTagihanName = tRef ? tRef.tagihan : formData.tagihan;
                         const masterRef = masterTagihanList.find(m => targetTagihanName.startsWith(m.tagihan));
-                        const slug = masterRef?.pakasirSlug || appConfig.pakasirSlug || 'depodomain';
+                        const slug = masterRef?.pakasirSlug || masterRef?.pakasir_slug || masterRef?.PAKASIR_SLUG || appConfig.pakasirSlug || appConfig.pakasir_slug || appConfig.PAKASIR_SLUG || 'depodomain';
+                        const apiKey = masterRef?.pakasirApiKey || masterRef?.pakasir_apikey || masterRef?.PAKASIR_APIKEY || appConfig.pakasirApiKey || appConfig.pakasir_apikey || appConfig.PAKASIR_APIKEY || 'xxx123';
                         
                         let data;
                         const res = await fetch('/api/pakasir', {
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ action: 'pollPakasirStatus', data: { slug, amount: formData.sisa, orderId: formData.id, apiKey: appConfig.pakasirApiKey || 'xxx123' } })
+                            body: JSON.stringify({ action: 'pollPakasirStatus', data: { slug, amount: formData.sisa, orderId: formData.id, apiKey } })
                         });
                         data = await res.json();
 
@@ -729,7 +730,8 @@ import React, {  useState, useEffect, useRef, useCallback  } from "react";
                 const tRef = dataTagihan.find(t => t.id === formData.id);
                 const targetTagihanName = (tRef ? tRef.tagihan : formData.tagihan) || '';
                 const masterRef = masterTagihanList.find(m => targetTagihanName.startsWith(m.tagihan));
-                const slug = masterRef?.pakasirSlug || appConfig.pakasirSlug || '';
+                const slug = masterRef?.pakasirSlug || masterRef?.pakasir_slug || masterRef?.PAKASIR_SLUG || appConfig.pakasirSlug || appConfig.pakasir_slug || appConfig.PAKASIR_SLUG || 'depodomain';
+                const apiKey = masterRef?.pakasirApiKey || masterRef?.pakasir_apikey || masterRef?.PAKASIR_APIKEY || appConfig.pakasirApiKey || appConfig.pakasir_apikey || appConfig.PAKASIR_APIKEY || 'xxx123';
 
                 if (!slug) return showNotification("Project Slug Pakasir belum diatur di Master Tagihan!");
 
@@ -739,7 +741,7 @@ import React, {  useState, useEffect, useRef, useCallback  } from "react";
                     const res = await fetch('/api/pakasir', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ action: 'requestPakasirPayment', data: { slug, method, amount: formData.sisa, orderId: formData.id, apiKey: appConfig.pakasirApiKey || 'xxx123' } })
+                        body: JSON.stringify({ action: 'requestPakasirPayment', data: { slug, method, amount: formData.sisa, orderId: formData.id, apiKey } })
                     });
                     data = await res.json();
                     console.log("PAKASIR RESPONSE:", data);
@@ -864,13 +866,14 @@ import React, {  useState, useEffect, useRef, useCallback  } from "react";
                     const tRef = dataTagihan.find(t => t.id === formData.id);
                     const targetTagihanName = (tRef ? tRef.tagihan : formData.tagihan) || '';
                     const masterRef = masterTagihanList.find(m => targetTagihanName.startsWith(m.tagihan));
-                    const slug = masterRef?.pakasirSlug || appConfig.pakasirSlug || 'depodomain';
+                    const slug = masterRef?.pakasirSlug || masterRef?.pakasir_slug || masterRef?.PAKASIR_SLUG || appConfig.pakasirSlug || appConfig.pakasir_slug || appConfig.PAKASIR_SLUG || 'depodomain';
+                    const apiKey = masterRef?.pakasirApiKey || masterRef?.pakasir_apikey || masterRef?.PAKASIR_APIKEY || appConfig.pakasirApiKey || appConfig.pakasir_apikey || appConfig.PAKASIR_APIKEY || 'xxx123';
                     
                     let data;
                     const res = await fetch('/api/pakasir', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ action: 'pollPakasirStatus', data: { slug, amount: formData.sisa, orderId: formData.id, apiKey: appConfig.pakasirApiKey || 'xxx123' } })
+                        body: JSON.stringify({ action: 'pollPakasirStatus', data: { slug, amount: formData.sisa, orderId: formData.id, apiKey } })
                     });
                     data = await res.json();
 
@@ -2414,6 +2417,18 @@ import React, {  useState, useEffect, useRef, useCallback  } from "react";
                                             <h3 className="text-lg font-bold text-ink mb-3">Pilih Metode Pembayaran</h3>
                                             <div className="space-y-3 mb-2 max-h-80 overflow-y-auto pr-2">
                                                 <button onClick={() => handleGeneratePakasirQR('qris')} className="w-full flex items-center justify-between p-4 border border-whisper rounded-xl hover:bg-canvas transition-colors"><div className="flex items-center gap-3"><QrCode className="w-6 h-6 text-accent" /><span className="font-semibold text-ink">QRIS (Gopay, OVO, Dana)</span></div><ArrowRight className="w-4 h-4 text-steel" /></button>
+                                                <button onClick={() => setPakasirData({ ...pakasirData, step: 'CHOOSE_VA' })} className="w-full flex items-center justify-between p-4 border border-whisper rounded-xl hover:bg-canvas transition-colors"><div className="flex items-center gap-3"><CreditCard className="w-6 h-6 text-orange-600" /><span className="font-semibold text-ink">VIRTUAL ACCOUNT</span></div><ArrowRight className="w-4 h-4 text-steel" /></button>
+                                            </div>
+                                        </div>
+                                    )}
+
+                                    {pakasirData.step === 'CHOOSE_VA' && (
+                                        <div className="animate-fade-in-up">
+                                            <div className="flex items-center justify-between mb-3 border-b border-whisper pb-2">
+                                                <h3 className="text-lg font-bold text-ink">Pilih Bank VA</h3>
+                                                <button className="text-sm font-semibold text-steel hover:text-accent" onClick={() => setPakasirData({ ...pakasirData, step: 'CHOOSE_METHOD' })}>Kembali</button>
+                                            </div>
+                                            <div className="space-y-3 mb-2 max-h-80 overflow-y-auto pr-2">
                                                 <button onClick={() => handleGeneratePakasirQR('bni_va')} className="w-full flex items-center justify-between p-4 border border-whisper rounded-xl hover:bg-canvas transition-colors"><div className="flex items-center gap-3"><CreditCard className="w-6 h-6 text-orange-600" /><span className="font-semibold text-ink">BNI Virtual Account</span></div><ArrowRight className="w-4 h-4 text-steel" /></button>
                                                 <button onClick={() => handleGeneratePakasirQR('bri_va')} className="w-full flex items-center justify-between p-4 border border-whisper rounded-xl hover:bg-canvas transition-colors"><div className="flex items-center gap-3"><CreditCard className="w-6 h-6 text-blue-700" /><span className="font-semibold text-ink">BRI Virtual Account</span></div><ArrowRight className="w-4 h-4 text-steel" /></button>
                                                 <button onClick={() => handleGeneratePakasirQR('cimb_niaga_va')} className="w-full flex items-center justify-between p-4 border border-whisper rounded-xl hover:bg-canvas transition-colors"><div className="flex items-center gap-3"><CreditCard className="w-6 h-6 text-red-600" /><span className="font-semibold text-ink">CIMB Niaga VA</span></div><ArrowRight className="w-4 h-4 text-steel" /></button>
