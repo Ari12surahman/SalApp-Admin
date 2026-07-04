@@ -745,10 +745,11 @@ import React, {  useState, useEffect, useRef, useCallback  } from "react";
                     });
                     data = await res.json();
                     console.log("PAKASIR RESPONSE:", data);
-                    if (data && data.data && data.data.payment_number) {
+                    if (data?.status === 'success' || data?.checkout_url || (data?.data && (data?.data?.status === 'success' || data?.data?.payment_number)) || data?.payment || data?.payment_number) {
                         const isQris = method === 'QRIS' || method === 'qris';
-                        const checkoutUrl = data.data.checkout_url || '';
-                        const qrStr = data.data.payment_number;
+                        const paymentData = data?.payment || data?.data || data;
+                        const checkoutUrl = paymentData.checkout_url || paymentData.url || '';
+                        const qrStr = paymentData.payment_number || paymentData.qr_string || '';
                         
                         const strData = JSON.stringify(data || {}).toLowerCase();
                         const isSandboxApi = strData.includes('"sandbox"') || strData.includes('sandbox.pakasir.com') || String(qrStr).toUpperCase().includes('SANDBOX') || String(checkoutUrl).toUpperCase().includes('SANDBOX');
