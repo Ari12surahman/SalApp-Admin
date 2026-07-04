@@ -42,53 +42,85 @@ export async function POST(req) {
 
     const targetToken = santri.FCM_Token;
 
-    // Autentikasi ke Google FCM
-    const auth = new GoogleAuth({
-      credentials: {
-        client_email: FIREBASE_CONFIG.client_email,
-        private_key: FIREBASE_CONFIG.private_key
-      },
-      scopes: ['https://www.googleapis.com/auth/firebase.messaging']
-    });
-
-    const client = await auth.getClient();
-    const tokenObj = await client.getAccessToken();
-    const accessToken = tokenObj.token;
-
-    // Siapkan Payload Pesan
-    const payload = {
-      message: {
-        token: targetToken,
+    if (targetToken.startsWith('ExponentPushToken')) {
+      // Kirim via Expo Push Service
+      const expoPayload = {
+        to: targetToken,
+        sound: 'default',
+        title: title || "Info SalApp",
+        body: body || "Anda memiliki pemberitahuan baru",
         data: {
-          title: title || "Tagihan Baru SalApp",
-          body: body || "Anda memiliki Tagihan Baru",
-          icon: reqIcon || "https://salapp-wali.vercel.app/icon.png"
+          title: title || "Info SalApp",
+          body: body || "Anda memiliki pemberitahuan baru"
+        }
+      };
+
+      const response = await fetch("https://exp.host/--/api/v2/push/send", {
+        method: 'POST',
+        headers: {
+          'Accept': 'application/json',
+          'Accept-encoding': 'gzip, deflate',
+          'Content-Type': 'application/json',
         },
-        webpush: {
-          headers: {
-            Urgency: "high"
+        body: JSON.stringify(expoPayload)
+      });
+
+      const result = await response.json();
+      if (!response.ok) {
+        return new Response(JSON.stringify({ error: 'Expo Push Error', details: result }), { status: 500, headers: corsHeaders });
+      }
+
+      return new Response(JSON.stringify({ success: true, message: 'Expo notification sent', result }), { status: 200, headers: corsHeaders });
+
+    } else {
+      // Autentikasi ke Google FCM untuk Web/Native standard FCM
+      const auth = new GoogleAuth({
+        credentials: {
+          client_email: FIREBASE_CONFIG.client_email,
+          private_key: FIREBASE_CONFIG.private_key
+        },
+        scopes: ['https://www.googleapis.com/auth/firebase.messaging']
+      });
+
+      const client = await auth.getClient();
+      const tokenObj = await client.getAccessToken();
+      const accessToken = tokenObj.token;
+
+      // Siapkan Payload Pesan
+      const payload = {
+        message: {
+          token: targetToken,
+          data: {
+            title: title || "Info SalApp",
+            body: body || "Anda memiliki pemberitahuan baru",
+            icon: reqIcon || "https://salapp-wali.vercel.app/icon.png"
+          },
+          webpush: {
+            headers: {
+              Urgency: "high"
+            }
           }
         }
+      };
+
+      // Kirim ke Google FCM
+      const response = await fetch("https://fcm.googleapis.com/v1/projects/" + FIREBASE_CONFIG.project_id + "/messages:send", {
+        method: 'POST',
+        headers: {
+          'Authorization': 'Bearer ' + accessToken,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(payload)
+      });
+
+      const result = await response.json();
+
+      if (!response.ok) {
+        return new Response(JSON.stringify({ error: 'FCM Error', details: result }), { status: 500, headers: corsHeaders });
       }
-    };
 
-    // Kirim ke Google FCM
-    const response = await fetch("https://fcm.googleapis.com/v1/projects/" + FIREBASE_CONFIG.project_id + "/messages:send", {
-      method: 'POST',
-      headers: {
-        'Authorization': 'Bearer ' + accessToken,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify(payload)
-    });
-
-    const result = await response.json();
-
-    if (!response.ok) {
-      return new Response(JSON.stringify({ error: 'FCM Error', details: result }), { status: 500, headers: corsHeaders });
+      return new Response(JSON.stringify({ success: true, message: 'Notification sent successfully', result }), { status: 200, headers: corsHeaders });
     }
-
-    return new Response(JSON.stringify({ success: true, message: 'Notification sent successfully', result }), { status: 200, headers: corsHeaders });
 
   } catch (error) {
     console.error("Error sending push:", error);
