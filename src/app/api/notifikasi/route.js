@@ -11,12 +11,22 @@ const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://placeholder
 const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "placeholder";
 const supabase = createClient(supabaseUrl, supabaseKey);
 
+const corsHeaders = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
+  'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+};
+
+export async function OPTIONS(req) {
+  return new Response(null, { status: 200, headers: corsHeaders });
+}
+
 export async function POST(req) {
   try {
     const { nis, title, body, icon: reqIcon } = await req.json();
 
     if (!nis) {
-      return new Response(JSON.stringify({ error: 'NIS is required' }), { status: 400 });
+      return new Response(JSON.stringify({ error: 'NIS is required' }), { status: 400, headers: corsHeaders });
     }
 
     // Ambil FCM_Token dari tabel Data Santri
@@ -27,7 +37,7 @@ export async function POST(req) {
       .single();
 
     if (error || !santri?.FCM_Token) {
-      return new Response(JSON.stringify({ error: 'Token FCM tidak ditemukan untuk santri ini' }), { status: 404 });
+      return new Response(JSON.stringify({ error: 'Token FCM tidak ditemukan untuk santri ini' }), { status: 404, headers: corsHeaders });
     }
 
     const targetToken = santri.FCM_Token;
@@ -75,13 +85,13 @@ export async function POST(req) {
     const result = await response.json();
 
     if (!response.ok) {
-      return new Response(JSON.stringify({ error: 'FCM Error', details: result }), { status: 500 });
+      return new Response(JSON.stringify({ error: 'FCM Error', details: result }), { status: 500, headers: corsHeaders });
     }
 
-    return new Response(JSON.stringify({ success: true, message: 'Notification sent successfully', result }), { status: 200 });
+    return new Response(JSON.stringify({ success: true, message: 'Notification sent successfully', result }), { status: 200, headers: corsHeaders });
 
   } catch (error) {
     console.error("Error sending push:", error);
-    return new Response(JSON.stringify({ error: error.message }), { status: 500 });
+    return new Response(JSON.stringify({ error: error.message }), { status: 500, headers: corsHeaders });
   }
 }
