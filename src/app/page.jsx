@@ -705,7 +705,7 @@ function App() {
             try {
                 const tRef = dataTagihan.find(t => t.id === formData.id);
                 const targetTagihanName = tRef ? tRef.tagihan : formData.tagihan;
-                const masterRef = masterTagihanList.find(m => targetTagihanName.startsWith(m.tagihan));
+                const masterRef = masterTagihanList.find(m => String(targetTagihanName).toLowerCase().includes(String(m.tagihan).toLowerCase()));
                 const slug = masterRef?.pakasirSlug || masterRef?.pakasir_slug || masterRef?.PAKASIR_SLUG || appConfig.pakasirSlug || appConfig.pakasir_slug || appConfig.PAKASIR_SLUG || 'depodomain';
                 const apiKey = masterRef?.pakasirApiKey || masterRef?.pakasir_apikey || masterRef?.PAKASIR_APIKEY || appConfig.pakasirApiKey || appConfig.pakasir_apikey || appConfig.PAKASIR_APIKEY || 'xxx123';
 
@@ -735,7 +735,7 @@ function App() {
     const handleGeneratePakasirQR = async (method) => {
         const tRef = dataTagihan.find(t => t.id === formData.id);
         const targetTagihanName = (tRef ? tRef.tagihan : formData.tagihan) || '';
-        const masterRef = masterTagihanList.find(m => targetTagihanName.startsWith(m.tagihan));
+        const masterRef = masterTagihanList.find(m => String(targetTagihanName).toLowerCase().includes(String(m.tagihan).toLowerCase()));
         const slug = masterRef?.pakasirSlug || masterRef?.pakasir_slug || masterRef?.PAKASIR_SLUG || appConfig.pakasirSlug || appConfig.pakasir_slug || appConfig.PAKASIR_SLUG || 'depodomain';
         const apiKey = masterRef?.pakasirApiKey || masterRef?.pakasir_apikey || masterRef?.PAKASIR_APIKEY || appConfig.pakasirApiKey || appConfig.pakasir_apikey || appConfig.PAKASIR_APIKEY || 'xxx123';
 
@@ -743,11 +743,28 @@ function App() {
 
         setPakasirData(prev => ({ ...prev, loading: true, step: 'LOADING', method }));
         try {
+            const amountToPay = formData.sisa || formData.nominal || 0;
+            
+            // Save to PakasirOrders for Webhook support
+            const dbPayload = {
+              orderId: formData.id,
+              method,
+              amount: amountToPay,
+              tagihanData: tRef || formData,
+              isBulk: false
+            };
+            await supabase.from('PakasirOrders').upsert([{
+              order_id: formData.id,
+              tipe: 'TAGIHAN_ADMIN',
+              status: 'PENDING',
+              payload: dbPayload
+            }]);
+
             let data;
             const res = await fetch('/api/pakasir', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ action: 'requestPakasirPayment', data: { slug, method, amount: formData.sisa, orderId: formData.id, apiKey } })
+                body: JSON.stringify({ action: 'requestPakasirPayment', data: { slug, method, amount: amountToPay, orderId: formData.id, apiKey } })
             });
             data = await res.json();
             console.log("PAKASIR RESPONSE:", data);
@@ -764,7 +781,7 @@ function App() {
                 addLog('INTEGRATION', 'PAKASIR API', `Berhasil request ${method} untuk ${formData.id}${isSandboxApi ? ' (Sandbox)' : ''}`);
             } else {
                 console.error('Pakasir API Response:', data);
-                throw new Error(data?.message || "Invalid response from Pakasir");
+                throw new Error(data?.message || data?.error || "Invalid response from Pakasir");
             }
         } catch (error) {
             console.error('Pakasir Catch Error:', error);
@@ -871,7 +888,7 @@ function App() {
         try {
             const tRef = dataTagihan.find(t => t.id === formData.id);
             const targetTagihanName = (tRef ? tRef.tagihan : formData.tagihan) || '';
-            const masterRef = masterTagihanList.find(m => targetTagihanName.startsWith(m.tagihan));
+            const masterRef = masterTagihanList.find(m => String(targetTagihanName).toLowerCase().includes(String(m.tagihan).toLowerCase()));
             const slug = masterRef?.pakasirSlug || masterRef?.pakasir_slug || masterRef?.PAKASIR_SLUG || appConfig.pakasirSlug || appConfig.pakasir_slug || appConfig.PAKASIR_SLUG || 'depodomain';
             const apiKey = masterRef?.pakasirApiKey || masterRef?.pakasir_apikey || masterRef?.PAKASIR_APIKEY || appConfig.pakasirApiKey || appConfig.pakasir_apikey || appConfig.PAKASIR_APIKEY || 'xxx123';
 
