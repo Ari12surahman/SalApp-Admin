@@ -815,7 +815,7 @@ import React, {  useState, useEffect, useRef, useCallback  } from "react";
                                 setDataTagihan(prevTags => {
                                     const upTags = [...prevTags];
                                     const cleanedNis = String(invRef.nis).replace(/^0+/, '');
-                                    const itemsToProcess = invRef.items && invRef.items.length > 0 ? invRef.items : [{ tagihan: invRef.tagihan.replace(' (Via QRIS)', ''), periode: invRef.periode, nominal: invRef.nominal }];
+                                    const itemsToProcess = invRef.items && invRef.items.length > 0 ? invRef.items : [{ tagihan: (invRef.tagihan || '').replace(' (Via QRIS)', ''), periode: invRef.periode, nominal: invRef.nominal }];
                                     
                                     itemsToProcess.forEach(item => {
                                         const cleanTagihan = String(item.tagihan).replace(' (Via QRIS)', '').toLowerCase().trim();
@@ -838,7 +838,7 @@ import React, {  useState, useEffect, useRef, useCallback  } from "react";
                                                 tanggal: invRef.tanggal,
                                                 nis: invRef.nis,
                                                 nama: invRef.nama,
-                                                tagihan: item.tagihan.replace(' (Via QRIS)', ''),
+                                                tagihan: (item.tagihan || '').replace(' (Via QRIS)', ''),
                                                 periode: item.periode,
                                                 nominalAwal: item.nominal,
                                                 diskon: 0,
@@ -1150,7 +1150,7 @@ import React, {  useState, useEffect, useRef, useCallback  } from "react";
                 });
                 
                 const pInvoiceStr = itemsToPay.length > 1 ? `${selectedB[0]} - ${selectedB[selectedB.length - 1]} ${formData.tahun}` : `${selectedB[0]} ${formData.tahun}`;
-                const newTrx = { id: `INV-${Math.floor(Math.random() * 10000) + '-' + Date.now()}`, tanggal: new Date().toISOString().split('T')[0], nis: formData.nis, nama: santriTerpilih.nama, tagihan: formData.tagihan, periode: pInvoiceStr, nominal: totalPayment, status: 'Lunas', sisa: 0, items: itemsToPay };
+                const newTrx = { id: `INV-${Math.floor(Math.random() * 10000) + '-' + Date.now()}`, tanggal: new Date().toISOString().split('T')[0], nis: formData.nis, nama: santriTerpilih.nama, tagihan: tagihanName, periode: pInvoiceStr, nominal: totalPayment, status: 'Lunas', sisa: 0, items: itemsToPay };
                 setDataPembayaran(prev => [newTrx, ...prev]);
                 addLog('CREATE', 'PEMBAYARAN MANUAL', `Menerima pembayaran manual Rp ${totalPayment.toLocaleString('id-ID')} dari ${santriTerpilih.nama}`);
                 showNotification(`Pembayaran Rp ${totalPayment.toLocaleString('id-ID')} dicatat!`);
@@ -1832,7 +1832,7 @@ import React, {  useState, useEffect, useRef, useCallback  } from "react";
             };
 
             const renderPembayaran = () => {
-                const filtered = dataPembayaran.filter(t => (masterTagihanFilter === 'Semua Tagihan' || t.tagihan.includes(masterTagihanFilter)) && ((t.nama || '').toLowerCase().includes(searchTerm.toLowerCase()) || String(t.nis || '').includes(searchTerm)));
+                const filtered = dataPembayaran.filter(t => (masterTagihanFilter === 'Semua Tagihan' || (t.tagihan || '').includes(masterTagihanFilter)) && ((t.nama || '').toLowerCase().includes(searchTerm.toLowerCase()) || String(t.nis || '').includes(searchTerm)));
                 const filteredIds = filtered.map(t => t.id);
                 const allChecked = filteredIds.length > 0 && filteredIds.every(id => selectedIds.includes(id));
                 return (
