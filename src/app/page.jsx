@@ -165,6 +165,10 @@ import React, {  useState, useEffect, useRef, useCallback  } from "react";
         const initialGaji = [];
         const initialLogs = [];
 
+        const generateInvoiceId = (tagihanName, tagihanList) => {
+            return `TGH-${Math.floor(Math.random() * 100000) + '-' + Date.now()}`;
+        };
+
         function App() {
             const formatPeriodeStr = (p) => {
                 if (!p) return "";
