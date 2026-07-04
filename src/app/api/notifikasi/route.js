@@ -90,12 +90,19 @@ export async function POST(req) {
       const payload = {
         message: {
           token: targetToken,
+          notification: {
+            title: title || "Info SalApp",
+            body: body || "Anda memiliki pemberitahuan baru",
+          },
           data: {
             title: title || "Info SalApp",
             body: body || "Anda memiliki pemberitahuan baru",
             icon: reqIcon || "https://salapp-wali.vercel.app/icon.png"
           },
           webpush: {
+            notification: {
+              icon: reqIcon || "https://salapp-wali.vercel.app/icon.png"
+            },
             headers: {
               Urgency: "high"
             }
