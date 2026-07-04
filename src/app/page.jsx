@@ -703,8 +703,12 @@ import React, {  useState, useEffect, useRef, useCallback  } from "react";
                         const slug = masterRef?.pakasirSlug || appConfig.pakasirSlug || 'depodomain';
                         
                         let data;
-                        const resData = await fetchGasAPI('pollPakasirStatus', { slug, amount: formData.sisa, orderId: formData.id });
-                        data = typeof resData === 'string' ? JSON.parse(resData) : resData;
+                        const res = await fetch('/api/pakasir', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ action: 'pollPakasirStatus', data: { slug, amount: formData.sisa, orderId: formData.id, apiKey: appConfig.pakasirApiKey || 'xxx123' } })
+                        });
+                        data = await res.json();
 
                         const status = (data?.transaction?.status || data?.payment?.status || data?.status || '').toLowerCase();
                         if (['completed', 'success', 'settlement', 'paid'].includes(status)) {
@@ -732,8 +736,12 @@ import React, {  useState, useEffect, useRef, useCallback  } from "react";
                 setPakasirData(prev => ({ ...prev, loading: true, step: 'LOADING', method }));
                 try {
                     let data;
-                    const resData = await fetchGasAPI('requestPakasirPayment', { slug, method, amount: formData.sisa, orderId: formData.id });
-                    data = typeof resData === 'string' ? JSON.parse(resData) : resData;
+                    const res = await fetch('/api/pakasir', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ action: 'requestPakasirPayment', data: { slug, method, amount: formData.sisa, orderId: formData.id, apiKey: appConfig.pakasirApiKey || 'xxx123' } })
+                    });
+                    data = await res.json();
                     console.log("PAKASIR RESPONSE:", data);
                     if (data && data.data && data.data.payment_number) {
                         const isQris = method === 'QRIS' || method === 'qris';
@@ -859,8 +867,12 @@ import React, {  useState, useEffect, useRef, useCallback  } from "react";
                     const slug = masterRef?.pakasirSlug || appConfig.pakasirSlug || 'depodomain';
                     
                     let data;
-                    const resData = await fetchGasAPI('pollPakasirStatus', { slug, amount: formData.sisa, orderId: formData.id });
-                    data = typeof resData === 'string' ? JSON.parse(resData) : resData;
+                    const res = await fetch('/api/pakasir', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ action: 'pollPakasirStatus', data: { slug, amount: formData.sisa, orderId: formData.id, apiKey: appConfig.pakasirApiKey || 'xxx123' } })
+                    });
+                    data = await res.json();
 
                     const status = (data?.transaction?.status || data?.payment?.status || data?.status || '').toLowerCase();
                     if (['completed', 'success', 'settlement', 'paid'].includes(status)) {
