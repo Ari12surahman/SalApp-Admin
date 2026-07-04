@@ -138,6 +138,24 @@ export async function POST(request) {
               items: JSON.stringify([{ tagihan: tg.tagihan, periode: tg.periode, nominal: amountToPay }])
            }]);
         }
+
+        // Kirim notifikasi ke orang tua setelah tagihan berhasil dibayar
+        try {
+          if (tagihanList.length > 0 && tagihanList[0]?.nis) {
+            const namaTagihan = tagihanList.map(t => t.tagihan).join(', ');
+            fetch('https://sal-app-admin.vercel.app/api/notifikasi', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                nis: tagihanList[0].nis,
+                title: '\u2705 Pembayaran Berhasil',
+                body: `Pembayaran ${namaTagihan} senilai Rp ${Number(orderPayload.amount).toLocaleString('id-ID')} via ${method.toUpperCase()} telah diterima.`
+              })
+            }).catch(e => console.error('Notif tagihan error:', e));
+          }
+        } catch (e) {
+          console.error('Notif tagihan error:', e);
+        }
       }
     } else {
       // Jika Failed / Expired
