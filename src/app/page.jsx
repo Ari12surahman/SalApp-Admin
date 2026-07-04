@@ -1112,10 +1112,11 @@ import React, {  useState, useEffect, useRef, useCallback  } from "react";
                 let nominalPerBulan = parseInt(String(formData.nominal || '').replace(/\D/g, ''), 10);
                 const itemsToPay = []; let totalPayment = 0;
                 const updatedBulanMap = {};
+                const tagihanName = formData.tagihan || 'Pembayaran Manual';
                 selectedB.forEach(bln => {
                     const pStr = `${bln} ${formData.tahun}`;
                     updatedBulanMap[pStr] = true;
-                    itemsToPay.push({ tagihan: formData.tagihan, periode: pStr, nominal: nominalPerBulan }); totalPayment += nominalPerBulan;
+                    itemsToPay.push({ tagihan: tagihanName, periode: pStr, nominal: nominalPerBulan }); totalPayment += nominalPerBulan;
                 });
                 
                 // Cari dan lunaskan Tagihan yang relevan di state dataTagihan
