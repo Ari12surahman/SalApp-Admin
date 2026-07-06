@@ -71,17 +71,23 @@ async function supabaseSaveTableData(tableName, dataArr) {
             const toDeleteIds = existingData.filter(r => r.id && !currentIds.has(String(r.id))).map(r => r.id);
 
             if (toDeleteIds.length > 0) {
-                // Delete in chunks of 200 to avoid URL length limits
-                for (let i = 0; i < toDeleteIds.length; i += 200) {
-                    const chunk = toDeleteIds.slice(i, i + 200);
+                // Delete in chunks of 50 to avoid URL length limits
+                for (let i = 0; i < toDeleteIds.length; i += 50) {
+                    const chunk = toDeleteIds.slice(i, i + 50);
                     await supabase.from(tableName).delete().in('id', chunk);
                 }
             }
         }
     }
 
-    const { error } = await supabase.from(tableName).upsert(uniqueData, upsertOptions);
-    if (error) return { success: false, message: error.message };
+    // Upsert in chunks to avoid payload size limits (e.g. Failed to fetch)
+    const CHUNK_SIZE = 500;
+    for (let i = 0; i < uniqueData.length; i += CHUNK_SIZE) {
+        const chunk = uniqueData.slice(i, i + CHUNK_SIZE);
+        const { error } = await supabase.from(tableName).upsert(chunk, upsertOptions);
+        if (error) return { success: false, message: error.message };
+    }
+    
     return { success: true };
 }
 
@@ -746,15 +752,21 @@ function App() {
             const amountToPay = formData.sisa || formData.nominal || 0;
             
             // Save to PakasirOrders for Webhook support
+            // Generate a unique orderId to prevent "Transaction already canceled/exist" errors from Pakasir
+            const uniqueOrderId = `${formData.id}_${Date.now()}`;
+            
             const dbPayload = {
-              orderId: formData.id,
+              orderId: formData.id, // Keep the original for internal reference
+              pakasirOrderId: uniqueOrderId,
               method,
               amount: amountToPay,
               tagihanData: tRef || formData,
-              isBulk: false
+              isBulk: false,
+              slug: slug,
+              apiKey: apiKey
             };
             await supabase.from('PakasirOrders').upsert([{
-              order_id: formData.id,
+              order_id: uniqueOrderId,
               tipe: 'TAGIHAN_ADMIN',
               status: 'PENDING',
               payload: dbPayload
@@ -764,24 +776,33 @@ function App() {
             const res = await fetch('/api/pakasir', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ action: 'requestPakasirPayment', data: { slug, method, amount: amountToPay, orderId: formData.id, apiKey } })
+                body: JSON.stringify({ action: 'requestPakasirPayment', data: { slug, method, amount: amountToPay, orderId: uniqueOrderId, apiKey } })
             });
-            data = await res.json();
+            
+            let rawData = await res.json();
+            // Handle double-stringified JSON from Pakasir/Next.js
+            data = typeof rawData === 'string' ? (JSON.parse(rawData) || rawData) : rawData;
+            
             console.log("PAKASIR RESPONSE:", data);
-            if (data && data.data && data.data.payment_number) {
+            
+            const paymentData = data?.payment || data?.data || data;
+
+            if (paymentData && (paymentData.payment_number || paymentData.checkout_url || paymentData.qr_string)) {
                 const isQris = method === 'QRIS' || method === 'qris';
-                const checkoutUrl = data.data.checkout_url || '';
-                const qrStr = data.data.payment_number;
+                const checkoutUrl = paymentData.checkout_url || paymentData.url || '';
+                const qrStr = paymentData.payment_number || paymentData.qr_string || '';
 
                 const strData = JSON.stringify(data || {}).toLowerCase();
-                const isSandboxApi = strData.includes('"sandbox"') || strData.includes('sandbox.pakasir.com') || String(qrStr).toUpperCase().includes('SANDBOX') || String(checkoutUrl).toUpperCase().includes('SANDBOX');
+                const isSandboxApi = strData.includes('"sandbox"') || strData.includes('sandbox.pakasir.com') || String(qrStr).toUpperCase().includes('SANDBOX') || String(checkoutUrl).toUpperCase().includes('SANDBOX') || String(qrStr) === '123123123';
 
                 console.log("IS SANDBOX:", isSandboxApi, "qrString:", qrStr, "checkout_url:", checkoutUrl);
+                // We pass uniqueOrderId as txId or orderId if needed. In Admin, they use formData.id for state, but we should probably just keep it as is.
                 setPakasirData(prev => ({ ...prev, loading: false, step: isQris ? 'SHOW_QR' : 'SHOW_VA', qrString: qrStr, checkoutUrl: checkoutUrl, isSandbox: isSandboxApi }));
-                addLog('INTEGRATION', 'PAKASIR API', `Berhasil request ${method} untuk ${formData.id}${isSandboxApi ? ' (Sandbox)' : ''}`);
+                addLog('INTEGRATION', 'PAKASIR API', `Berhasil request ${method} untuk ${uniqueOrderId}${isSandboxApi ? ' (Sandbox)' : ''}`);
             } else {
-                console.error('Pakasir API Response:', data);
-                throw new Error(data?.message || data?.error || "Invalid response from Pakasir");
+                console.error('Pakasir API Response Gagal:', JSON.stringify(data, null, 2));
+                const errMsg = data?.message || data?.error || paymentData?.message || paymentData?.error || (typeof data === 'object' ? JSON.stringify(data) : String(data));
+                throw new Error(errMsg || "Invalid response dari Pakasir (mungkin project belum diset / parameter salah)");
             }
         } catch (error) {
             console.error('Pakasir Catch Error:', error);

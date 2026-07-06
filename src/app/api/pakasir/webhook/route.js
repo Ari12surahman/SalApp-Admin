@@ -42,11 +42,39 @@ export async function POST(request) {
         return NextResponse.json({ message: 'Order already completed' }, { status: 200 });
       }
 
+      const orderPayload = orderData.payload || {};
+      const slug = orderPayload.slug;
+      const apiKey = orderPayload.apiKey;
+
+      // 4. API Validation with Pakasir (Security)
+      if (slug && apiKey) {
+        try {
+          const checkAmount = payload.amount || orderPayload.amount || orderPayload.total || 0;
+          const params = new URLSearchParams({
+             project: slug.trim(),
+             order_id: orderId,
+             amount: String(checkAmount),
+             api_key: apiKey.trim()
+          });
+          const valRes = await fetch(`https://app.pakasir.com/api/transactiondetail?${params.toString()}`, { method: 'GET' });
+          const valData = await valRes.json();
+
+          if (!valData || !valData.transaction || valData.transaction.status !== 'completed') {
+            console.warn(`Pakasir API validation failed for order ${orderId}. Fake webhook attempt?`, valData);
+            return NextResponse.json({ error: 'Validation failed via Transaction Detail API' }, { status: 400 });
+          }
+        } catch (valErr) {
+          console.error("Error validating with Pakasir API:", valErr);
+          return NextResponse.json({ error: 'Validation process error' }, { status: 500 });
+        }
+      } else {
+        console.warn(`Order ${orderId} does not have slug or apiKey in payload. Skipping validation for backward compatibility.`);
+      }
+
       // Update status di PakasirOrders
       await supabase.from('PakasirOrders').update({ status: 'COMPLETED' }).eq('order_id', orderId);
 
       // --- Proses sesuai tipe ---
-      const orderPayload = orderData.payload || {};
 
       if (orderData.tipe === 'POS') {
         // Logika POS (sama seperti simpanTransaksiOffline)
