@@ -254,6 +254,19 @@ function App() {
     };
     const [confirmDialog, setConfirmDialog] = useState(null);
     const [pakasirData, setPakasirData] = useState({ step: 'CHOOSE_METHOD', method: '', qrString: null, loading: false, url: '', isPaid: false, checkoutUrl: '' });
+    const [pakasirTimeLeft, setPakasirTimeLeft] = useState(900);
+
+    useEffect(() => {
+        let timer;
+        if ((pakasirData.step === 'SHOW_QR' || pakasirData.step === 'SHOW_VA') && pakasirTimeLeft > 0) {
+            timer = setInterval(() => {
+                setPakasirTimeLeft(prev => prev - 1);
+            }, 1000);
+        } else if (pakasirTimeLeft <= 0 && (pakasirData.step === 'SHOW_QR' || pakasirData.step === 'SHOW_VA')) {
+            clearInterval(timer);
+        }
+        return () => clearInterval(timer);
+    }, [pakasirData.step, pakasirTimeLeft]);
 
     const [masterPeriodeList, setMasterPeriodeList] = useState(['2022/2023', '2023/2024', '2024/2025']);
     const [masterKelasList, setMasterKelasList] = useState(['10A', '10B', '11A', '11B', '12A']);
@@ -488,7 +501,28 @@ function App() {
 
             }
         }, 15000); // 15 detik
-        return () => clearInterval(interval);
+
+        // Realtime Subscription untuk Tagihan
+        const tagihanChannel = supabase
+            .channel('realtime-admin-tagihan')
+            .on('postgres_changes', { event: '*', schema: 'public', table: 'Tagihan' }, async () => {
+                // Fetch Tagihan terbaru ketika ada event (Insert/Update dari Webhook)
+                console.log("[Supabase Real-time] Tagihan berubah, memuat ulang data Tagihan...");
+                const { data } = await supabase.from('Tagihan').select('*');
+                if (data) {
+                    const serverStr = JSON.stringify(data.reverse());
+                    if (!window['_pending_Tagihan'] && (!window['lastWrite_Tagihan'] || Date.now() - window['lastWrite_Tagihan'] >= 30000)) {
+                        window['lastSync_Tagihan'] = serverStr;
+                        setDataTagihan(data);
+                    }
+                }
+            })
+            .subscribe();
+
+        return () => {
+            clearInterval(interval);
+            supabase.removeChannel(tagihanChannel);
+        };
     }, [isLoaded]);
 
     // === INTEGRASI GOOGLE SHEETS: AUTO-SYNC KE SPREADSHEET (DEBOUNCED) ===
@@ -797,6 +831,7 @@ function App() {
 
                 console.log("IS SANDBOX:", isSandboxApi, "qrString:", qrStr, "checkout_url:", checkoutUrl);
                 // We pass uniqueOrderId as txId or orderId if needed. In Admin, they use formData.id for state, but we should probably just keep it as is.
+                setPakasirTimeLeft(900);
                 setPakasirData(prev => ({ ...prev, loading: false, step: isQris ? 'SHOW_QR' : 'SHOW_VA', qrString: qrStr, checkoutUrl: checkoutUrl, isSandbox: isSandboxApi }));
                 addLog('INTEGRATION', 'PAKASIR API', `Berhasil request ${method} untuk ${uniqueOrderId}${isSandboxApi ? ' (Sandbox)' : ''}`);
             } else {
@@ -808,6 +843,7 @@ function App() {
             console.error('Pakasir Catch Error:', error);
             const isQris = method === 'QRIS' || method === 'qris';
             const mockString = isQris ? "00020101021226610016ID.CO.SHOPEE.WWW01189360091800216005230208216005230303UME51440014ID.CO.QRIS.WWW0215ID10243228429300303UME5204792953033605409100003.005802ID5907Pakasir6012KAB.KEBUMEN61055439262230519SP25RZRATEQI2HQ65Q46304A079" : "8023123456789012";
+            setPakasirTimeLeft(900);
             setPakasirData({ step: isQris ? 'SHOW_QR' : 'SHOW_VA', method: method, loading: false, qrString: mockString, url: '', isSandbox: true });
             addLog('INTEGRATION', 'PAKASIR DEMO', `Fallback ke Mock ${isQris ? 'QRIS' : 'VA'} untuk ${formData.id}`);
             showNotification(`GAGAL: ${error.message || error}. Menggunakan Mock ${isQris ? 'QRIS' : 'VA'} (cek console).`);
@@ -2487,14 +2523,22 @@ function App() {
                             {(pakasirData.step === 'SHOW_QR' || pakasirData.step === 'SHOW_VA') && (
                                 <div className="text-center py-2 animate-fade-in-up">
                                     <h3 className="text-lg font-bold text-ink mb-1">{pakasirData.step === 'SHOW_QR' ? 'Scan QRIS' : 'Transfer Virtual Account'}</h3>
-                                    <p className="text-sm text-steel mb-6">Selesaikan pembayaran sebelum batas waktu habis.</p>
+                                    
+                                    {pakasirTimeLeft > 0 ? (
+                                        <>
+                                            <p className="text-sm font-bold text-red-600 mb-1">Selesaikan pembayaran sebelum waktu habis: {Math.floor(pakasirTimeLeft / 60)}:{(pakasirTimeLeft % 60).toString().padStart(2, '0')}</p>
+                                            <p className="text-xs font-bold text-red-600 mb-6 px-2">⚠️ Mohon JANGAN tutup halaman ini atau keluar dari aplikasi sebelum pembayaran selesai.</p>
+                                        </>
+                                    ) : (
+                                        <p className="text-base font-bold text-red-600 mb-6">Waktu Pembayaran Habis!</p>
+                                    )}
 
                                     {pakasirData.isPaid ? (
                                         <div className="flex flex-col items-center justify-center py-4 px-6 bg-emerald-50 rounded-xl border border-emerald-100 w-full mb-6">
                                             <div className="w-16 h-16 bg-emerald-100 text-emerald-600 rounded-full flex items-center justify-center mb-4"><Check className="w-8 h-8" /></div>
                                             <h3 className="text-emerald-700 font-bold text-lg">Pembayaran Berhasil!</h3>
                                         </div>
-                                    ) : (
+                                    ) : pakasirTimeLeft > 0 ? (
                                         <>
                                             {pakasirData.step === 'SHOW_QR' && (
                                                 <div className="bg-canvas border border-whisper rounded-xl p-4 flex items-center justify-center mx-auto w-64 h-64 mb-4">
@@ -2504,14 +2548,29 @@ function App() {
 
                                             {pakasirData.step === 'SHOW_VA' && (
                                                 <div className="bg-canvas border border-whisper rounded-xl p-6 mb-4">
-                                                    <p className="text-xs font-semibold text-steel uppercase mb-1">Bank {pakasirData.method.replace('_va', '')}</p>
-                                                    <div className="text-3xl font-mono font-bold text-ink tracking-wider">{pakasirData.qrString}</div>
+                                                    <p className="text-xs font-semibold text-steel uppercase mb-1">Bank {pakasirData.method?.replace('_va', '')}</p>
+                                                    <div className="text-3xl font-mono font-bold text-ink tracking-wider break-all">{pakasirData.qrString}</div>
                                                 </div>
                                             )}
 
                                             <div className="flex gap-2 mb-6">
                                                 {pakasirData.step === 'SHOW_QR' ? (
-                                                    <a href={`https://api.qrserver.com/v1/create-qr-code/?size=500x500&data=` + encodeURIComponent(pakasirData.qrString)} target="_blank" download={`QRIS-${formData.id}.png`} className="flex-1 py-3 bg-whisper hover:bg-slate-200 text-ink rounded-xl font-semibold transition-colors flex justify-center items-center gap-2"><Download className="w-4 h-4" /> Download QR</a>
+                                                    <button onClick={async () => {
+                                                        try {
+                                                            const res = await fetch(`https://api.qrserver.com/v1/create-qr-code/?size=500x500&data=` + encodeURIComponent(pakasirData.qrString));
+                                                            const blob = await res.blob();
+                                                            const url = window.URL.createObjectURL(blob);
+                                                            const a = document.createElement('a');
+                                                            a.style.display = 'none';
+                                                            a.href = url;
+                                                            a.download = `QRIS-${formData.id || Date.now()}.png`;
+                                                            document.body.appendChild(a);
+                                                            a.click();
+                                                            window.URL.revokeObjectURL(url);
+                                                        } catch(e) {
+                                                            alert("Gagal mengunduh QR, silakan Screenshot layar ini.");
+                                                        }
+                                                    }} className="flex-1 py-3 bg-whisper hover:bg-slate-200 text-ink rounded-xl font-semibold transition-colors flex justify-center items-center gap-2"><Download className="w-4 h-4" /> Download QR</button>
                                                 ) : (
                                                     <>
                                                         <button onClick={() => copyToClipboard(pakasirData.qrString)} className="flex-1 py-3 bg-whisper hover:bg-slate-200 text-ink rounded-xl font-semibold transition-colors flex justify-center items-center gap-2"><Copy className="w-4 h-4" /> Salin VA</button>
@@ -2529,7 +2588,7 @@ function App() {
 
                                             <button onClick={() => setPakasirData({ step: 'CHOOSE_METHOD', method: '', loading: false, qrString: '', url: '', checkoutUrl: '', isSandbox: false })} className="w-full py-3 mt-2 bg-transparent hover:bg-slate-50 text-steel rounded-xl font-semibold transition-colors">Pilih Pembayaran Lain</button>
                                         </>
-                                    )}
+                                    ) : null}
                                 </div>
                             )}
 
