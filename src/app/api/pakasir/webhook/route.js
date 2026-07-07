@@ -111,7 +111,7 @@ export async function POST(request) {
                 ? `Ananda ${orderPayload.buyerName} baru saja jajan di kantin berupa ${itemNames} senilai Rp ${Number(orderPayload.total).toLocaleString('id-ID')} menggunakan ${orderPayload.method || 'QRIS'}.`
                 : `Pembayaran ${orderPayload.method || 'QRIS'} senilai Rp ${Number(orderPayload.total).toLocaleString('id-ID')} berhasil.`;
                 
-             const origin = request.headers.get('origin') || 'https://sal-app-admin.vercel.app';
+             const origin = request.nextUrl?.origin || 'https://sal-app-admin.vercel.app';
              fetch(`${origin}/api/notifikasi`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -171,7 +171,8 @@ export async function POST(request) {
         try {
           if (tagihanList.length > 0 && tagihanList[0]?.nis) {
             const namaTagihan = tagihanList.map(t => t.tagihan).join(', ');
-            fetch('https://sal-app-admin.vercel.app/api/notifikasi', {
+            const origin = request.nextUrl?.origin || 'https://sal-app-admin.vercel.app';
+            fetch(`${origin}/api/notifikasi`, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({
