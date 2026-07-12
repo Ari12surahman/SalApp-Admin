@@ -91,6 +91,40 @@ async function supabaseSaveTableData(tableName, dataArr) {
     return { success: true };
 }
 
+// Helper to generate unique Invoice ID for Tagihan
+function generateInvoiceId(tagihan, list) {
+    const prefix = String(tagihan || 'TAG').substring(0, 3).toUpperCase();
+    const timestamp = Date.now();
+    const random = Math.floor(Math.random() * 1000);
+    return `INV-${prefix}-${timestamp}-${random}`;
+}
+
+// Helper to deterministically sort data (newest first for transactions)
+function sortSupabaseData(tableName, data) {
+    if (!data) return [];
+    if (['Santri', 'Data Santri', 'Pegawai', 'Data Pegawai', 'Admin', 'MasterPeriode', 'MasterJabatan', 'MasterKelas', 'MasterTagihan'].includes(tableName)) {
+        return data.reverse(); // keep legacy behavior for masters
+    }
+    
+    return data.sort((a, b) => {
+        const dateA = a.tanggal || a.Waktu || a.WaktuPengajuan || '';
+        const dateB = b.tanggal || b.Waktu || b.WaktuPengajuan || '';
+        if (dateA !== dateB) return dateB.localeCompare(dateA);
+        
+        const getTs = (id) => {
+            if (!id) return 0;
+            const pts = String(id).split('-');
+            const ts = pts.find(p => p.length === 13 && !isNaN(p));
+            return ts ? parseInt(ts) : 0;
+        };
+        const tsA = getTs(a.id || a.TrxID || a.IDPencairan);
+        const tsB = getTs(b.id || b.TrxID || b.IDPencairan);
+        if (tsA !== tsB) return tsB - tsA;
+        
+        return String(b.id || b.TrxID || '').localeCompare(String(a.id || a.TrxID || ''));
+    });
+}
+
 import React, { useState, useEffect, useRef, useCallback } from "react";
 
 
@@ -373,7 +407,7 @@ function App() {
                         if (t === 'Pegawai') actualT = 'Data Pegawai';
 
                         const { data } = await supabase.from(actualT).select('*');
-                        result[t] = data ? data.reverse() : [];
+                        result[t] = data ? sortSupabaseData(actualT, data) : [];
                     }
                     const jsonString = JSON.stringify(result);
 
@@ -465,7 +499,7 @@ function App() {
                             if (t === 'Pegawai') actualT = 'Data Pegawai';
 
                             const { data } = await supabase.from(actualT).select('*');
-                            result[t] = data ? data.reverse() : [];
+                            result[t] = data ? sortSupabaseData(actualT, data) : [];
                         }
                         const jsonStr = JSON.stringify(result);
 
@@ -681,7 +715,28 @@ function App() {
             if (bType === 'SANTRI') setDataSantri(prev => prev.filter(s => !ids.includes(s.id)));
             if (bType === 'PEGAWAI') setDataPegawai(prev => prev.filter(p => !ids.includes(p.id)));
             if (bType === 'TAGIHAN') setDataTagihan(prev => prev.filter(t => !ids.includes(t.id)));
-            if (bType === 'PEMBAYARAN') setDataPembayaran(prev => prev.filter(p => !ids.includes(p.id)));
+            if (bType === 'PEMBAYARAN') {
+                const deletedTxs = dataPembayaran.filter(p => ids.includes(p.id));
+                setDataTagihan(prev => {
+                    let updatedTags = [...prev];
+                    deletedTxs.forEach(deletedTrx => {
+                        const itemsToReverse = deletedTrx.items && deletedTrx.items.length > 0 
+                                               ? deletedTrx.items 
+                                               : [{ tagihan: deletedTrx.tagihan, periode: deletedTrx.periode, nominal: deletedTrx.nominal }];
+                        itemsToReverse.forEach(item => {
+                            const idx = updatedTags.findIndex(t => String(t.nis).replace(/^0+/, '') === String(deletedTrx.nis).replace(/^0+/, '') && String(t.tagihan).toLowerCase().trim() === String(item.tagihan).toLowerCase().trim() && formatPeriodeStr(t.periode).toLowerCase().trim() === formatPeriodeStr(item.periode).toLowerCase().trim());
+                            if (idx > -1) {
+                                const t = updatedTags[idx];
+                                const newTerbayar = Math.max(0, (t.terbayar || 0) - (item.nominal || 0));
+                                const statusTrx = newTerbayar >= t.nominal ? 'Lunas' : (newTerbayar > 0 ? 'Cicil' : 'Belum Lunas');
+                                updatedTags[idx] = { ...t, terbayar: newTerbayar, status: statusTrx };
+                            }
+                        });
+                    });
+                    return updatedTags;
+                });
+                setDataPembayaran(prev => prev.filter(p => !ids.includes(p.id)));
+            }
             if (bType === 'TABUNGAN') setDataTabungan(prev => prev.filter(t => !ids.includes(t.id)));
             if (bType === 'KAS') setDataKas(prev => prev.filter(k => !ids.includes(k.id)));
             if (bType === 'GAJI') setDataGaji(prev => prev.filter(g => !ids.includes(g.id)));
@@ -716,7 +771,28 @@ function App() {
         if (confirmDialog.type === 'SANTRI') setDataSantri(prev => prev.filter(s => s.id !== confirmDialog.id));
         if (confirmDialog.type === 'PEGAWAI') setDataPegawai(prev => prev.filter(p => p.id !== confirmDialog.id));
         if (confirmDialog.type === 'TAGIHAN_SANTRI') setDataTagihan(prev => prev.filter(t => t.id !== confirmDialog.id));
-        if (confirmDialog.type === 'PEMBAYARAN') setDataPembayaran(prev => prev.filter(p => p.id !== confirmDialog.id));
+        if (confirmDialog.type === 'PEMBAYARAN') {
+            const deletedTrx = dataPembayaran.find(p => p.id === confirmDialog.id);
+            if (deletedTrx) {
+                setDataTagihan(prev => {
+                    const updatedTags = [...prev];
+                    const itemsToReverse = deletedTrx.items && deletedTrx.items.length > 0 
+                                           ? deletedTrx.items 
+                                           : [{ tagihan: deletedTrx.tagihan, periode: deletedTrx.periode, nominal: deletedTrx.nominal }];
+                    itemsToReverse.forEach(item => {
+                        const idx = updatedTags.findIndex(t => String(t.nis).replace(/^0+/, '') === String(deletedTrx.nis).replace(/^0+/, '') && String(t.tagihan).toLowerCase().trim() === String(item.tagihan).toLowerCase().trim() && formatPeriodeStr(t.periode).toLowerCase().trim() === formatPeriodeStr(item.periode).toLowerCase().trim());
+                        if (idx > -1) {
+                            const t = updatedTags[idx];
+                            const newTerbayar = Math.max(0, (t.terbayar || 0) - (item.nominal || 0));
+                            const statusTrx = newTerbayar >= t.nominal ? 'Lunas' : (newTerbayar > 0 ? 'Cicil' : 'Belum Lunas');
+                            updatedTags[idx] = { ...t, terbayar: newTerbayar, status: statusTrx };
+                        }
+                    });
+                    return updatedTags;
+                });
+            }
+            setDataPembayaran(prev => prev.filter(p => p.id !== confirmDialog.id));
+        }
         if (confirmDialog.type === 'TABUNGAN') setDataTabungan(prev => prev.filter(t => t.id !== confirmDialog.id));
         if (confirmDialog.type === 'KAS') setDataKas(prev => prev.filter(k => k.id !== confirmDialog.id));
         if (confirmDialog.type === 'GAJI') setDataGaji(prev => prev.filter(g => g.id !== confirmDialog.id));
