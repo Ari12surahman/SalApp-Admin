@@ -1308,7 +1308,22 @@ function App() {
         });
 
         const pInvoiceStr = itemsToPay.length > 1 ? `${selectedB[0]} - ${selectedB[selectedB.length - 1]} ${formData.tahun}` : `${selectedB[0]} ${formData.tahun}`;
-        const newTrx = { id: `INV-${Math.floor(Math.random() * 10000) + '-' + Date.now()}`, tanggal: new Date().toISOString().split('T')[0], nis: formData.nis, nama: santriTerpilih.nama, tagihan: formData.tagihan, periode: pInvoiceStr, nominal: totalPayment, status: 'Lunas', sisa: 0, items: itemsToPay };
+        
+        let trxStatus = 'Lunas';
+        let trxSisa = 0;
+        if (itemsToPay.length === 1) {
+            const tRef = dataTagihan.find(t => String(t.nis).replace(/^0+/, '') === String(formData.nis).replace(/^0+/, '') && String(t.tagihan).toLowerCase().trim() === String(formData.tagihan).toLowerCase().trim() && formatPeriodeStr(t.periode).toLowerCase().trim() === formatPeriodeStr(itemsToPay[0].periode).toLowerCase().trim());
+            if (tRef && tRef.nominal > (tRef.terbayar || 0) + itemsToPay[0].nominal) {
+                trxStatus = 'Cicilan';
+                trxSisa = tRef.nominal - ((tRef.terbayar || 0) + itemsToPay[0].nominal);
+            } else if (tRef && tRef.nominal > tRef.terbayar) {
+                // Already calculated in the loop, check the updated Tagihan state conceptually
+                trxSisa = tRef.nominal - tRef.terbayar;
+                if(trxSisa > 0) trxStatus = 'Cicilan';
+            }
+        }
+        
+        const newTrx = { id: `INV-${Math.floor(Math.random() * 10000) + '-' + Date.now()}`, tanggal: new Date().toISOString().split('T')[0], nis: formData.nis, nama: santriTerpilih.nama, tagihan: formData.tagihan, periode: pInvoiceStr, nominal: totalPayment, status: trxStatus, sisa: trxSisa, items: itemsToPay };
         setDataPembayaran(prev => [newTrx, ...prev]);
         addLog('CREATE', 'PEMBAYARAN MANUAL', `Menerima pembayaran manual Rp ${totalPayment.toLocaleString('id-ID')} dari ${santriTerpilih.nama}`);
         showNotification(`Pembayaran Rp ${totalPayment.toLocaleString('id-ID')} dicatat!`);
