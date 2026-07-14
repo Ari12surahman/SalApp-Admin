@@ -138,6 +138,7 @@ import {
 
 // Import Recharts dengan parameter bundle untuk mencegah error lodash missing modules
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from "recharts";
+import * as XLSX from "xlsx";
 
 // --- CSS Classes (Stitch Design Taste) ---
 const inputBase = "w-full rounded-xl border border-whisper bg-surface px-4 py-2.5 text-sm text-ink focus:outline-none focus:border-accent focus:ring-2 focus:ring-accent/20 transition-all duration-200";
@@ -250,6 +251,12 @@ function App() {
     const [modalType, setModalType] = useState(null);
     const [formData, setFormData] = useState({});
     const [searchTerm, setSearchTerm] = useState('');
+    const [currentPage, setCurrentPage] = useState(1);
+    
+    useEffect(() => {
+        setCurrentPage(1);
+    }, [activeTab, searchTerm]);
+    
     const [notification, setNotification] = useState(null);
     const [scanResult, setScanResult] = useState(null);
     const [scanInput, setScanInput] = useState('');
@@ -399,7 +406,7 @@ function App() {
 
             (async () => {
                 try {
-                    const tables = ['Santri', 'Pegawai', 'Admin', 'Tagihan', 'Pembayaran', 'Tabungan', 'Kas', 'Gaji', 'Logs', 'MasterPeriode', 'MasterJabatan', 'MasterKelas', 'MasterTagihan'];
+                    const tables = ['Santri', 'Pegawai', 'Admin', 'Tagihan', 'Pembayaran', 'Tabungan', 'Kas', 'Gaji', 'Logs', 'MasterPeriode', 'MasterJabatan', 'MasterKelas', 'MasterTagihan', 'MasterConfig', 'KategoriKas', 'MasterRoleAccess'];
                     const result = {};
                     for (const t of tables) {
                         let actualT = t;
@@ -448,7 +455,15 @@ function App() {
                         // Muat Config
                         if (data.MasterConfig && data.MasterConfig.length > 0) {
                             const cfg = {};
-                            data.MasterConfig.forEach(item => { if (item.kunci) cfg[item.kunci] = item.nilai; });
+                            data.MasterConfig.forEach(item => { 
+                                if (item.kunci) {
+                                    try {
+                                        cfg[item.kunci] = (typeof item.nilai === 'string' && (item.nilai.startsWith('[') || item.nilai.startsWith('{'))) ? JSON.parse(item.nilai) : item.nilai;
+                                    } catch(e) {
+                                        cfg[item.kunci] = item.nilai;
+                                    }
+                                } 
+                            });
                             setAppConfig(prev => ({ ...prev, ...cfg }));
                         }
                         // Muat Role Access
@@ -627,7 +642,7 @@ function App() {
     useEffect(() => { if (isLoaded) debouncedSync('Admin', dataAdmin); }, [dataAdmin, isLoaded]);
     useEffect(() => {
         if (isLoaded) {
-            const flat = Object.entries(appConfig).map(([kunci, nilai]) => ({ kunci, nilai: nilai || '' }));
+            const flat = Object.entries(appConfig).map(([kunci, nilai]) => ({ kunci, nilai: typeof nilai === 'object' ? JSON.stringify(nilai) : (nilai || '') }));
             debouncedSync('MasterConfig', flat);
         }
     }, [appConfig, isLoaded]);
@@ -1520,7 +1535,7 @@ function App() {
 
                     if (type === 'santri') {
                         newData.push({
-                            id: Date.now() + Math.random(),
+                            id: Date.now() + i,
                             nis: String(cells[0] || '').trim(),
                             nama: String(cells[1] || '').trim(),
                             kelas: String(cells[2] || '').trim(),
@@ -1530,7 +1545,7 @@ function App() {
                         });
                     } else {
                         newData.push({
-                            id: Date.now() + Math.random(),
+                            id: Date.now() + i,
                             nip: String(cells[0] || '').trim(),
                             nama: String(cells[1] || '').trim(),
                             jabatan: String(cells[2] || '').trim(),
@@ -1721,7 +1736,12 @@ function App() {
 
     const renderDataSantri = () => {
         const filteredSantri = dataSantri.filter(s => (periodeAktif === 'Semua' || s.periode === periodeAktif) && ((s.nama || '').toLowerCase().includes(searchTerm.toLowerCase()) || String(s.nis || '').includes(searchTerm)));
-        const filteredIds = filteredSantri.map(s => s.id);
+        
+        const itemsPerPage = 10;
+        const totalPages = Math.ceil(filteredSantri.length / itemsPerPage);
+        const paginatedSantri = filteredSantri.slice((currentPage - 1) * itemsPerPage, currentPage * itemsPerPage);
+
+        const filteredIds = paginatedSantri.map(s => s.id);
         const allChecked = filteredIds.length > 0 && filteredIds.every(id => selectedIds.includes(id));
         const someChecked = selectedIds.filter(id => filteredIds.includes(id)).length > 0;
         return (
@@ -1764,9 +1784,9 @@ function App() {
                                 <th className="px-4 py-3">NIS</th><th className="px-4 py-3">Nama Lengkap</th><th className="px-4 py-3">Kelas</th><th className="px-4 py-3 text-center">Aksi</th>
                             </tr></thead>
                             <tbody className="divide-y divide-whisper/50">
-                                {filteredSantri.length === 0 ? (
+                                {paginatedSantri.length === 0 ? (
                                     <tr><td colSpan="100%" className="text-center py-8 text-steel">Belum ada data santri.</td></tr>
-                                ) : filteredSantri.map((santri, idx) => (
+                                ) : paginatedSantri.map((santri, idx) => (
                                     <tr key={`${santri.id}-${idx}`} className={`hover:bg-canvas transition-colors ${selectedIds.includes(santri.id) ? 'bg-accent/5' : 'bg-surface'}`}>
                                         <td className="px-4 py-3"><input type="checkbox" checked={selectedIds.includes(santri.id)} onChange={() => toggleSelectId(santri.id)} className="w-4 h-4 rounded border-whisper text-accent focus:ring-accent/30 cursor-pointer" /></td>
                                         <td className="px-4 py-3 font-medium text-ink font-mono text-xs">{santri.nis}</td>
@@ -1782,9 +1802,9 @@ function App() {
                         </table>
                     </div>
                     <div className="md:hidden flex flex-col divide-y divide-whisper/50">
-                        {filteredSantri.length === 0 ? (
+                        {paginatedSantri.length === 0 ? (
                             <div className="text-center py-8 text-steel text-sm">Belum ada data santri.</div>
-                        ) : filteredSantri.map((santri, idx) => (
+                        ) : paginatedSantri.map((santri, idx) => (
                             <div key={`${santri.id}-${idx}`} className={`p-4 flex items-center justify-between gap-3 ${selectedIds.includes(santri.id) ? 'bg-accent/5' : 'bg-surface'}`}>
                                 <div className="flex items-center gap-3 min-w-0">
                                     <input type="checkbox" checked={selectedIds.includes(santri.id)} onChange={() => toggleSelectId(santri.id)} className="w-4 h-4 shrink-0 rounded border-whisper text-accent focus:ring-accent/30 cursor-pointer" />
@@ -1800,6 +1820,14 @@ function App() {
                             </div>
                         ))}
                     </div>
+                    
+                    {totalPages > 0 && (
+                        <div className="flex justify-center items-center gap-4 p-4 border-t border-whisper/50 bg-canvas/30">
+                            <button onClick={() => setCurrentPage(p => Math.max(1, p - 1))} disabled={currentPage === 1} className="px-3 py-1.5 text-sm font-medium border border-whisper rounded-lg bg-surface hover:bg-canvas disabled:opacity-50 disabled:cursor-not-allowed text-ink">Prev</button>
+                            <span className="text-sm text-steel font-medium">Hal {currentPage} dari {totalPages}</span>
+                            <button onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))} disabled={currentPage === totalPages} className="px-3 py-1.5 text-sm font-medium border border-whisper rounded-lg bg-surface hover:bg-canvas disabled:opacity-50 disabled:cursor-not-allowed text-ink">Next</button>
+                        </div>
+                    )}
                 </div>
             </div>
         );
@@ -1807,7 +1835,12 @@ function App() {
 
     const renderDataPegawai = () => {
         const filtered = dataPegawai.filter(p => (p.nama || '').toLowerCase().includes(searchTerm.toLowerCase()) || String(p.nip || '').includes(searchTerm));
-        const filteredIds = filtered.map(p => p.id);
+        
+        const itemsPerPage = 10;
+        const totalPages = Math.ceil(filtered.length / itemsPerPage);
+        const paginatedPegawai = filtered.slice((currentPage - 1) * itemsPerPage, currentPage * itemsPerPage);
+
+        const filteredIds = paginatedPegawai.map(p => p.id);
         const allChecked = filteredIds.length > 0 && filteredIds.every(id => selectedIds.includes(id));
         const someChecked = selectedIds.filter(id => filteredIds.includes(id)).length > 0;
         return (
@@ -1840,9 +1873,9 @@ function App() {
                                 <th className="px-4 py-3">NIP</th><th className="px-4 py-3">Nama Lengkap</th><th className="px-4 py-3">Jabatan</th><th className="px-4 py-3 text-right">Gaji Pokok</th><th className="px-4 py-3 text-center">Aksi</th>
                             </tr></thead>
                             <tbody className="divide-y divide-whisper/50">
-                                {filtered.length === 0 ? (
+                                {paginatedPegawai.length === 0 ? (
                                     <tr><td colSpan="100%" className="text-center py-8 text-steel">Belum ada data pegawai.</td></tr>
-                                ) : filtered.map((p, idx) => (
+                                ) : paginatedPegawai.map((p, idx) => (
                                     <tr key={`${p.id}-${idx}`} className={`hover:bg-canvas transition-colors ${selectedIds.includes(p.id) ? 'bg-accent/5' : 'bg-surface'}`}>
                                         <td className="px-4 py-3"><input type="checkbox" checked={selectedIds.includes(p.id)} onChange={() => toggleSelectId(p.id)} className="w-4 h-4 rounded border-whisper text-accent focus:ring-accent/30 cursor-pointer" /></td>
                                         <td className="px-4 py-3 font-medium text-ink font-mono text-xs">{p.nip}</td><td className="px-4 py-3 text-ink font-medium">{p.nama}</td><td className="px-4 py-3 text-steel">{p.jabatan}</td><td className="px-4 py-3 text-right font-medium font-mono text-xs">Rp {(p.gajiPokok || 0).toLocaleString('id-ID')}</td>
@@ -1856,9 +1889,9 @@ function App() {
                         </table>
                     </div>
                     <div className="md:hidden flex flex-col divide-y divide-whisper/50">
-                        {filtered.length === 0 ? (
+                        {paginatedPegawai.length === 0 ? (
                             <div className="text-center py-8 text-steel text-sm">Belum ada data pegawai.</div>
-                        ) : filtered.map((p, idx) => (
+                        ) : paginatedPegawai.map((p, idx) => (
                             <div key={`${p.id}-${idx}`} className={`p-4 flex flex-col gap-3 ${selectedIds.includes(p.id) ? 'bg-accent/5' : 'bg-surface'}`}>
                                 <div className="flex items-center justify-between gap-3">
                                     <div className="flex items-center gap-3 min-w-0">
@@ -1879,6 +1912,14 @@ function App() {
                             </div>
                         ))}
                     </div>
+                    
+                    {totalPages > 0 && (
+                        <div className="flex justify-center items-center gap-4 p-4 border-t border-whisper/50 bg-canvas/30">
+                            <button onClick={() => setCurrentPage(p => Math.max(1, p - 1))} disabled={currentPage === 1} className="px-3 py-1.5 text-sm font-medium border border-whisper rounded-lg bg-surface hover:bg-canvas disabled:opacity-50 disabled:cursor-not-allowed text-ink">Prev</button>
+                            <span className="text-sm text-steel font-medium">Hal {currentPage} dari {totalPages}</span>
+                            <button onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))} disabled={currentPage === totalPages} className="px-3 py-1.5 text-sm font-medium border border-whisper rounded-lg bg-surface hover:bg-canvas disabled:opacity-50 disabled:cursor-not-allowed text-ink">Next</button>
+                        </div>
+                    )}
                 </div>
             </div>
         );
@@ -1886,7 +1927,12 @@ function App() {
 
     const renderTagihan = () => {
         const filtered = dataTagihan.filter(t => (t.nama || '').toLowerCase().includes(searchTerm.toLowerCase()) || String(t.nis || '').includes(searchTerm));
-        const filteredIds = filtered.map(t => t.id);
+        
+        const itemsPerPage = 10;
+        const totalPages = Math.ceil(filtered.length / itemsPerPage);
+        const paginatedTagihan = filtered.slice((currentPage - 1) * itemsPerPage, currentPage * itemsPerPage);
+
+        const filteredIds = paginatedTagihan.map(t => t.id);
         const allChecked = filteredIds.length > 0 && filteredIds.every(id => selectedIds.includes(id));
         return (
             <div className="space-y-6 animate-in fade-in duration-500">
@@ -1914,9 +1960,9 @@ function App() {
                         <table className="w-full text-sm text-left">
                             <thead className="bg-canvas/60 text-steel border-b border-whisper/50"><tr><th className="px-6 py-3 w-12 text-center"><input type="checkbox" checked={allChecked} onChange={() => toggleSelectAll(filteredIds)} className="w-4 h-4 rounded border-whisper text-accent cursor-pointer" /></th><th className="px-6 py-3">Tagihan</th><th className="px-6 py-3">Santri</th><th className="px-6 py-3">Periode</th><th className="px-6 py-3 text-right">Nominal</th><th className="px-6 py-3">Status</th><th className="px-6 py-3 text-center">Aksi</th></tr></thead>
                             <tbody className="divide-y divide-slate-100">
-                                {filtered.length === 0 ? (
+                                {paginatedTagihan.length === 0 ? (
                                     <tr><td colSpan="100%" className="text-center py-8 text-steel">Tidak ada tagihan ditemukan.</td></tr>
-                                ) : filtered.map((trx, idx) => (
+                                ) : paginatedTagihan.map((trx, idx) => (
                                     <tr key={`${trx.id}-${idx}`} className="bg-surface hover:bg-canvas">
                                         <td className="px-6 py-4 text-center"><input type="checkbox" checked={selectedIds.includes(trx.id)} onChange={() => toggleSelectId(trx.id)} className="w-4 h-4 rounded border-whisper text-accent cursor-pointer" /></td>
                                         <td className="px-6 py-4 font-medium text-ink">{trx.tagihan}</td>
@@ -1962,9 +2008,9 @@ function App() {
                         </table>
                     </div>
                     <div className="md:hidden flex flex-col divide-y divide-whisper/50">
-                        {filtered.length === 0 ? (
+                        {paginatedTagihan.length === 0 ? (
                             <div className="text-center py-8 text-steel text-sm">Tidak ada tagihan ditemukan.</div>
-                        ) : filtered.map((trx, idx) => (
+                        ) : paginatedTagihan.map((trx, idx) => (
                             <div key={`${trx.id}-${idx}`} className={`p-4 flex flex-col gap-3 ${selectedIds.includes(trx.id) ? 'bg-accent/5' : 'bg-surface'}`}>
                                 <div className="flex justify-between items-start gap-3">
                                     <div className="flex items-start gap-3 min-w-0">
@@ -1999,6 +2045,14 @@ function App() {
                             </div>
                         ))}
                     </div>
+                    
+                    {totalPages > 0 && (
+                        <div className="flex justify-center items-center gap-4 p-4 border-t border-whisper/50 bg-canvas/30">
+                            <button onClick={() => setCurrentPage(p => Math.max(1, p - 1))} disabled={currentPage === 1} className="px-3 py-1.5 text-sm font-medium border border-whisper rounded-lg bg-surface hover:bg-canvas disabled:opacity-50 disabled:cursor-not-allowed text-ink">Prev</button>
+                            <span className="text-sm text-steel font-medium">Hal {currentPage} dari {totalPages}</span>
+                            <button onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))} disabled={currentPage === totalPages} className="px-3 py-1.5 text-sm font-medium border border-whisper rounded-lg bg-surface hover:bg-canvas disabled:opacity-50 disabled:cursor-not-allowed text-ink">Next</button>
+                        </div>
+                    )}
                 </div>
             </div>
         );
@@ -2006,7 +2060,12 @@ function App() {
 
     const renderPembayaran = () => {
         const filtered = dataPembayaran.filter(t => (masterTagihanFilter === 'Semua Tagihan' || t.tagihan.includes(masterTagihanFilter)) && ((t.nama || '').toLowerCase().includes(searchTerm.toLowerCase()) || String(t.nis || '').includes(searchTerm)));
-        const filteredIds = filtered.map(t => t.id);
+        
+        const itemsPerPage = 10;
+        const totalPages = Math.ceil(filtered.length / itemsPerPage);
+        const paginatedTrx = filtered.slice((currentPage - 1) * itemsPerPage, currentPage * itemsPerPage);
+
+        const filteredIds = paginatedTrx.map(t => t.id);
         const allChecked = filteredIds.length > 0 && filteredIds.every(id => selectedIds.includes(id));
         return (
             <div className="space-y-6 animate-in fade-in duration-500">
@@ -2033,9 +2092,9 @@ function App() {
                         <table className="w-full text-sm text-left">
                             <thead className="bg-canvas/60 text-steel border-b border-whisper/50"><tr><th className="px-6 py-3 w-12 text-center"><input type="checkbox" checked={allChecked} onChange={() => toggleSelectAll(filteredIds)} className="w-4 h-4 rounded border-whisper text-accent cursor-pointer" /></th><th className="px-6 py-3">No. Inv</th><th className="px-6 py-3">Santri</th><th className="px-6 py-3">Keterangan</th><th className="px-6 py-3 text-right">Nominal</th><th className="px-6 py-3 text-center">Status</th><th className="px-6 py-3 text-center">Aksi</th></tr></thead>
                             <tbody className="divide-y divide-slate-100">
-                                {filtered.length === 0 ? (
+                                {paginatedTrx.length === 0 ? (
                                     <tr><td colSpan="100%" className="text-center py-8 text-steel">Belum ada transaksi pembayaran.</td></tr>
-                                ) : filtered.map((trx) => (
+                                ) : paginatedTrx.map((trx) => (
                                     <tr key={trx.id} className="bg-surface hover:bg-canvas">
                                         <td className="px-6 py-4 text-center"><input type="checkbox" checked={selectedIds.includes(trx.id)} onChange={() => toggleSelectId(trx.id)} className="w-4 h-4 rounded border-whisper text-accent cursor-pointer" /></td>
                                         <td className="px-6 py-4 font-mono text-xs">{trx.id}</td><td className="px-6 py-4 font-medium">{trx.nama}</td>
@@ -2064,9 +2123,9 @@ function App() {
                         </table>
                     </div>
                     <div className="md:hidden flex flex-col divide-y divide-whisper/50">
-                        {filtered.length === 0 ? (
+                        {paginatedTrx.length === 0 ? (
                             <div className="text-center py-8 text-steel text-sm">Belum ada transaksi pembayaran.</div>
-                        ) : filtered.map((trx) => (
+                        ) : paginatedTrx.map((trx) => (
                             <div key={trx.id} className={`p-4 flex flex-col gap-3 ${selectedIds.includes(trx.id) ? 'bg-accent/5' : 'bg-surface'}`}>
                                 <div className="flex justify-between items-start gap-3">
                                     <div className="flex items-start gap-3 min-w-0">
@@ -2094,6 +2153,14 @@ function App() {
                             </div>
                         ))}
                     </div>
+                    
+                    {totalPages > 0 && (
+                        <div className="flex justify-center items-center gap-4 p-4 border-t border-whisper/50 bg-canvas/30">
+                            <button onClick={() => setCurrentPage(p => Math.max(1, p - 1))} disabled={currentPage === 1} className="px-3 py-1.5 text-sm font-medium border border-whisper rounded-lg bg-surface hover:bg-canvas disabled:opacity-50 disabled:cursor-not-allowed text-ink">Prev</button>
+                            <span className="text-sm text-steel font-medium">Hal {currentPage} dari {totalPages}</span>
+                            <button onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))} disabled={currentPage === totalPages} className="px-3 py-1.5 text-sm font-medium border border-whisper rounded-lg bg-surface hover:bg-canvas disabled:opacity-50 disabled:cursor-not-allowed text-ink">Next</button>
+                        </div>
+                    )}
                 </div>
             </div>
         );
@@ -2101,7 +2168,12 @@ function App() {
 
     const renderTabungan = () => {
         const filtered = dataTabungan.filter(t => (t.nama || '').toLowerCase().includes(searchTerm.toLowerCase()) || String(t.nis || '').includes(searchTerm));
-        const filteredIds = filtered.map(t => t.id);
+        
+        const itemsPerPage = 10;
+        const totalPages = Math.ceil(filtered.length / itemsPerPage);
+        const paginatedTabungan = filtered.slice((currentPage - 1) * itemsPerPage, currentPage * itemsPerPage);
+
+        const filteredIds = paginatedTabungan.map(t => t.id);
         const allChecked = filteredIds.length > 0 && filteredIds.every(id => selectedIds.includes(id));
         return (
             <div className="space-y-6 animate-in fade-in duration-500">
@@ -2127,9 +2199,9 @@ function App() {
                         <table className="w-full text-sm text-left">
                             <thead className="bg-canvas/60 text-steel border-b border-whisper/50"><tr><th className="px-6 py-3 w-12 text-center"><input type="checkbox" checked={allChecked} onChange={() => toggleSelectAll(filteredIds)} className="w-4 h-4 rounded border-whisper text-accent cursor-pointer" /></th><th className="px-6 py-3">Tanggal</th><th className="px-6 py-3">Santri</th><th className="px-6 py-3 text-center">Jenis</th><th className="px-6 py-3 text-right">Nominal</th><th className="px-6 py-3">Keterangan</th><th className="px-6 py-3 text-center">Aksi</th></tr></thead>
                             <tbody className="divide-y divide-slate-100">
-                                {filtered.length === 0 ? (
+                                {paginatedTabungan.length === 0 ? (
                                     <tr><td colSpan="100%" className="text-center py-8 text-steel">Belum ada catatan tabungan santri.</td></tr>
-                                ) : filtered.map((trx) => (
+                                ) : paginatedTabungan.map((trx) => (
                                     <tr key={trx.id} className="bg-surface hover:bg-canvas">
                                         <td className="px-6 py-4 text-center"><input type="checkbox" checked={selectedIds.includes(trx.id)} onChange={() => toggleSelectId(trx.id)} className="w-4 h-4 rounded border-whisper text-accent cursor-pointer" /></td>
                                         <td className="px-6 py-4">{trx.tanggal}</td><td className="px-6 py-4 font-medium">{trx.nama}</td>
@@ -2142,9 +2214,9 @@ function App() {
                         </table>
                     </div>
                     <div className="md:hidden flex flex-col divide-y divide-whisper/50">
-                        {filtered.length === 0 ? (
+                        {paginatedTabungan.length === 0 ? (
                             <div className="text-center py-8 text-steel text-sm">Belum ada catatan tabungan santri.</div>
-                        ) : filtered.map((trx) => (
+                        ) : paginatedTabungan.map((trx) => (
                             <div key={trx.id} className={`p-4 flex flex-col gap-3 ${selectedIds.includes(trx.id) ? 'bg-accent/5' : 'bg-surface'}`}>
                                 <div className="flex justify-between items-start gap-3">
                                     <div className="flex items-start gap-3 min-w-0">
@@ -2166,6 +2238,14 @@ function App() {
                             </div>
                         ))}
                     </div>
+                    
+                    {totalPages > 0 && (
+                        <div className="flex justify-center items-center gap-4 p-4 border-t border-whisper/50 bg-canvas/30">
+                            <button onClick={() => setCurrentPage(p => Math.max(1, p - 1))} disabled={currentPage === 1} className="px-3 py-1.5 text-sm font-medium border border-whisper rounded-lg bg-surface hover:bg-canvas disabled:opacity-50 disabled:cursor-not-allowed text-ink">Prev</button>
+                            <span className="text-sm text-steel font-medium">Hal {currentPage} dari {totalPages}</span>
+                            <button onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))} disabled={currentPage === totalPages} className="px-3 py-1.5 text-sm font-medium border border-whisper rounded-lg bg-surface hover:bg-canvas disabled:opacity-50 disabled:cursor-not-allowed text-ink">Next</button>
+                        </div>
+                    )}
                 </div>
             </div>
         );
@@ -2173,7 +2253,12 @@ function App() {
 
     const renderPenggajian = () => {
         const filtered = dataGaji.filter(g => (g.nama || '').toLowerCase().includes(searchTerm.toLowerCase()) || String(g.nip || '').includes(searchTerm));
-        const filteredIds = filtered.map(g => g.id);
+        
+        const itemsPerPage = 10;
+        const totalPages = Math.ceil(filtered.length / itemsPerPage);
+        const paginatedGaji = filtered.slice((currentPage - 1) * itemsPerPage, currentPage * itemsPerPage);
+
+        const filteredIds = paginatedGaji.map(g => g.id);
         const allChecked = filteredIds.length > 0 && filteredIds.every(id => selectedIds.includes(id));
         return (
             <div className="space-y-6 animate-in fade-in duration-500">
@@ -2199,9 +2284,9 @@ function App() {
                         <table className="w-full text-sm text-left">
                             <thead className="bg-canvas/60 text-steel border-b border-whisper/50"><tr><th className="px-6 py-3 w-12 text-center"><input type="checkbox" checked={allChecked} onChange={() => toggleSelectAll(filteredIds)} className="w-4 h-4 rounded border-whisper text-accent cursor-pointer" /></th><th className="px-6 py-3">Tanggal / ID</th><th className="px-6 py-3">Pegawai</th><th className="px-6 py-3">Periode</th><th className="px-6 py-3 text-right">Total Bersih</th><th className="px-6 py-3 text-center">Aksi</th></tr></thead>
                             <tbody className="divide-y divide-slate-100">
-                                {filtered.length === 0 ? (
+                                {paginatedGaji.length === 0 ? (
                                     <tr><td colSpan="100%" className="text-center py-8 text-steel">Belum ada riwayat penggajian.</td></tr>
-                                ) : filtered.map((g) => (
+                                ) : paginatedGaji.map((g) => (
                                     <tr key={g.id} className="bg-surface hover:bg-canvas">
                                         <td className="px-6 py-4 text-center"><input type="checkbox" checked={selectedIds.includes(g.id)} onChange={() => toggleSelectId(g.id)} className="w-4 h-4 rounded border-whisper text-accent cursor-pointer" /></td>
                                         <td className="px-6 py-4">{g.tanggal} <span className="block text-xs font-mono text-steel">{g.id}</span></td>
@@ -2221,9 +2306,9 @@ function App() {
                         </table>
                     </div>
                     <div className="md:hidden flex flex-col divide-y divide-whisper/50">
-                        {filtered.length === 0 ? (
+                        {paginatedGaji.length === 0 ? (
                             <div className="text-center py-8 text-steel text-sm">Belum ada riwayat penggajian.</div>
-                        ) : filtered.map((g) => (
+                        ) : paginatedGaji.map((g) => (
                             <div key={g.id} className={`p-4 flex flex-col gap-3 ${selectedIds.includes(g.id) ? 'bg-accent/5' : 'bg-surface'}`}>
                                 <div className="flex justify-between items-start gap-3">
                                     <div className="flex items-start gap-3 min-w-0">
@@ -2249,6 +2334,14 @@ function App() {
                             </div>
                         ))}
                     </div>
+                    
+                    {totalPages > 0 && (
+                        <div className="flex justify-center items-center gap-4 p-4 border-t border-whisper/50 bg-canvas/30">
+                            <button onClick={() => setCurrentPage(p => Math.max(1, p - 1))} disabled={currentPage === 1} className="px-3 py-1.5 text-sm font-medium border border-whisper rounded-lg bg-surface hover:bg-canvas disabled:opacity-50 disabled:cursor-not-allowed text-ink">Prev</button>
+                            <span className="text-sm text-steel font-medium">Hal {currentPage} dari {totalPages}</span>
+                            <button onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))} disabled={currentPage === totalPages} className="px-3 py-1.5 text-sm font-medium border border-whisper rounded-lg bg-surface hover:bg-canvas disabled:opacity-50 disabled:cursor-not-allowed text-ink">Next</button>
+                        </div>
+                    )}
                 </div>
             </div>
         );
@@ -2325,6 +2418,11 @@ function App() {
     };
 
     const renderPencairanWarung = () => {
+        const filtered = dataPencairan;
+        const itemsPerPage = 10;
+        const totalPages = Math.ceil(filtered.length / itemsPerPage);
+        const paginatedPencairan = filtered.slice((currentPage - 1) * itemsPerPage, currentPage * itemsPerPage);
+
         return (
             <div className="space-y-6 animate-fade-in-up">
                 <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4">
@@ -2353,9 +2451,9 @@ function App() {
                             <tbody className="text-sm">
                                 {loadingPencairan ? (
                                     <tr><td colSpan="6" className="text-center py-8 text-steel">Memuat data...</td></tr>
-                                ) : dataPencairan.length === 0 ? (
+                                ) : paginatedPencairan.length === 0 ? (
                                     <tr><td colSpan="6" className="text-center py-8 text-steel">Belum ada pengajuan pencairan.</td></tr>
-                                ) : dataPencairan.map((item, idx) => (
+                                ) : paginatedPencairan.map((item, idx) => (
                                     <tr key={idx} className="border-b border-slate-50 hover:bg-slate-50 transition-colors">
                                         <td className="py-4 text-ink font-medium">{item.IDPencairan}</td>
                                         <td className="py-4 text-steel">{formatDateTimeID(new Date(item.WaktuPengajuan))}</td>
@@ -2377,6 +2475,14 @@ function App() {
                             </tbody>
                         </table>
                     </div>
+                    
+                    {totalPages > 0 && (
+                        <div className="flex justify-center items-center gap-4 p-4 border-t border-whisper/50 bg-canvas/30">
+                            <button onClick={() => setCurrentPage(p => Math.max(1, p - 1))} disabled={currentPage === 1} className="px-3 py-1.5 text-sm font-medium border border-whisper rounded-lg bg-surface hover:bg-canvas disabled:opacity-50 disabled:cursor-not-allowed text-ink">Prev</button>
+                            <span className="text-sm text-steel font-medium">Hal {currentPage} dari {totalPages}</span>
+                            <button onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))} disabled={currentPage === totalPages} className="px-3 py-1.5 text-sm font-medium border border-whisper rounded-lg bg-surface hover:bg-canvas disabled:opacity-50 disabled:cursor-not-allowed text-ink">Next</button>
+                        </div>
+                    )}
                 </div>
 
                 {/* Modal Detail Pencairan */}
@@ -2428,7 +2534,12 @@ function App() {
 
     const renderBukuKas = () => {
         const filtered = dataKas.filter(k => (k.keterangan || '').toLowerCase().includes(searchTerm.toLowerCase()) || (k.sumber || '').toLowerCase().includes(searchTerm.toLowerCase()) || (k.kategori || '').toLowerCase().includes(searchTerm.toLowerCase()));
-        const filteredIds = filtered.map(k => k.id);
+        
+        const itemsPerPage = 10;
+        const totalPages = Math.ceil(filtered.length / itemsPerPage);
+        const paginatedKas = filtered.slice((currentPage - 1) * itemsPerPage, currentPage * itemsPerPage);
+
+        const filteredIds = paginatedKas.map(k => k.id);
         const allChecked = filteredIds.length > 0 && filteredIds.every(id => selectedIds.includes(id));
         return (
             <div className="space-y-6 animate-in fade-in duration-500">
@@ -2456,9 +2567,9 @@ function App() {
                         <table className="w-full text-sm text-left">
                             <thead className="bg-canvas/60 text-steel border-b border-whisper/50"><tr><th className="px-6 py-3 w-12 text-center"><input type="checkbox" checked={allChecked} onChange={() => toggleSelectAll(filteredIds)} className="w-4 h-4 rounded border-whisper text-accent cursor-pointer" /></th><th className="px-6 py-3">Tanggal</th><th className="px-6 py-3">Tipe & Kategori</th><th className="px-6 py-3">Keterangan / Sumber</th><th className="px-6 py-3 text-right">Nominal</th><th className="px-6 py-3 text-center">Aksi</th></tr></thead>
                             <tbody className="divide-y divide-slate-100">
-                                {filtered.length === 0 ? (
+                                {paginatedKas.length === 0 ? (
                                     <tr><td colSpan="100%" className="text-center py-8 text-steel">Belum ada catatan buku kas.</td></tr>
-                                ) : filtered.map((trx) => (
+                                ) : paginatedKas.map((trx) => (
                                     <tr key={trx.id} className="bg-surface hover:bg-canvas">
                                         <td className="px-6 py-4 text-center"><input type="checkbox" checked={selectedIds.includes(trx.id)} onChange={() => toggleSelectId(trx.id)} className="w-4 h-4 rounded border-whisper text-accent cursor-pointer" /></td>
                                         <td className="px-6 py-4">{trx.tanggal}</td>
@@ -2482,9 +2593,9 @@ function App() {
                         </table>
                     </div>
                     <div className="md:hidden flex flex-col divide-y divide-whisper/50">
-                        {filtered.length === 0 ? (
+                        {paginatedKas.length === 0 ? (
                             <div className="text-center py-8 text-steel text-sm">Belum ada catatan buku kas.</div>
-                        ) : filtered.map((trx) => (
+                        ) : paginatedKas.map((trx) => (
                             <div key={trx.id} className={`p-4 flex flex-col gap-3 ${selectedIds.includes(trx.id) ? 'bg-accent/5' : 'bg-surface'}`}>
                                 <div className="flex justify-between items-start gap-3">
                                     <div className="flex items-start gap-3 min-w-0">
@@ -2517,12 +2628,24 @@ function App() {
                             </div>
                         ))}
                     </div>
+                    
+                    {totalPages > 0 && (
+                        <div className="flex justify-center items-center gap-4 p-4 border-t border-whisper/50 bg-canvas/30">
+                            <button onClick={() => setCurrentPage(p => Math.max(1, p - 1))} disabled={currentPage === 1} className="px-3 py-1.5 text-sm font-medium border border-whisper rounded-lg bg-surface hover:bg-canvas disabled:opacity-50 disabled:cursor-not-allowed text-ink">Prev</button>
+                            <span className="text-sm text-steel font-medium">Hal {currentPage} dari {totalPages}</span>
+                            <button onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))} disabled={currentPage === totalPages} className="px-3 py-1.5 text-sm font-medium border border-whisper rounded-lg bg-surface hover:bg-canvas disabled:opacity-50 disabled:cursor-not-allowed text-ink">Next</button>
+                        </div>
+                    )}
                 </div>
             </div>
         );
     };
 
     const renderLogAktivitas = () => {
+        const itemsPerPage = 10;
+        const totalPages = Math.ceil(dataLog.length / itemsPerPage);
+        const paginatedLog = dataLog.slice((currentPage - 1) * itemsPerPage, currentPage * itemsPerPage);
+
         return (
             <div className="space-y-6 animate-in fade-in duration-500">
                 <div className="flex flex-col xl:flex-row justify-between items-start xl:items-center gap-4 mb-6 w-full">
@@ -2534,7 +2657,7 @@ function App() {
                         <table className="w-full text-sm text-left">
                             <thead className="bg-canvas/60 text-steel border-b border-whisper/50"><tr><th className="px-6 py-3">Waktu</th><th className="px-6 py-3">Pengguna</th><th className="px-6 py-3 text-center">Aksi</th><th className="px-6 py-3">Modul</th><th className="px-6 py-3 w-1/2">Detail Aktivitas</th></tr></thead>
                             <tbody className="divide-y divide-slate-100">
-                                {dataLog.map((log) => (
+                                {paginatedLog.map((log) => (
                                     <tr key={log.id} className="bg-surface hover:bg-canvas transition-colors">
                                         <td className="px-6 py-3 whitespace-nowrap text-steel">{log.waktu}</td>
                                         <td className="px-6 py-3 font-medium text-ink">{log.user}</td>
@@ -2547,9 +2670,9 @@ function App() {
                         </table>
                     </div>
                     <div className="md:hidden flex flex-col divide-y divide-whisper/50">
-                        {dataLog.length === 0 ? (
+                        {paginatedLog.length === 0 ? (
                             <div className="text-center py-8 text-steel text-sm">Belum ada riwayat aktivitas.</div>
-                        ) : dataLog.map((log) => (
+                        ) : paginatedLog.map((log) => (
                             <div key={log.id} className="p-4 flex flex-col gap-2 bg-surface">
                                 <div className="flex justify-between items-start gap-3">
                                     <div className="min-w-0">
@@ -2565,6 +2688,14 @@ function App() {
                             </div>
                         ))}
                     </div>
+                    
+                    {totalPages > 0 && (
+                        <div className="flex justify-center items-center gap-4 p-4 border-t border-whisper/50 bg-canvas/30">
+                            <button onClick={() => setCurrentPage(p => Math.max(1, p - 1))} disabled={currentPage === 1} className="px-3 py-1.5 text-sm font-medium border border-whisper rounded-lg bg-surface hover:bg-canvas disabled:opacity-50 disabled:cursor-not-allowed text-ink">Prev</button>
+                            <span className="text-sm text-steel font-medium">Hal {currentPage} dari {totalPages}</span>
+                            <button onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))} disabled={currentPage === totalPages} className="px-3 py-1.5 text-sm font-medium border border-whisper rounded-lg bg-surface hover:bg-canvas disabled:opacity-50 disabled:cursor-not-allowed text-ink">Next</button>
+                        </div>
+                    )}
                 </div>
             </div>
         );
@@ -3097,6 +3228,34 @@ function App() {
                                     <p className="text-xs text-slate mt-1">Format: PNG, JPG, SVG. Maks 500KB.</p>
                                 </div>
                             </div>
+                        </div>
+                        <div className="pt-4 border-t border-whisper mt-4">
+                            <div className="flex justify-between items-center mb-2">
+                                <label className="block text-sm font-semibold text-ink">Kontak Pengurus (Pusat Bantuan)</label>
+                                <button type="button" onClick={() => setAppConfig(prev => ({ ...prev, adminContacts: [...(prev.adminContacts || []), { nama: '', phone: '' }] }))} className="text-xs font-bold text-accent hover:text-accentDark bg-accent/10 px-2 py-1 rounded">+ Tambah Kontak</button>
+                            </div>
+                            {(appConfig.adminContacts || []).map((contact, idx) => (
+                                <div key={idx} className="flex gap-2 mb-2 items-center">
+                                    <input value={contact.nama} onChange={(e) => {
+                                        const newContacts = [...(appConfig.adminContacts || [])];
+                                        newContacts[idx] = { ...newContacts[idx], nama: e.target.value };
+                                        setAppConfig(prev => ({ ...prev, adminContacts: newContacts }));
+                                    }} className={inputBase} placeholder="Nama (Misal: Ustadz Budi)" />
+                                    <input value={contact.phone} onChange={(e) => {
+                                        const newContacts = [...(appConfig.adminContacts || [])];
+                                        newContacts[idx] = { ...newContacts[idx], phone: e.target.value };
+                                        setAppConfig(prev => ({ ...prev, adminContacts: newContacts }));
+                                    }} className={inputBase} placeholder="No HP (628...)" />
+                                    <button type="button" onClick={() => {
+                                        const newContacts = (appConfig.adminContacts || []).filter((_, i) => i !== idx);
+                                        setAppConfig(prev => ({ ...prev, adminContacts: newContacts }));
+                                    }} className="p-2 text-danger hover:bg-danger/10 rounded-lg shrink-0">
+                                        <Trash2 className="w-4 h-4" />
+                                    </button>
+                                </div>
+                            ))}
+                            {(appConfig.adminContacts || []).length === 0 && <p className="text-xs text-slate italic mb-2">Belum ada kontak. Klik Tambah Kontak.</p>}
+                            <p className="text-xs text-slate mt-1">Daftar kontak ini akan ditampilkan di menu Pusat Bantuan pada Portal Wali.</p>
                         </div>
                         <div className="pt-4 border-t border-whisper mt-4">
                             <h3 className="text-sm font-semibold text-ink mb-3">Integrasi Pakasir (Global)</h3>
