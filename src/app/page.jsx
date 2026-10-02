@@ -1566,8 +1566,10 @@ function App() {
                             nama: String(cells[1] || '').trim(),
                             kelas: String(cells[2] || '').trim(),
                             periode: String(cells[3] || '').trim(),
-                            status: 'Aktif', diskonKhusus: {},
-                            password: String(cells[4] || '123456').trim()
+                            status: String(cells[4] || 'Aktif').trim(), 
+                            diskonKhusus: {},
+                            password: Math.floor(1000 + Math.random() * 9000).toString(),
+                            pin: Math.floor(1000 + Math.random() * 9000).toString()
                         });
                     } else {
                         newData.push({
@@ -1576,7 +1578,7 @@ function App() {
                             nama: String(cells[1] || '').trim(),
                             jabatan: String(cells[2] || '').trim(),
                             gajiPokok: parseInt(String(cells[3] || '').replace(/\D/g, ''), 10) || 0,
-                            password: String(cells[4] || '123456').trim()
+                            password: Math.floor(1000 + Math.random() * 9000).toString()
                         });
                     }
                 }
