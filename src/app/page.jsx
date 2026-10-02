@@ -860,7 +860,7 @@ function App() {
                 const res = await fetch('/api/pakasir', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ action: 'pollPakasirStatus', data: { slug, amount: formData.sisa, orderId: formData.id, apiKey } })
+                    body: JSON.stringify({ action: 'pollPakasirStatus', data: { slug, txnId: pakasirData.txnId, apiKey } })
                 });
                 data = await res.json();
 
@@ -937,9 +937,9 @@ function App() {
                 const isSandboxApi = strData.includes('"sandbox"') || strData.includes('sandbox.pakasir.com') || String(qrStr).toUpperCase().includes('SANDBOX') || String(checkoutUrl).toUpperCase().includes('SANDBOX') || String(qrStr) === '123123123';
 
                 console.log("IS SANDBOX:", isSandboxApi, "qrString:", qrStr, "checkout_url:", checkoutUrl);
-                // We pass uniqueOrderId as txId or orderId if needed. In Admin, they use formData.id for state, but we should probably just keep it as is.
+                const txnId = paymentData.txn_id || data.txn_id || '';
                 setPakasirTimeLeft(900);
-                setPakasirData(prev => ({ ...prev, loading: false, step: isQris ? 'SHOW_QR' : 'SHOW_VA', qrString: qrStr, checkoutUrl: checkoutUrl, isSandbox: isSandboxApi }));
+                setPakasirData(prev => ({ ...prev, loading: false, step: isQris ? 'SHOW_QR' : 'SHOW_VA', qrString: qrStr, checkoutUrl: checkoutUrl, isSandbox: isSandboxApi, txnId: txnId }));
                 addLog('INTEGRATION', 'PAKASIR API', `Berhasil request ${method} untuk ${uniqueOrderId}${isSandboxApi ? ' (Sandbox)' : ''}`);
             } else {
                 console.error('Pakasir API Response Gagal:', JSON.stringify(data, null, 2));
@@ -1061,7 +1061,7 @@ function App() {
             const res = await fetch('/api/pakasir', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ action: 'pollPakasirStatus', data: { slug, amount: formData.sisa, orderId: formData.id, apiKey } })
+                body: JSON.stringify({ action: 'pollPakasirStatus', data: { slug, txnId: pakasirData.txnId, apiKey } })
             });
             data = await res.json();
 
