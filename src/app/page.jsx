@@ -31,12 +31,25 @@ async function supabaseSaveTableData(tableName, dataArr) {
         return cleaned;
     });
 
+    let finalData = cleanData;
+    if (tableName === 'Data Santri') {
+        const seen = new Set();
+        finalData = cleanData.map(item => {
+            if (!item.nis || item.nis.trim() === '') item.nis = 'AUTO-' + Math.floor(Math.random() * 90000);
+            return item;
+        }).filter(item => {
+            if (seen.has(item.nis)) return false;
+            seen.add(item.nis);
+            return true;
+        });
+    }
+
     const fullReplaceTables = ['MasterPeriode', 'MasterJabatan', 'MasterKelas', 'MasterTagihan', 'KategoriKas', 'MasterConfig', 'MasterRoleAccess', 'Data Pegawai', 'Data Santri'];
     if (fullReplaceTables.includes(tableName)) {
-        const dummyCol = Object.keys(cleanData[0] || {})[0];
+        const dummyCol = Object.keys(finalData[0] || {})[0];
         if (dummyCol) {
             await supabase.from(tableName).delete().not(dummyCol, 'is', null);
-            const { error } = await supabase.from(tableName).insert(cleanData);
+            const { error } = await supabase.from(tableName).insert(finalData);
             if (error) return { success: false, message: error.message };
         }
         return { success: true };
