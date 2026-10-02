@@ -31,7 +31,7 @@ async function supabaseSaveTableData(tableName, dataArr) {
         return cleaned;
     });
 
-    const fullReplaceTables = ['MasterPeriode', 'MasterJabatan', 'MasterKelas', 'MasterTagihan', 'KategoriKas', 'MasterConfig', 'MasterRoleAccess'];
+    const fullReplaceTables = ['MasterPeriode', 'MasterJabatan', 'MasterKelas', 'MasterTagihan', 'KategoriKas', 'MasterConfig', 'MasterRoleAccess', 'Data Pegawai'];
     if (fullReplaceTables.includes(tableName)) {
         const dummyCol = Object.keys(cleanData[0] || {})[0];
         if (dummyCol) {
