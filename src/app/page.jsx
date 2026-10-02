@@ -817,6 +817,7 @@ function App() {
         if (confirmDialog.type === 'MASTER_KELAS') setMasterKelasList(prev => prev.filter(k => k !== confirmDialog.id));
         if (confirmDialog.type === 'MASTER_TAGIHAN') setMasterTagihanList(prev => prev.filter(t => t.tagihan !== confirmDialog.id));
         if (confirmDialog.type === 'MASTER_JABATAN') setMasterJabatanList(prev => prev.filter(j => j !== confirmDialog.id));
+        if (confirmDialog.type === 'LOG') setDataLog(prev => prev.filter(l => l.id !== confirmDialog.id));
 
         addLog('DELETE', confirmDialog.type.replace('_', ' '), `Menghapus data: ${deletedName}`);
         showNotification('Data berhasil dihapus!');
@@ -1508,6 +1509,15 @@ function App() {
         setDataGaji(prev => [{ id: `GJ-${Date.now()}`, tanggal: new Date().toISOString().split('T')[0], nip: formData.nip, nama: p.nama, periode: `${formData.bulan} ${formData.tahun}`, gajiPokok: gapok, tunjangan: tj, potongan: pt, totalBersih: total }, ...prev]);
         addLog('CREATE', 'GAJI', `Gaji ${p.nama} Rp ${total.toLocaleString('id-ID')} - ${formData.bulan} ${formData.tahun}`);
         showNotification(`Gaji Rp ${total.toLocaleString('id-ID')} dicatat!`); closeModal();
+    };
+
+    const submitLog = (e) => {
+        e.preventDefault();
+        if (!formData.detail) return showNotification("Detail log wajib diisi", "error");
+        setDataLog(prev => prev.map(l => l.id === formData.id ? { ...l, aksi: formData.aksi, modul: formData.modul, detail: formData.detail } : l));
+        addLog('UPDATE', 'LOG AKTIVITAS', `Mengubah log aktivitas ${formData.id}`);
+        showNotification("Log berhasil diubah!");
+        closeModal();
     };
 
     const handleImportCSV = (e, type) => {
@@ -2658,7 +2668,7 @@ function App() {
                 <div className="bg-surface border border-whisper shadow-sm rounded-card overflow-hidden">
                     <div className="overflow-x-auto hidden md:block">
                         <table className="w-full text-sm text-left">
-                            <thead className="bg-canvas/60 text-steel border-b border-whisper/50"><tr><th className="px-6 py-3">Waktu</th><th className="px-6 py-3">Pengguna</th><th className="px-6 py-3 text-center">Aksi</th><th className="px-6 py-3">Modul</th><th className="px-6 py-3 w-1/2">Detail Aktivitas</th></tr></thead>
+                            <thead className="bg-canvas/60 text-steel border-b border-whisper/50"><tr><th className="px-6 py-3">Waktu</th><th className="px-6 py-3">Pengguna</th><th className="px-6 py-3 text-center">Aksi</th><th className="px-6 py-3">Modul</th><th className="px-6 py-3 w-1/2">Detail Aktivitas</th>{currentUser?.role === 'superadmin' && <th className="px-6 py-3 text-center">Tindakan</th>}</tr></thead>
                             <tbody className="divide-y divide-slate-100">
                                 {paginatedLog.map((log) => (
                                     <tr key={log.id} className="bg-surface hover:bg-canvas transition-colors">
@@ -2667,6 +2677,14 @@ function App() {
                                         <td className="px-6 py-3 text-center"><span className={`inline-flex px-2 py-0.5 text-[10px] font-bold rounded uppercase ${log.aksi === 'CREATE' ? 'bg-pale-green text-pale-greenText' : log.aksi === 'UPDATE' ? 'bg-blue-100 text-blue-700' : log.aksi === 'DELETE' ? 'bg-pale-red text-pale-redText' : log.aksi === 'INTEGRATION' ? 'bg-purple-100 text-purple-700' : 'bg-canvas text-steel'}`}>{log.aksi}</span></td>
                                         <td className="px-6 py-3 font-semibold text-steel">{log.modul}</td>
                                         <td className="px-6 py-3 text-steel">{log.detail}</td>
+                                        {currentUser?.role === 'superadmin' && (
+                                            <td className="px-6 py-3 text-center">
+                                                <div className="flex items-center justify-center gap-2">
+                                                    <button onClick={() => { setFormData(log); setModalType('FORM_LOG'); }} className="p-1.5 text-accent bg-accent/10 hover:bg-accent/20 rounded-lg"><Edit className="w-4 h-4" /></button>
+                                                    <button onClick={() => confirmDelete('LOG', log.id, 'Log Aktivitas ini')} className="p-1.5 text-danger bg-dangerBg hover:bg-red-100 rounded-lg"><Trash2 className="w-4 h-4" /></button>
+                                                </div>
+                                            </td>
+                                        )}
                                     </tr>
                                 ))}
                             </tbody>
@@ -2688,6 +2706,12 @@ function App() {
                                     <div className="text-[10px] font-bold text-steel uppercase tracking-wider mb-0.5">{log.modul}</div>
                                     <div className="text-sm text-ink leading-snug">{log.detail}</div>
                                 </div>
+                                {currentUser?.role === 'superadmin' && (
+                                    <div className="flex justify-end gap-2 mt-2 pt-2 border-t border-whisper/50">
+                                        <button onClick={() => { setFormData(log); setModalType('FORM_LOG'); }} className="text-accent hover:text-accentDark flex items-center gap-1 text-xs"><Edit className="w-3 h-3" /> Edit</button>
+                                        <button onClick={() => confirmDelete('LOG', log.id, 'Log Aktivitas ini')} className="text-danger hover:text-red-700 flex items-center gap-1 text-xs"><Trash2 className="w-3 h-3" /> Hapus</button>
+                                    </div>
+                                )}
                             </div>
                         ))}
                     </div>
@@ -2706,6 +2730,34 @@ function App() {
 
     const renderModals = () => {
         if (!modalType) return null;
+        if (modalType === 'FORM_LOG') {
+            return (
+                <FormWrapper title="Edit Log Aktivitas" onClose={closeModal} onSubmit={submitLog}>
+                    <div className="space-y-4">
+                        <div>
+                            <label className="block text-sm font-semibold text-ink mb-1.5">Aksi</label>
+                            <select value={formData.aksi || ''} onChange={e => setFormData({ ...formData, aksi: e.target.value })} className={inputBase} required>
+                                <option value="">Pilih Aksi</option>
+                                <option value="CREATE">CREATE</option>
+                                <option value="UPDATE">UPDATE</option>
+                                <option value="DELETE">DELETE</option>
+                                <option value="INTEGRATION">INTEGRATION</option>
+                                <option value="LOGIN">LOGIN</option>
+                                <option value="LOGOUT">LOGOUT</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label className="block text-sm font-semibold text-ink mb-1.5">Modul</label>
+                            <input type="text" value={formData.modul || ''} onChange={e => setFormData({ ...formData, modul: e.target.value })} className={inputBase} required />
+                        </div>
+                        <div>
+                            <label className="block text-sm font-semibold text-ink mb-1.5">Detail Aktivitas</label>
+                            <textarea value={formData.detail || ''} onChange={e => setFormData({ ...formData, detail: e.target.value })} className={`${inputBase} min-h-[100px] resize-y`} required />
+                        </div>
+                    </div>
+                </FormWrapper>
+            );
+        }
         if (modalType === 'FORM_PAKASIR') {
             const tRef = dataTagihan.find(t => t.id === formData.id);
             const targetTagihanName = (tRef ? tRef.tagihan : formData.tagihan) || '';
