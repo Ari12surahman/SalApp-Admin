@@ -735,8 +735,9 @@ function App() {
                 setDataTagihan(prev => {
                     let updatedTags = [...prev];
                     deletedTxs.forEach(deletedTrx => {
-                        const itemsToReverse = deletedTrx.items && deletedTrx.items.length > 0 
-                                               ? deletedTrx.items 
+                        const parsedItems = typeof deletedTrx.items === 'string' ? JSON.parse(deletedTrx.items) : deletedTrx.items;
+                        const itemsToReverse = parsedItems && parsedItems.length > 0 
+                                               ? parsedItems 
                                                : [{ tagihan: deletedTrx.tagihan, periode: deletedTrx.periode, nominal: deletedTrx.nominal }];
                         itemsToReverse.forEach(item => {
                             const idx = updatedTags.findIndex(t => String(t.nis).replace(/^0+/, '') === String(deletedTrx.nis).replace(/^0+/, '') && String(t.tagihan).toLowerCase().trim() === String(item.tagihan).toLowerCase().trim() && formatPeriodeStr(t.periode).toLowerCase().trim() === formatPeriodeStr(item.periode).toLowerCase().trim());
@@ -791,8 +792,9 @@ function App() {
             if (deletedTrx) {
                 setDataTagihan(prev => {
                     const updatedTags = [...prev];
-                    const itemsToReverse = deletedTrx.items && deletedTrx.items.length > 0 
-                                           ? deletedTrx.items 
+                    const parsedItems = typeof deletedTrx.items === 'string' ? JSON.parse(deletedTrx.items) : deletedTrx.items;
+                    const itemsToReverse = parsedItems && parsedItems.length > 0 
+                                           ? parsedItems 
                                            : [{ tagihan: deletedTrx.tagihan, periode: deletedTrx.periode, nominal: deletedTrx.nominal }];
                     itemsToReverse.forEach(item => {
                         const idx = updatedTags.findIndex(t => String(t.nis).replace(/^0+/, '') === String(deletedTrx.nis).replace(/^0+/, '') && String(t.tagihan).toLowerCase().trim() === String(item.tagihan).toLowerCase().trim() && formatPeriodeStr(t.periode).toLowerCase().trim() === formatPeriodeStr(item.periode).toLowerCase().trim());
@@ -985,7 +987,8 @@ function App() {
                         setDataTagihan(prevTags => {
                             const upTags = [...prevTags];
                             const cleanedNis = String(invRef.nis).replace(/^0+/, '');
-                            const itemsToProcess = invRef.items && invRef.items.length > 0 ? invRef.items : [{ tagihan: invRef.tagihan.replace(' (Via QRIS)', ''), periode: invRef.periode, nominal: invRef.nominal }];
+                            const parsedInvItems = typeof invRef.items === 'string' ? JSON.parse(invRef.items) : invRef.items;
+                            const itemsToProcess = parsedInvItems && parsedInvItems.length > 0 ? parsedInvItems : [{ tagihan: invRef.tagihan.replace(' (Via QRIS)', ''), periode: invRef.periode, nominal: invRef.nominal }];
 
                             itemsToProcess.forEach(item => {
                                 const cleanTagihan = String(item.tagihan).replace(' (Via QRIS)', '').toLowerCase().trim();
