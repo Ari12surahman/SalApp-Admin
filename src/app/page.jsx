@@ -1423,7 +1423,7 @@ function App() {
             addLog('UPDATE', 'SANTRI', `Memperbarui data: ${formData.nama}`);
             showNotification('Data Santri diperbarui!');
         } else {
-            const newSantri = { id: Date.now(), nis: targetNis, nama: formData.nama, kelas: formData.kelas, periode: formData.periode, status: 'Aktif', diskonKhusus: formData.diskonKhusus || {}, password: formData.password, uid: formData.uid || '', pin: formData.pin || '' };
+            const newSantri = { id: Math.floor(Math.random() * 8000000) + Date.now() % 1000, nis: targetNis, nama: formData.nama, kelas: formData.kelas, periode: formData.periode, status: 'Aktif', diskonKhusus: formData.diskonKhusus || {}, password: formData.password, uid: formData.uid || '', pin: formData.pin || '' };
             setDataSantri(prev => [...prev, newSantri]);
             addLog('CREATE', 'SANTRI', `Menambahkan santri: ${formData.nama} (NIS: ${newSantri.nis})`);
             showNotification('Santri ditambahkan!');
@@ -1442,7 +1442,7 @@ function App() {
             addLog('UPDATE', 'PEGAWAI', `Memperbarui data: ${formData.nama}`);
             showNotification('Data Pegawai diperbarui!');
         } else {
-            const newPegawai = { id: Date.now(), nip: targetNip, nama: formData.nama, jabatan: formData.jabatan, gajiPokok: parseInt(String(formData.gajiPokok).replace(/\D/g, ''), 10) || 0, password: formData.password };
+            const newPegawai = { id: Math.floor(Math.random() * 8000000) + Date.now() % 1000, nip: targetNip, nama: formData.nama, jabatan: formData.jabatan, gajiPokok: parseInt(String(formData.gajiPokok).replace(/\D/g, ''), 10) || 0, password: formData.password };
             setDataPegawai(prev => [...prev, newPegawai]);
             addLog('CREATE', 'PEGAWAI', `Menambahkan pegawai: ${formData.nama} (NIP: ${newPegawai.nip})`);
             showNotification('Pegawai ditambahkan!');
@@ -1548,7 +1548,7 @@ function App() {
 
                     if (type === 'santri') {
                         newData.push({
-                            id: Date.now() + i,
+                            id: Math.floor(Math.random() * 8000000) + i,
                             nis: String(cells[0] || '').trim(),
                             nama: String(cells[1] || '').trim(),
                             kelas: String(cells[2] || '').trim(),
@@ -1558,7 +1558,7 @@ function App() {
                         });
                     } else {
                         newData.push({
-                            id: Date.now() + i,
+                            id: Math.floor(Math.random() * 8000000) + i,
                             nip: String(cells[0] || '').trim(),
                             nama: String(cells[1] || '').trim(),
                             jabatan: String(cells[2] || '').trim(),
