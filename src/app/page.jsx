@@ -1762,7 +1762,7 @@ function App() {
                 <div className="flex flex-col xl:flex-row justify-between items-start xl:items-center gap-4 mb-6 w-full">
                     <div className="flex-1 min-w-0 pr-4"><h2 className="text-2xl font-bold tracking-tight text-ink">Data Santri</h2><p className="text-sm text-steel mt-1">Kelola master santri dan diskon khusus.</p></div>
                     <div className="grid grid-cols-2 sm:flex sm:flex-wrap sm:justify-start xl:justify-end gap-3 w-full xl:w-auto">
-                        <button onClick={() => { setFormData({ diskonKhusus: {} }); setModalType('FORM_SANTRI'); }} className={btnPrimary}><Plus className="w-4 h-4" /> Tambah Santri</button>
+                        <button onClick={() => { setFormData({ diskonKhusus: {}, nis: Math.floor(1000 + Math.random() * 9000).toString(), password: Math.floor(1000 + Math.random() * 9000).toString() }); setModalType('FORM_SANTRI'); }} className={btnPrimary}><Plus className="w-4 h-4" /> Tambah Santri</button>
                         <button onClick={() => { setFormData({ type: 'santri' }); setModalType('IMPORT_CSV'); }} className={btnOutline}><DownloadCloud className="w-4 h-4" /> Import</button>
                         <div className="relative group flex w-full sm:w-auto shrink-0">
                             <button className="bg-purple-600 hover:bg-purple-700 text-white rounded-xl px-4 py-2.5 font-semibold flex items-center justify-center w-full sm:w-auto gap-2 text-sm shadow-sm"><Activity className="w-4 h-4" /> Naik Kelas ▾</button>
@@ -1861,7 +1861,7 @@ function App() {
                 <div className="flex flex-col xl:flex-row justify-between items-start xl:items-center gap-4 mb-6 w-full">
                     <div className="flex-1 min-w-0 pr-4"><h2 className="text-2xl font-bold tracking-tight text-ink">Data Pegawai</h2><p className="text-sm text-steel mt-1">Kelola Ustadz & Karyawan.</p></div>
                     <div className="grid grid-cols-2 sm:flex sm:flex-wrap sm:justify-start xl:justify-end gap-3 w-full xl:w-auto">
-                        <button onClick={() => { setFormData({}); setModalType('FORM_PEGAWAI'); }} className={btnPrimary}><Plus className="w-4 h-4" /> Tambah Pegawai</button>
+                        <button onClick={() => { setFormData({ nip: Math.floor(1000 + Math.random() * 9000).toString(), password: Math.floor(1000 + Math.random() * 9000).toString() }); setModalType('FORM_PEGAWAI'); }} className={btnPrimary}><Plus className="w-4 h-4" /> Tambah Pegawai</button>
                         <button onClick={() => { setFormData({ type: 'pegawai' }); setModalType('IMPORT_CSV'); }} className={btnOutline}><DownloadCloud className="w-4 h-4" /> Import</button>
                         <button onClick={() => downloadStyledExcel('Data Pegawai', ['NIP', 'Nama', 'Jabatan', 'Gaji Pokok'], dataPegawai.map(p => [p.nip, p.nama, p.jabatan, p.gajiPokok]), 'Data_Pegawai')} className={btnOutline}><FileSpreadsheet className="w-4 h-4 text-accent" /> Unduh</button>
                     </div>
