@@ -1439,7 +1439,11 @@ function App() {
             const selectedB = formData.selectedBulan || [];
             if (selectedTags.length === 0 || selectedB.length === 0) return showNotification('Pilih minimal 1 jenis tagihan dan 1 bulan!');
 
-            let targetSantri = formData.targetType === 'Kelas' ? dataSantri.filter(s => (formData.selectedKelas || []).includes(s.kelas)) : formData.targetType === 'Santri' ? dataSantri.filter(s => (formData.selectedSantri || []).includes(s.nis)) : dataSantri;
+            let targetSantri = formData.targetType === 'Kelas' 
+                ? dataSantri.filter(s => (formData.selectedKelas || []).includes(s.kelas)) 
+                : formData.targetType === 'Santri' 
+                    ? dataSantri.filter(s => (formData.selectedSantri || []).some(id => String(id) === String(s.nis))) 
+                    : dataSantri;
             
             if (targetSantri.length === 0) return showNotification('Harap cari dan pilih Santri terlebih dahulu!');
 
