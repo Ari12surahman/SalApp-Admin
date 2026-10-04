@@ -1440,12 +1440,11 @@ function App() {
             if (selectedTags.length === 0 || selectedB.length === 0) return showNotification('Pilih minimal 1 jenis tagihan dan 1 bulan!');
 
             let targetSantri = formData.targetType === 'Kelas' 
-                ? dataSantri.filter(s => (formData.selectedKelas || []).includes(s.kelas)) 
+                ? dataSantri.filter(s => (formData.selectedKelas || []).some(k => String(k).trim().toLowerCase() === String(s.kelas).trim().toLowerCase())) 
                 : formData.targetType === 'Santri' 
                     ? dataSantri.filter(s => (formData.selectedSantri || []).some(id => String(id) === String(s.nis))) 
                     : dataSantri;
-            
-            if (targetSantri.length === 0) return showNotification('Harap cari dan pilih Santri terlebih dahulu!');
+            if (targetSantri.length === 0) return showNotification(formData.targetType === 'Kelas' ? 'Tidak ada santri di kelas yang dipilih!' : 'Harap cari dan pilih Santri terlebih dahulu!');
 
             const newTags = [];
             targetSantri.forEach(santriTerpilih => {
