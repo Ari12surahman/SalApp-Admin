@@ -572,10 +572,11 @@ function App() {
                 console.log("[Supabase Real-time] Tagihan berubah, memuat ulang data Tagihan...");
                 const { data } = await supabase.from('Tagihan').select('*');
                 if (data) {
-                    const serverStr = JSON.stringify(data.reverse());
+                    const sortedData = sortSupabaseData('Tagihan', data);
+                    const serverStr = JSON.stringify(sortedData);
                     if (!window['_pending_Tagihan'] && (!window['lastWrite_Tagihan'] || Date.now() - window['lastWrite_Tagihan'] >= 30000)) {
                         window['lastSync_Tagihan'] = serverStr;
-                        setDataTagihan(data);
+                        setDataTagihan(sortedData);
                     }
                 }
             })
@@ -975,72 +976,81 @@ function App() {
                 return updated;
             });
         } else if (formData.id.startsWith('INV-')) {
-            setDataPembayaran(prev => {
-                const updated = [...prev];
-                const idx = updated.findIndex(p => p.id === formData.id);
-                if (idx > -1) {
-                    const invRef = updated[idx];
-                    updated[idx] = { ...invRef, status: 'Lunas', sisa: 0, tagihan: invRef.tagihan + ' (Via QRIS)' };
-                    if (invRef.linkedTagihans?.length > 0) {
-                        setDataTagihan(prevTags => {
-                            const upTags = [...prevTags];
-                            invRef.linkedTagihans.forEach(tid => {
-                                const tagIndex = upTags.findIndex(t => t.id === tid);
-                                if (tagIndex > -1) {
-                                    const t = upTags[tagIndex];
-                                    if (invRef.linkedTagihans.length === 1) {
-                                        const totalTerbayarBaru = (t.terbayar || 0) + invRef.nominal;
-                                        const statusTrx = totalTerbayarBaru < t.nominal ? 'Cicil' : 'Lunas';
-                                        upTags[tagIndex] = { ...t, status: statusTrx, terbayar: totalTerbayarBaru };
-                                    } else { upTags[tagIndex] = { ...t, status: 'Lunas', terbayar: t.nominal }; }
-                                }
-                            });
-                            return upTags;
-                        });
-                    } else {
-                        setDataTagihan(prevTags => {
-                            const upTags = [...prevTags];
-                            const cleanedNis = String(invRef.nis).replace(/^0+/, '');
-                            const parsedInvItems = typeof invRef.items === 'string' ? JSON.parse(invRef.items) : invRef.items;
-                            const itemsToProcess = parsedInvItems && parsedInvItems.length > 0 ? parsedInvItems : [{ tagihan: invRef.tagihan.replace(' (Via QRIS)', ''), periode: invRef.periode, nominal: invRef.nominal }];
-
-                            itemsToProcess.forEach(item => {
-                                const cleanTagihan = String(item.tagihan).replace(' (Via QRIS)', '').toLowerCase().trim();
-                                const cleanPeriode = formatPeriodeStr(item.periode).toLowerCase().trim();
-
-                                const tagIndex = upTags.findIndex(t =>
-                                    String(t.nis).replace(/^0+/, '') === cleanedNis &&
-                                    String(t.tagihan).toLowerCase().trim() === cleanTagihan &&
-                                    formatPeriodeStr(t.periode).toLowerCase().trim() === cleanPeriode
-                                );
-
-                                if (tagIndex > -1) {
-                                    const t = upTags[tagIndex];
-                                    const currentTerbayar = (t.terbayar || 0) + item.nominal;
-                                    const statusTrx = currentTerbayar >= t.nominal ? 'Lunas' : 'Cicil';
-                                    upTags[tagIndex] = { ...t, status: statusTrx, terbayar: currentTerbayar };
-                                } else {
-                                    upTags.unshift({
-                                        id: generateInvoiceId(item.tagihan, upTags),
-                                        tanggal: invRef.tanggal,
-                                        nis: invRef.nis,
-                                        nama: invRef.nama,
-                                        tagihan: item.tagihan.replace(' (Via QRIS)', ''),
-                                        periode: item.periode,
-                                        nominalAwal: item.nominal,
-                                        diskon: 0,
-                                        nominal: item.nominal,
-                                        terbayar: item.nominal,
-                                        status: 'Lunas'
-                                    });
-                                }
-                            });
-                            return upTags;
-                        });
+            let invRef = formData.pendingTrx;
+            if (invRef) {
+                invRef = { ...invRef, status: 'Lunas', sisa: 0, tagihan: invRef.tagihan + ' (Via QRIS)' };
+                setDataPembayaran(prev => [invRef, ...prev]);
+            } else {
+                setDataPembayaran(prev => {
+                    const updated = [...prev];
+                    const idx = updated.findIndex(p => p.id === formData.id);
+                    if (idx > -1) {
+                        invRef = updated[idx];
+                        updated[idx] = { ...invRef, status: 'Lunas', sisa: 0, tagihan: invRef.tagihan + ' (Via QRIS)' };
                     }
+                    return updated;
+                });
+            }
+
+            if (invRef) {
+                if (invRef.linkedTagihans?.length > 0) {
+                    setDataTagihan(prevTags => {
+                        const upTags = [...prevTags];
+                        invRef.linkedTagihans.forEach(tid => {
+                            const tagIndex = upTags.findIndex(t => t.id === tid);
+                            if (tagIndex > -1) {
+                                const t = upTags[tagIndex];
+                                if (invRef.linkedTagihans.length === 1) {
+                                    const totalTerbayarBaru = (t.terbayar || 0) + invRef.nominal;
+                                    const statusTrx = totalTerbayarBaru < t.nominal ? 'Cicil' : 'Lunas';
+                                    upTags[tagIndex] = { ...t, status: statusTrx, terbayar: totalTerbayarBaru };
+                                } else { upTags[tagIndex] = { ...t, status: 'Lunas', terbayar: t.nominal }; }
+                            }
+                        });
+                        return upTags;
+                    });
+                } else {
+                    setDataTagihan(prevTags => {
+                        const upTags = [...prevTags];
+                        const cleanedNis = String(invRef.nis).replace(/^0+/, '');
+                        const parsedInvItems = typeof invRef.items === 'string' ? JSON.parse(invRef.items) : invRef.items;
+                        const itemsToProcess = parsedInvItems && parsedInvItems.length > 0 ? parsedInvItems : [{ tagihan: invRef.tagihan.replace(' (Via QRIS)', ''), periode: invRef.periode, nominal: invRef.nominal }];
+
+                        itemsToProcess.forEach(item => {
+                            const cleanTagihan = String(item.tagihan).replace(' (Via QRIS)', '').toLowerCase().trim();
+                            const cleanPeriode = formatPeriodeStr(item.periode).toLowerCase().trim();
+
+                            const tagIndex = upTags.findIndex(t =>
+                                String(t.nis).replace(/^0+/, '') === cleanedNis &&
+                                String(t.tagihan).toLowerCase().trim() === cleanTagihan &&
+                                formatPeriodeStr(t.periode).toLowerCase().trim() === cleanPeriode
+                            );
+
+                            if (tagIndex > -1) {
+                                const t = upTags[tagIndex];
+                                const currentTerbayar = (t.terbayar || 0) + item.nominal;
+                                const statusTrx = currentTerbayar >= t.nominal ? 'Lunas' : 'Cicil';
+                                upTags[tagIndex] = { ...t, status: statusTrx, terbayar: currentTerbayar };
+                            } else {
+                                upTags.unshift({
+                                    id: generateInvoiceId(item.tagihan, upTags),
+                                    tanggal: invRef.tanggal,
+                                    nis: invRef.nis,
+                                    nama: invRef.nama,
+                                    tagihan: item.tagihan.replace(' (Via QRIS)', ''),
+                                    periode: item.periode,
+                                    nominalAwal: item.nominal,
+                                    diskon: 0,
+                                    nominal: item.nominal,
+                                    terbayar: item.nominal,
+                                    status: 'Lunas'
+                                });
+                            }
+                        });
+                        return upTags;
+                    });
                 }
-                return updated;
-            });
+            }
         }
         addLog('CREATE', 'PAKASIR AUTO', `Konfirmasi otomatis QRIS Lunas`);
         showNotification("Sistem: Pembayaran Pakasir Terkonfirmasi LUNAS!");
@@ -1170,9 +1180,9 @@ function App() {
 
         if (!nominalAngka || nominalAngka <= 0) return showNotification("Nominal tidak valid!");
         const newTrx = { id: tempId, tanggal: new Date().toISOString().split('T')[0], nis: santriTerpilih.nis, nama: santriTerpilih.nama, tagihan: tagihanNames, periode: pInvoiceStr, nominal: nominalAngka, status: 'Pending', sisa: nominalAngka, linkedTagihans: linkedIds, items: itemsToPay };
-        setDataPembayaran(prev => [newTrx, ...prev]);
-
-        setFormData({ ...formData, id: tempId, nama: santriTerpilih.nama, tagihan: tagihanNames, sisa: nominalAngka });
+        // JANGAN masukan ke state dataPembayaran sekarang agar tidak muncul pending yang nyangkut.
+        
+        setFormData({ ...formData, id: tempId, nama: santriTerpilih.nama, tagihan: tagihanNames, sisa: nominalAngka, pendingTrx: newTrx });
         setPakasirData({ step: 'CHOOSE_METHOD', method: '', qrString: null, loading: false, url: '', isPaid: false, checkoutUrl: '' });
         setModalType('FORM_PAKASIR');
     };
@@ -1183,7 +1193,30 @@ function App() {
 
         if (formData.id && formData.id.startsWith('INV')) {
             let nominalAngka = parseInt(String(formData.nominal || '').replace(/\D/g, ''), 10);
-            setDataPembayaran(prev => prev.map(p => p.id === formData.id ? { ...p, nominal: nominalAngka, periode: periodeStr } : p));
+            
+            const oldTrx = dataPembayaran.find(p => p.id === formData.id);
+            if (oldTrx) {
+                const selisih = nominalAngka - oldTrx.nominal;
+                const targetTgh = dataTagihan.find(t => String(t.nis).replace(/^0+/,'') === String(oldTrx.nis).replace(/^0+/,'') && String(t.tagihan).toLowerCase().trim() === String(oldTrx.tagihan).toLowerCase().trim() && t.periode === oldTrx.periode);
+                
+                let newStatusTrx = oldTrx.status;
+                let newSisa = oldTrx.sisa;
+
+                if (targetTgh) {
+                    const newTerbayar = Math.max(0, (targetTgh.terbayar || 0) + selisih);
+                    const tagihanStatus = newTerbayar >= targetTgh.nominal ? 'Lunas' : newTerbayar > 0 ? 'Cicil' : 'Belum Lunas';
+                    newStatusTrx = tagihanStatus === 'Lunas' ? 'Lunas' : 'Cicilan';
+                    newSisa = Math.max(0, targetTgh.nominal - newTerbayar);
+                    
+                    setDataTagihan(prev => prev.map(t => t.id === targetTgh.id ? { ...t, terbayar: newTerbayar, status: tagihanStatus } : t));
+                } else {
+                    if (nominalAngka < oldTrx.nominal) newStatusTrx = 'Cicilan';
+                }
+                
+                setDataPembayaran(prev => prev.map(p => p.id === formData.id ? { ...p, nominal: nominalAngka, periode: periodeStr, status: newStatusTrx, sisa: newSisa } : p));
+            } else {
+                setDataPembayaran(prev => prev.map(p => p.id === formData.id ? { ...p, nominal: nominalAngka, periode: periodeStr } : p));
+            }
             showNotification(`Transaksi diperbarui!`); closeModal(); return;
         }
 
@@ -1954,7 +1987,7 @@ function App() {
     };
 
     const renderTagihan = () => {
-        const filtered = dataTagihan.filter(t => (t.nama || '').toLowerCase().includes(searchTerm.toLowerCase()) || String(t.nis || '').includes(searchTerm));
+        const filtered = dataTagihan.filter(t => String(t.status || '').trim().toLowerCase() !== 'lunas' && ((t.nama || '').toLowerCase().includes(searchTerm.toLowerCase()) || String(t.nis || '').includes(searchTerm)));
         
         const itemsPerPage = 10;
         const totalPages = Math.ceil(filtered.length / itemsPerPage);
