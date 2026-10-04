@@ -3346,8 +3346,24 @@ function App() {
             reader.readAsDataURL(file);
         };
 
-        const handleSaveBranding = (e) => {
+        const handleSaveBranding = async (e) => {
             e.preventDefault();
+            
+            // Simpan ke MasterConfig
+            const configEntries = Object.entries(appConfig).map(([kunci, nilai]) => ({
+                kunci,
+                nilai: typeof nilai === 'object' ? JSON.stringify(nilai) : String(nilai)
+            }));
+            await supabase.from('MasterConfig').upsert(configEntries, { onConflict: 'kunci' });
+            
+            // Sinkronisasi ke tabel Pengaturan untuk Portal
+            if (appConfig.pakasirSlug) {
+                await supabase.from('Pengaturan').upsert({ Kunci: 'PAKASIR_DOMAIN', Nilai: appConfig.pakasirSlug }, { onConflict: 'Kunci' });
+            }
+            if (appConfig.pakasirApiKey) {
+                await supabase.from('Pengaturan').upsert({ Kunci: 'PAKASIR_APIKEY', Nilai: appConfig.pakasirApiKey }, { onConflict: 'Kunci' });
+            }
+            
             showNotification('Pengaturan Branding berhasil disimpan!');
             addLog('UPDATE', 'PENGATURAN', `Branding diubah: "${appConfig.appName}"`);
         };
