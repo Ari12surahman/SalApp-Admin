@@ -1433,6 +1433,42 @@ function App() {
 
     const submitTagihanSantri = (e) => {
         e.preventDefault();
+
+        if (modalType === 'GENERATE_MASSAL') {
+            const selectedTags = formData.selectedTagihans || [];
+            const selectedB = formData.selectedBulan || [];
+            if (selectedTags.length === 0 || selectedB.length === 0) return showNotification('Pilih minimal 1 jenis tagihan dan 1 bulan!');
+
+            let targetSantri = formData.targetType === 'Kelas' ? dataSantri.filter(s => (formData.selectedKelas || []).includes(s.kelas)) : formData.targetType === 'Santri' ? dataSantri.filter(s => (formData.selectedSantri || []).includes(s.nis)) : dataSantri;
+            
+            if (targetSantri.length === 0) return showNotification('Harap cari dan pilih Santri terlebih dahulu!');
+
+            const newTags = [];
+            targetSantri.forEach(santriTerpilih => {
+                selectedTags.forEach(tagName => {
+                    selectedB.forEach(bln => {
+                        const periodeStr = `${bln} ${formData.tahun}`;
+                        const masterRef = masterTagihanList.find(m => String(tagName).toLowerCase().trim().startsWith(String(m.tagihan).toLowerCase().trim()));
+                        const awal = masterRef ? masterRef.nominal : 0;
+                        const disk = (santriTerpilih.beasiswa && santriTerpilih.beasiswa > 0) ? (awal * santriTerpilih.beasiswa) / 100 : 0;
+                        const finalNominal = Math.max(0, awal - disk);
+
+                        const isDup = dataTagihan.some(t => String(t.nis).replace(/^0+/, '') === String(santriTerpilih.nis).replace(/^0+/, '') && String(t.tagihan).toLowerCase().trim() === String(tagName).toLowerCase().trim() && formatPeriodeStr(t.periode).toLowerCase().trim() === formatPeriodeStr(periodeStr).toLowerCase().trim());
+                        if (!isDup) {
+                            newTags.push({ id: `TGH-${Math.floor(Math.random() * 100000) + '-' + Date.now()}`, tanggal: new Date().toISOString().split('T')[0], nis: santriTerpilih.nis, nama: santriTerpilih.nama, tagihan: tagName, periode: periodeStr, nominalAwal: awal, diskon: disk, nominal: finalNominal, terbayar: 0, status: finalNominal === 0 ? 'Lunas' : 'Belum Lunas' });
+                        }
+                    });
+                });
+            });
+
+            if (newTags.length === 0) return showNotification('Tidak ada tagihan yang dibuat. Semua tagihan sudah ada (duplikat).');
+
+            setDataTagihan(prev => [...newTags, ...prev]);
+            showNotification(`${newTags.length} Tagihan massal berhasil dibuat!`);
+            closeModal();
+            return;
+        }
+
         if (!formData.nis) return showNotification("Harap cari dan pilih Santri terlebih dahulu!");
         const santriTerpilih = dataSantri.find(s => String(s.nis) === String(formData.nis)) || { nama: 'Santri Tidak Dikenal' };
 
