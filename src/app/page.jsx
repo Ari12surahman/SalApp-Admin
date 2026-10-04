@@ -743,7 +743,24 @@ function App() {
             const bType = confirmDialog.bulkType;
             if (bType === 'SANTRI') setDataSantri(prev => prev.filter(s => !ids.includes(s.id)));
             if (bType === 'PEGAWAI') setDataPegawai(prev => prev.filter(p => !ids.includes(p.id)));
-            if (bType === 'TAGIHAN') setDataTagihan(prev => prev.filter(t => !ids.includes(t.id)));
+            if (bType === 'TAGIHAN') {
+                const deletedTags = dataTagihan.filter(t => ids.includes(t.id));
+                setDataPembayaran(prev => prev.filter(p => {
+                    return !deletedTags.some(deletedTagihan => {
+                        if (p.linkedTagihans && p.linkedTagihans.includes(deletedTagihan.id)) return true;
+                        if (String(p.nis).replace(/^0+/, '') === String(deletedTagihan.nis).replace(/^0+/, '')) {
+                            const pParsed = typeof p.items === 'string' ? JSON.parse(p.items) : p.items;
+                            if (pParsed && pParsed.length > 0) {
+                                return pParsed.some(item => String(item.tagihan).toLowerCase().trim() === String(deletedTagihan.tagihan).toLowerCase().trim() && formatPeriodeStr(item.periode).toLowerCase().trim() === formatPeriodeStr(deletedTagihan.periode).toLowerCase().trim());
+                            } else {
+                                return String(p.tagihan).toLowerCase().trim() === String(deletedTagihan.tagihan).toLowerCase().trim() && formatPeriodeStr(p.periode).toLowerCase().trim() === formatPeriodeStr(deletedTagihan.periode).toLowerCase().trim();
+                            }
+                        }
+                        return false;
+                    });
+                }));
+                setDataTagihan(prev => prev.filter(t => !ids.includes(t.id)));
+            }
             if (bType === 'PEMBAYARAN') {
                 const deletedTxs = dataPembayaran.filter(p => ids.includes(p.id));
                 setDataTagihan(prev => {
@@ -800,7 +817,25 @@ function App() {
 
         if (confirmDialog.type === 'SANTRI') setDataSantri(prev => prev.filter(s => s.id !== confirmDialog.id));
         if (confirmDialog.type === 'PEGAWAI') setDataPegawai(prev => prev.filter(p => p.id !== confirmDialog.id));
-        if (confirmDialog.type === 'TAGIHAN_SANTRI') setDataTagihan(prev => prev.filter(t => t.id !== confirmDialog.id));
+        if (confirmDialog.type === 'TAGIHAN_SANTRI') {
+            const deletedTagihan = dataTagihan.find(t => t.id === confirmDialog.id);
+            if (deletedTagihan) {
+                setDataPembayaran(prev => prev.filter(p => {
+                    if (p.linkedTagihans && p.linkedTagihans.includes(deletedTagihan.id)) return false;
+                    if (String(p.nis).replace(/^0+/, '') === String(deletedTagihan.nis).replace(/^0+/, '')) {
+                        const pParsed = typeof p.items === 'string' ? JSON.parse(p.items) : p.items;
+                        if (pParsed && pParsed.length > 0) {
+                            const match = pParsed.some(item => String(item.tagihan).toLowerCase().trim() === String(deletedTagihan.tagihan).toLowerCase().trim() && formatPeriodeStr(item.periode).toLowerCase().trim() === formatPeriodeStr(deletedTagihan.periode).toLowerCase().trim());
+                            if (match) return false;
+                        } else {
+                            if (String(p.tagihan).toLowerCase().trim() === String(deletedTagihan.tagihan).toLowerCase().trim() && formatPeriodeStr(p.periode).toLowerCase().trim() === formatPeriodeStr(deletedTagihan.periode).toLowerCase().trim()) return false;
+                        }
+                    }
+                    return true;
+                }));
+            }
+            setDataTagihan(prev => prev.filter(t => t.id !== confirmDialog.id));
+        }
         if (confirmDialog.type === 'PEMBAYARAN') {
             const deletedTrx = dataPembayaran.find(p => p.id === confirmDialog.id);
             if (deletedTrx) {
