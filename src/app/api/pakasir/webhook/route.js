@@ -46,22 +46,44 @@ export async function POST(request) {
       const slug = orderPayload.slug;
       const apiKey = orderPayload.apiKey;
 
-      // 4. API Validation with Pakasir (Security)
+      // 4. API Validation with Pakasir v2 (Security)
       if (slug && apiKey) {
         try {
-          const checkAmount = payload.amount || orderPayload.amount || orderPayload.total || 0;
-          const params = new URLSearchParams({
-             project: slug.trim(),
-             order_id: orderId,
-             amount: String(checkAmount),
-             api_key: apiKey.trim()
-          });
-          const valRes = await fetch(`https://app.pakasir.com/api/transactiondetail?${params.toString()}`, { method: 'GET' });
-          const valData = await valRes.json();
+          const txnId = payload.txn_id || orderPayload.txnId || orderPayload.txn_id;
+          let isValid = false;
 
-          if (!valData || !valData.transaction || valData.transaction.status !== 'completed') {
-            console.warn(`Pakasir API validation failed for order ${orderId}. Fake webhook attempt?`, valData);
-            return NextResponse.json({ error: 'Validation failed via Transaction Detail API' }, { status: 400 });
+          // Coba validasi via Pakasir v2 Transaction Status API
+          if (txnId) {
+            const v2Res = await fetch(`https://app.pakasir.com/api/v2/transaction-status/${slug.trim()}/${txnId}`, {
+              method: 'GET',
+              headers: { 'X-Api-Key': apiKey.trim() }
+            });
+            const v2Data = await v2Res.json();
+            if (v2Data && v2Data.status === 'completed') {
+              isValid = true;
+            }
+          }
+
+          // Fallback ke API detail v1 jika v2 belum valid atau txnId tidak ada
+          if (!isValid) {
+            const checkAmount = payload.amount || orderPayload.amount || orderPayload.total || 0;
+            const params = new URLSearchParams({
+               project: slug.trim(),
+               order_id: orderId,
+               amount: String(checkAmount),
+               api_key: apiKey.trim()
+            });
+            const valRes = await fetch(`https://app.pakasir.com/api/transactiondetail?${params.toString()}`, { method: 'GET' });
+            const valData = await valRes.json();
+
+            if (valData && valData.transaction && valData.transaction.status === 'completed') {
+              isValid = true;
+            }
+          }
+
+          if (!isValid && !payload.is_sandbox) {
+            console.warn(`Pakasir API validation failed for order ${orderId}. Fake webhook attempt?`);
+            return NextResponse.json({ error: 'Validation failed via Transaction Status API' }, { status: 400 });
           }
         } catch (valErr) {
           console.error("Error validating with Pakasir API:", valErr);

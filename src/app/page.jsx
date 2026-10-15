@@ -26,7 +26,7 @@ async function supabaseSaveTableData(tableName, dataArr) {
     const cleanData = dataArr.map(row => {
         const cleaned = {};
         for (let k of Object.keys(row)) {
-            cleaned[k] = row[k] === '' ? null : row[k];
+            cleaned[k] = row[k] === '' ? null : (Array.isArray(row[k]) ? JSON.stringify(row[k]) : row[k]);
         }
         return cleaned;
     });
@@ -152,6 +152,24 @@ import {
 // Import Recharts dengan parameter bundle untuk mencegah error lodash missing modules
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from "recharts";
 import * as XLSX from "xlsx";
+
+// Helper nama bank Pakasir v2
+const getBankDisplayName = (method) => {
+    const map = {
+        bri_va: 'BRI Virtual Account',
+        bni_va: 'BNI Virtual Account',
+        bsi_va: 'BSI Virtual Account',
+        cimb_niaga_va: 'CIMB Niaga VA',
+        danamon_va: 'Danamon VA',
+        muamalat_va: 'Muamalat VA',
+        ocbc_va: 'OCBC VA',
+        maybank_va: 'Maybank VA',
+        bnc_va: 'Bank Neo Commerce (BNC)',
+        qris: 'QRIS',
+        payment_link: 'Payment Link'
+    };
+    return map[method] || String(method || '').replace('_va', ' VA').toUpperCase();
+};
 
 // --- CSS Classes (Stitch Design Taste) ---
 const inputBase = "w-full rounded-xl border border-whisper bg-surface px-4 py-2.5 text-sm text-ink focus:outline-none focus:border-accent focus:ring-2 focus:ring-accent/20 transition-all duration-200";
@@ -441,18 +459,53 @@ function App() {
                         if (data.Kas && data.Kas.length > 0) setDataKas(data.Kas);
                         if (data.Gaji && data.Gaji.length > 0) setDataGaji(data.Gaji);
                         if (data.Logs && data.Logs.length > 0) setDataLog(data.Logs);
-                        // Muat Master Periode dari Spreadsheet
-                        if (data.MasterPeriode && data.MasterPeriode.length > 0) {
-                            setMasterPeriodeList(data.MasterPeriode.map(item => item.periode).filter(Boolean));
+                        // Muat Master Periode dari Spreadsheet & sinkronkan dengan santri
+                        let loadedPeriode = (data.MasterPeriode && data.MasterPeriode.length > 0)
+                            ? data.MasterPeriode.map(item => item.periode).filter(Boolean)
+                            : ['2022/2023', '2023/2024', '2024/2025'];
+                        if (data.Santri && data.Santri.length > 0) {
+                            const pSet = new Set(loadedPeriode.map(p => p.toLowerCase().trim()));
+                            data.Santri.forEach(s => {
+                                const p = (s.periode || '').trim();
+                                if (p && !pSet.has(p.toLowerCase())) {
+                                    loadedPeriode.push(p);
+                                    pSet.add(p.toLowerCase());
+                                }
+                            });
                         }
-                        // Muat Master Jabatan dari Spreadsheet
-                        if (data.MasterJabatan && data.MasterJabatan.length > 0) {
-                            setMasterJabatanList(data.MasterJabatan.map(item => item.jabatan).filter(Boolean));
+                        setMasterPeriodeList(loadedPeriode);
+
+                        // Muat Master Jabatan dari Spreadsheet & sinkronkan dengan pegawai
+                        let loadedJabatan = (data.MasterJabatan && data.MasterJabatan.length > 0)
+                            ? data.MasterJabatan.map(item => item.jabatan).filter(Boolean)
+                            : ['Kepala Sekolah', 'Pengajar', 'Administrasi', 'Dapur', 'Kebersihan'];
+                        if (data.Pegawai && data.Pegawai.length > 0) {
+                            const jSet = new Set(loadedJabatan.map(j => j.toLowerCase().trim()));
+                            data.Pegawai.forEach(p => {
+                                const j = (p.jabatan || '').trim();
+                                if (j && !jSet.has(j.toLowerCase())) {
+                                    loadedJabatan.push(j);
+                                    jSet.add(j.toLowerCase());
+                                }
+                            });
                         }
-                        // Muat Master Kelas dari Spreadsheet
-                        if (data.MasterKelas && data.MasterKelas.length > 0) {
-                            setMasterKelasList(data.MasterKelas.map(item => item.kelas).filter(Boolean));
+                        setMasterJabatanList(loadedJabatan);
+
+                        // Muat Master Kelas dari Spreadsheet & sinkronkan dengan santri
+                        let loadedKelas = (data.MasterKelas && data.MasterKelas.length > 0)
+                            ? data.MasterKelas.map(item => item.kelas).filter(Boolean)
+                            : ['10A', '10B', '11A', '11B', '12A'];
+                        if (data.Santri && data.Santri.length > 0) {
+                            const kSet = new Set(loadedKelas.map(k => k.toLowerCase().trim()));
+                            data.Santri.forEach(s => {
+                                const k = (s.kelas || '').trim();
+                                if (k && !kSet.has(k.toLowerCase())) {
+                                    loadedKelas.push(k);
+                                    kSet.add(k.toLowerCase());
+                                }
+                            });
                         }
+                        setMasterKelasList(loadedKelas);
                         // Muat Master Tagihan dari Spreadsheet
                         if (data.MasterTagihan && data.MasterTagihan.length > 0) {
                             setMasterTagihanList(data.MasterTagihan);
@@ -927,6 +980,12 @@ function App() {
         setPakasirData(prev => ({ ...prev, loading: true, step: 'LOADING', method }));
         try {
             const amountToPay = formData.sisa || formData.nominal || 0;
+            const isQris = method === 'QRIS' || method === 'qris';
+            if (!isQris && amountToPay < 10000) {
+                showNotification("Nominal pembayaran via Virtual Account minimal Rp 10.000. Untuk nominal di bawah Rp 10.000, silakan gunakan QRIS.");
+                setPakasirData(prev => ({ ...prev, loading: false, step: 'CHOOSE_METHOD' }));
+                return;
+            }
             
             // Save to PakasirOrders for Webhook support
             // Generate a unique orderId to prevent "Transaction already canceled/exist" errors from Pakasir
@@ -964,10 +1023,9 @@ function App() {
             
             const paymentData = data?.payment || data?.data || data;
 
-            if (paymentData && (paymentData.payment_number || paymentData.checkout_url || paymentData.qr_string)) {
-                const isQris = method === 'QRIS' || method === 'qris';
+            if (paymentData && (paymentData.payment_number || paymentData.va_number || paymentData.checkout_url || paymentData.qr_string)) {
                 const checkoutUrl = paymentData.checkout_url || paymentData.url || '';
-                const qrStr = paymentData.payment_number || paymentData.qr_string || '';
+                const qrStr = paymentData.va_number || paymentData.payment_number || paymentData.qr_string || '';
 
                 const strData = JSON.stringify(data || {}).toLowerCase();
                 const isSandboxApi = strData.includes('"sandbox"') || strData.includes('sandbox.pakasir.com') || String(qrStr).toUpperCase().includes('SANDBOX') || String(checkoutUrl).toUpperCase().includes('SANDBOX') || String(qrStr) === '123123123';
@@ -1557,6 +1615,16 @@ function App() {
         const isDuplicate = dataPegawai.some(p => p.nip === targetNip && p.id !== formData.id);
         if (isDuplicate) return showNotification('NIP sudah digunakan! Gunakan NIP lain.');
 
+        if (formData.jabatan && formData.jabatan.trim()) {
+            const jTrim = formData.jabatan.trim();
+            setMasterJabatanList(prev => {
+                if (!prev.some(j => j.toLowerCase().trim() === jTrim.toLowerCase())) {
+                    return [...prev, jTrim];
+                }
+                return prev;
+            });
+        }
+
         if (formData.id) {
             setDataPegawai(prev => prev.map(p => p.id === formData.id ? { ...p, ...formData, nip: targetNip } : p));
             addLog('UPDATE', 'PEGAWAI', `Memperbarui data: ${formData.nama}`);
@@ -1691,8 +1759,41 @@ function App() {
                 }
 
                 if (newData.length > 0) {
-                    if (type === 'santri') setDataSantri(prev => [...newData, ...prev]);
-                    else setDataPegawai(prev => [...newData, ...prev]);
+                    if (type === 'santri') {
+                        setDataSantri(prev => [...newData, ...prev]);
+
+                        // Otomatis masukkan Kelas baru ke Master Kelas
+                        const importedKelas = [...new Set(newData.map(s => (s.kelas || '').trim()).filter(Boolean))];
+                        if (importedKelas.length > 0) {
+                            setMasterKelasList(prev => {
+                                const existingLower = new Set(prev.map(k => k.toLowerCase().trim()));
+                                const toAdd = importedKelas.filter(k => !existingLower.has(k.toLowerCase()));
+                                return toAdd.length > 0 ? [...prev, ...toAdd] : prev;
+                            });
+                        }
+
+                        // Otomatis masukkan Periode baru ke Master Periode
+                        const importedPeriode = [...new Set(newData.map(s => (s.periode || '').trim()).filter(Boolean))];
+                        if (importedPeriode.length > 0) {
+                            setMasterPeriodeList(prev => {
+                                const existingLower = new Set(prev.map(p => p.toLowerCase().trim()));
+                                const toAdd = importedPeriode.filter(p => !existingLower.has(p.toLowerCase()));
+                                return toAdd.length > 0 ? [...prev, ...toAdd] : prev;
+                            });
+                        }
+                    } else {
+                        setDataPegawai(prev => [...newData, ...prev]);
+
+                        // Otomatis masukkan Jabatan baru ke Master Jabatan
+                        const importedJabatans = [...new Set(newData.map(p => (p.jabatan || '').trim()).filter(Boolean))];
+                        if (importedJabatans.length > 0) {
+                            setMasterJabatanList(prev => {
+                                const existingLower = new Set(prev.map(j => j.toLowerCase().trim()));
+                                const toAdd = importedJabatans.filter(j => !existingLower.has(j.toLowerCase()));
+                                return toAdd.length > 0 ? [...prev, ...toAdd] : prev;
+                            });
+                        }
+                    }
                     showNotification(`${newData.length} data ${type} berhasil diimpor!`);
                     addLog('IMPORT', type.toUpperCase(), `Berhasil import ${newData.length} data`);
                 } else {
@@ -2898,16 +2999,16 @@ function App() {
                                 <div className="animate-fade-in-up">
                                     <h3 className="text-lg font-bold text-ink mb-3">Pilih Metode Pembayaran</h3>
                                     <div className="space-y-3 mb-2 max-h-80 overflow-y-auto pr-2">
-                                        <button onClick={() => handleGeneratePakasirQR('qris')} className="w-full flex items-center justify-between p-4 border border-whisper rounded-xl hover:bg-canvas transition-colors"><div className="flex items-center gap-3"><QrCode className="w-6 h-6 text-accent" /><span className="font-semibold text-ink">QRIS (Gopay, OVO, Dana)</span></div><ArrowRight className="w-4 h-4 text-steel" /></button>
-                                        <button onClick={() => handleGeneratePakasirQR('bni_va')} className="w-full flex items-center justify-between p-4 border border-whisper rounded-xl hover:bg-canvas transition-colors"><div className="flex items-center gap-3"><CreditCard className="w-6 h-6 text-orange-600" /><span className="font-semibold text-ink">BNI Virtual Account</span></div><ArrowRight className="w-4 h-4 text-steel" /></button>
+                                        <button onClick={() => handleGeneratePakasirQR('qris')} className="w-full flex items-center justify-between p-4 border border-whisper rounded-xl hover:bg-canvas transition-colors"><div className="flex items-center gap-3"><QrCode className="w-6 h-6 text-accent" /><span className="font-semibold text-ink">QRIS (Gopay, OVO, Dana, ShopeePay)</span></div><ArrowRight className="w-4 h-4 text-steel" /></button>
                                         <button onClick={() => handleGeneratePakasirQR('bri_va')} className="w-full flex items-center justify-between p-4 border border-whisper rounded-xl hover:bg-canvas transition-colors"><div className="flex items-center gap-3"><CreditCard className="w-6 h-6 text-blue-700" /><span className="font-semibold text-ink">BRI Virtual Account</span></div><ArrowRight className="w-4 h-4 text-steel" /></button>
+                                        <button onClick={() => handleGeneratePakasirQR('bni_va')} className="w-full flex items-center justify-between p-4 border border-whisper rounded-xl hover:bg-canvas transition-colors"><div className="flex items-center gap-3"><CreditCard className="w-6 h-6 text-orange-600" /><span className="font-semibold text-ink">BNI Virtual Account</span></div><ArrowRight className="w-4 h-4 text-steel" /></button>
+                                        <button onClick={() => handleGeneratePakasirQR('bsi_va')} className="w-full flex items-center justify-between p-4 border border-whisper rounded-xl hover:bg-canvas transition-colors"><div className="flex items-center gap-3"><CreditCard className="w-6 h-6 text-emerald-600" /><span className="font-semibold text-ink">BSI Virtual Account</span></div><ArrowRight className="w-4 h-4 text-steel" /></button>
                                         <button onClick={() => handleGeneratePakasirQR('cimb_niaga_va')} className="w-full flex items-center justify-between p-4 border border-whisper rounded-xl hover:bg-canvas transition-colors"><div className="flex items-center gap-3"><CreditCard className="w-6 h-6 text-red-600" /><span className="font-semibold text-ink">CIMB Niaga VA</span></div><ArrowRight className="w-4 h-4 text-steel" /></button>
-                                        <button onClick={() => handleGeneratePakasirQR('permata_va')} className="w-full flex items-center justify-between p-4 border border-whisper rounded-xl hover:bg-canvas transition-colors"><div className="flex items-center gap-3"><CreditCard className="w-6 h-6 text-emerald-600" /><span className="font-semibold text-ink">Permata VA</span></div><ArrowRight className="w-4 h-4 text-steel" /></button>
-                                        <button onClick={() => handleGeneratePakasirQR('sampoerna_va')} className="w-full flex items-center justify-between p-4 border border-whisper rounded-xl hover:bg-canvas transition-colors"><div className="flex items-center gap-3"><CreditCard className="w-6 h-6 text-red-500" /><span className="font-semibold text-ink">Sahabat Sampoerna VA</span></div><ArrowRight className="w-4 h-4 text-steel" /></button>
-                                        <button onClick={() => handleGeneratePakasirQR('bnc_va')} className="w-full flex items-center justify-between p-4 border border-whisper rounded-xl hover:bg-canvas transition-colors"><div className="flex items-center gap-3"><CreditCard className="w-6 h-6 text-yellow-500" /><span className="font-semibold text-ink">BNC VA</span></div><ArrowRight className="w-4 h-4 text-steel" /></button>
+                                        <button onClick={() => handleGeneratePakasirQR('danamon_va')} className="w-full flex items-center justify-between p-4 border border-whisper rounded-xl hover:bg-canvas transition-colors"><div className="flex items-center gap-3"><CreditCard className="w-6 h-6 text-amber-600" /><span className="font-semibold text-ink">Danamon VA</span></div><ArrowRight className="w-4 h-4 text-steel" /></button>
+                                        <button onClick={() => handleGeneratePakasirQR('muamalat_va')} className="w-full flex items-center justify-between p-4 border border-whisper rounded-xl hover:bg-canvas transition-colors"><div className="flex items-center gap-3"><CreditCard className="w-6 h-6 text-purple-600" /><span className="font-semibold text-ink">Muamalat VA</span></div><ArrowRight className="w-4 h-4 text-steel" /></button>
+                                        <button onClick={() => handleGeneratePakasirQR('ocbc_va')} className="w-full flex items-center justify-between p-4 border border-whisper rounded-xl hover:bg-canvas transition-colors"><div className="flex items-center gap-3"><CreditCard className="w-6 h-6 text-red-700" /><span className="font-semibold text-ink">OCBC VA</span></div><ArrowRight className="w-4 h-4 text-steel" /></button>
                                         <button onClick={() => handleGeneratePakasirQR('maybank_va')} className="w-full flex items-center justify-between p-4 border border-whisper rounded-xl hover:bg-canvas transition-colors"><div className="flex items-center gap-3"><CreditCard className="w-6 h-6 text-yellow-600" /><span className="font-semibold text-ink">Maybank VA</span></div><ArrowRight className="w-4 h-4 text-steel" /></button>
-                                        <button onClick={() => handleGeneratePakasirQR('atm_bersama_va')} className="w-full flex items-center justify-between p-4 border border-whisper rounded-xl hover:bg-canvas transition-colors"><div className="flex items-center gap-3"><CreditCard className="w-6 h-6 text-blue-500" /><span className="font-semibold text-ink">ATM Bersama VA</span></div><ArrowRight className="w-4 h-4 text-steel" /></button>
-                                        <button onClick={() => handleGeneratePakasirQR('artha_graha_va')} className="w-full flex items-center justify-between p-4 border border-whisper rounded-xl hover:bg-canvas transition-colors"><div className="flex items-center gap-3"><CreditCard className="w-6 h-6 text-blue-800" /><span className="font-semibold text-ink">Artha Graha VA</span></div><ArrowRight className="w-4 h-4 text-steel" /></button>
+                                        <button onClick={() => handleGeneratePakasirQR('bnc_va')} className="w-full flex items-center justify-between p-4 border border-whisper rounded-xl hover:bg-canvas transition-colors"><div className="flex items-center gap-3"><CreditCard className="w-6 h-6 text-yellow-500" /><span className="font-semibold text-ink">Bank Neo Commerce (BNC) VA</span></div><ArrowRight className="w-4 h-4 text-steel" /></button>
                                     </div>
                                 </div>
                             )}
@@ -2947,7 +3048,7 @@ function App() {
 
                                             {pakasirData.step === 'SHOW_VA' && (
                                                 <div className="bg-canvas border border-whisper rounded-xl p-6 mb-4">
-                                                    <p className="text-xs font-semibold text-steel uppercase mb-1">Bank {pakasirData.method?.replace('_va', '')}</p>
+                                                    <p className="text-xs font-semibold text-steel uppercase mb-1">{getBankDisplayName(pakasirData.method)}</p>
                                                     <div className="text-3xl font-mono font-bold text-ink tracking-wider break-all">{pakasirData.qrString}</div>
                                                 </div>
                                             )}
@@ -3321,7 +3422,16 @@ function App() {
                                         ))}
                                     </div></>
                             ) : (
-                                <><form onSubmit={(e) => { e.preventDefault(); simpleSetList(prev => [...prev, formData[simpleField]]); setFormData({}); }} className="flex gap-2"><input required name={simpleField} value={formData[simpleField] || ''} onChange={handleInputChange} type="text" className={inputBase} placeholder={`Tambah ${simpleTitle.replace('Master ', '')}`} /><button type="submit" className={btnPrimary}><Plus className="w-4 h-4" /></button></form>
+                                <><form onSubmit={(e) => {
+                                    e.preventDefault();
+                                    const val = (formData[simpleField] || '').trim();
+                                    if (!val) return;
+                                    simpleSetList(prev => {
+                                        if (prev.some(item => item.toLowerCase().trim() === val.toLowerCase())) return prev;
+                                        return [...prev, val];
+                                    });
+                                    setFormData({});
+                                }} className="flex gap-2"><input required name={simpleField} value={formData[simpleField] || ''} onChange={handleInputChange} type="text" className={inputBase} placeholder={`Tambah ${simpleTitle.replace('Master ', '')}`} /><button type="submit" className={btnPrimary}><Plus className="w-4 h-4" /></button></form>
                                     <div className="flex flex-wrap gap-2">{simpleList.map(item => (<span key={item} className="px-3 py-1 bg-canvas text-steel rounded-full text-sm border border-whisper flex items-center gap-2">{item} <button onClick={() => confirmDelete(modalType, item, item)} className="hover:text-rose-600"><X className="w-3 h-3" /></button></span>))}</div></>
                             )}
                         </div>
