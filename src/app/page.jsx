@@ -1720,6 +1720,18 @@ function App() {
         closeModal();
     };
 
+    // Helper hitung saldo akumulatif tabungan santri (Setor bertambah, Tarik berkurang)
+    const getSantriSaldoTabungan = (nis, list = dataTabungan) => {
+        const sNisClean = String(nis || '').replace(/^0+/, '');
+        return (list || [])
+            .filter(t => String(t.nis || t.NIS || '').replace(/^0+/, '') === sNisClean)
+            .reduce((sum, item) => {
+                const nom = Number(item.nominal || item.Nominal || 0);
+                const j = String(item.jenis || item.Jenis || '').toLowerCase();
+                return (j === 'tarik' || j === 'keluar') ? sum - nom : sum + nom;
+            }, 0);
+    };
+
     // Helper hitung pemakaian penarikan/jajan tabungan santri dalam periode tertentu
     const getUsageInPeriod = (nis, periode = 'harian', dataTabunganList = dataTabungan) => {
         const sNisClean = String(nis || '').replace(/^0+/, '');
@@ -1741,7 +1753,7 @@ function App() {
             const tNis = String(t.nis || t.NIS || '').replace(/^0+/, '');
             const tJenis = String(t.jenis || t.Jenis || '').toLowerCase();
             const tDate = String(t.tanggal || t.Tanggal || '').split('T')[0];
-            return tNis === sNisClean && tJenis === 'tarik' && tDate >= startDateStr && tDate <= todayStr;
+            return tNis === sNisClean && (tJenis === 'tarik' || tJenis === 'keluar') && tDate >= startDateStr && tDate <= todayStr;
         });
         
         return userWithdrawals.reduce((sum, t) => sum + (Number(t.nominal || t.Nominal || 0)), 0);
@@ -1871,9 +1883,7 @@ function App() {
         if (nom <= 0) return showNotification("Nominal transaksi tidak valid!");
 
         if (jenis === 'Tarik') {
-            const currentSaldo = dataTabungan
-                .filter(t => String(t.nis).replace(/^0+/, '') === String(formData.nis).replace(/^0+/, ''))
-                .reduce((sum, item) => item.jenis === 'Setor' ? sum + item.nominal : sum - item.nominal, 0);
+            const currentSaldo = getSantriSaldoTabungan(formData.nis);
 
             if (nom > currentSaldo) {
                 return showNotification(`Saldo tabungan tidak mencukupi! Saldo saat ini: Rp ${currentSaldo.toLocaleString('id-ID')}`);
@@ -1925,8 +1935,10 @@ function App() {
         );
 
         if (santri) {
-            const saldoTabungan = dataTabungan.filter(t => t.nis === santri.nis).reduce((sum, item) => item.jenis === 'Setor' ? sum + item.nominal : sum - item.nominal, 0);
-            const totalTunggakan = dataTagihan.filter(t => t.nis === santri.nis && t.status !== 'Lunas').reduce((sum, item) => sum + (item.nominal - (item.terbayar || 0)), 0);
+            const saldoTabungan = getSantriSaldoTabungan(santri.nis);
+            const totalTunggakan = dataTagihan
+                .filter(t => String(t.nis).replace(/^0+/, '') === String(santri.nis).replace(/^0+/, '') && t.status !== 'Lunas')
+                .reduce((sum, item) => sum + (Number(item.nominal || 0) - Number(item.terbayar || 0)), 0);
 
             setScanResult({
                 found: true,
@@ -2158,7 +2170,11 @@ function App() {
     const renderDashboard = () => {
         const totalPemasukan = dataPembayaran.reduce((sum, item) => sum + item.nominal, 0);
         const totalTunggakan = dataTagihan.filter(t => t.status !== 'Lunas').reduce((sum, item) => sum + (item.nominal - (item.terbayar || 0)), 0);
-        const totalTabungan = dataTabungan.reduce((sum, item) => item.jenis === 'Setor' ? sum + item.nominal : sum - item.nominal, 0);
+        const totalTabungan = dataTabungan.reduce((sum, item) => {
+            const nom = Number(item.nominal || 0);
+            const j = String(item.jenis || '').toLowerCase();
+            return (j === 'tarik' || j === 'keluar') ? sum - nom : sum + nom;
+        }, 0);
         const totalKasMasuk = totalPemasukan + dataKas.filter(t => t.tipeKas === 'MASUK').reduce((sum, item) => sum + item.nominal, 0);
         const totalKasKeluar = dataGaji.reduce((sum, g) => sum + g.totalBersih, 0) + dataKas.filter(t => t.tipeKas === 'KELUAR').reduce((sum, item) => sum + item.nominal, 0);
         const saldoKasUtama = totalKasMasuk - totalKasKeluar;
@@ -2675,7 +2691,11 @@ function App() {
             return matchSearch && matchKelas;
         });
 
-        const totalSaldoAll = dataTabungan.reduce((sum, item) => item.jenis === 'Setor' ? sum + item.nominal : sum - item.nominal, 0);
+        const totalSaldoAll = dataTabungan.reduce((sum, item) => {
+            const nom = Number(item.nominal || 0);
+            const j = String(item.jenis || '').toLowerCase();
+            return (j === 'tarik' || j === 'keluar') ? sum - nom : sum + nom;
+        }, 0);
         const santriWithLimitCount = dataSantri.filter(s => getSantriLimitConfig(s).limit > 0).length;
         const globalCfg = appConfig.tabunganLimitConfig || {};
 
@@ -2743,7 +2763,15 @@ function App() {
                                     ) : paginatedTabungan.map((trx) => (
                                         <tr key={trx.id} className="bg-surface hover:bg-canvas">
                                             <td className="px-6 py-4 text-center"><input type="checkbox" checked={selectedIds.includes(trx.id)} onChange={() => toggleSelectId(trx.id)} className="w-4 h-4 rounded border-whisper text-accent cursor-pointer" /></td>
-                                            <td className="px-6 py-4">{trx.tanggal}</td><td className="px-6 py-4 font-medium">{trx.nama}</td>
+                                            <td className="px-6 py-4">{trx.tanggal}</td>
+                                            <td className="px-6 py-4">
+                                                <div className="font-semibold text-ink">{trx.nama}</div>
+                                                <div className="text-xs text-steel flex items-center gap-1.5 mt-0.5">
+                                                    <span>NIS: {trx.nis}</span>
+                                                    <span>•</span>
+                                                    <span className="text-emerald-600 font-medium">Saldo: Rp {getSantriSaldoTabungan(trx.nis).toLocaleString('id-ID')}</span>
+                                                </div>
+                                            </td>
                                             <td className="px-6 py-4 text-center"><span className={`inline-flex px-2 py-1 text-xs font-medium rounded-md ${trx.jenis === 'Setor' ? 'bg-emerald-50 text-emerald-700' : 'bg-rose-50 text-rose-700'}`}>{trx.jenis}</span></td>
                                             <td className="px-6 py-4 text-right font-medium">Rp {Number(trx.nominal || 0).toLocaleString('id-ID')}</td><td className="px-6 py-4 text-steel">{trx.keterangan}</td>
                                             <td className="px-6 py-4 text-center flex gap-3 justify-center"><button onClick={() => confirmDelete('TABUNGAN', trx.id, 'Transaksi Tabungan')} className="text-rose-600 hover:text-rose-800"><Trash2 className="w-4 h-4" /></button></td>
@@ -2762,7 +2790,8 @@ function App() {
                                             <input type="checkbox" checked={selectedIds.includes(trx.id)} onChange={() => toggleSelectId(trx.id)} className="w-4 h-4 mt-1 shrink-0 rounded border-whisper text-accent focus:ring-accent/30 cursor-pointer" />
                                             <div className="min-w-0">
                                                 <div className="font-bold text-ink truncate text-sm">{trx.nama}</div>
-                                                <div className="text-[10px] text-steel mt-0.5">{trx.tanggal}</div>
+                                                <div className="text-[11px] text-emerald-600 font-medium">Saldo Santri: Rp {getSantriSaldoTabungan(trx.nis).toLocaleString('id-ID')}</div>
+                                                <div className="text-[10px] text-steel mt-0.5">{trx.tanggal} • NIS: {trx.nis}</div>
                                                 <div className="text-[10px] text-slate mt-1 line-clamp-2">{trx.keterangan}</div>
                                             </div>
                                         </div>
@@ -2871,9 +2900,7 @@ function App() {
                                         {filteredSantriForLimit.length === 0 ? (
                                             <tr><td colSpan="8" className="text-center py-8 text-steel">Tidak ada santri ditemukan.</td></tr>
                                         ) : filteredSantriForLimit.map((s) => {
-                                            const saldo = dataTabungan
-                                                .filter(t => String(t.nis).replace(/^0+/, '') === String(s.nis).replace(/^0+/, ''))
-                                                .reduce((sum, item) => item.jenis === 'Setor' ? sum + item.nominal : sum - item.nominal, 0);
+                                            const saldo = getSantriSaldoTabungan(s.nis);
                                             
                                             const limitCfg = getSantriLimitConfig(s);
                                             const used = getUsageInPeriod(s.nis, limitCfg.periode);
@@ -3684,6 +3711,12 @@ function App() {
 
         if (modalType === 'FORM_TABUNGAN') {
             const isSetor = (formData.jenis || 'Setor') === 'Setor';
+            const currentSantriSaldo = formData.nis ? getSantriSaldoTabungan(formData.nis) : 0;
+            const inputNominal = Number(formData.nominal || 0);
+            const projectedSaldo = isSetor 
+                ? (currentSantriSaldo + inputNominal)
+                : (currentSantriSaldo - inputNominal);
+
             const customFooterTabungan = (
                 <div className="px-6 py-4 bg-canvas border-t border-whisper flex justify-end gap-2 shrink-0 rounded-b-2xl">
                     <button type="button" onClick={closeModal} className={btnOutline}>Batal</button>
@@ -3694,11 +3727,29 @@ function App() {
             return (
                 <FormWrapper title="Transaksi Tabungan" onClose={closeModal} onSubmit={submitTabungan} customFooter={customFooterTabungan}>
                     <div><label className="block text-sm font-medium text-ink mb-1">Pilih Santri</label><SantriCombobox dataSantri={dataSantri} formData={formData} setFormData={setFormData} disabled={!!formData.id} /></div>
+                    
+                    {formData.nis && (
+                        <div className="mt-3 p-3.5 bg-slate-50 border border-slate-200 rounded-xl space-y-1.5">
+                            <div className="flex justify-between items-center text-xs text-steel">
+                                <span>Saldo Tabungan Saat Ini:</span>
+                                <span className="font-bold text-ink">Rp {currentSantriSaldo.toLocaleString('id-ID')}</span>
+                            </div>
+                            {inputNominal > 0 && (
+                                <div className="flex justify-between items-center text-xs pt-1.5 border-t border-slate-200">
+                                    <span className="font-medium text-slate-700">Estimasi Saldo Setelah {formData.jenis || 'Setor'}:</span>
+                                    <span className={`font-bold ${projectedSaldo < 0 ? 'text-rose-600' : 'text-emerald-600'}`}>
+                                        Rp {projectedSaldo.toLocaleString('id-ID')}
+                                    </span>
+                                </div>
+                            )}
+                        </div>
+                    )}
+
                     <div className="grid grid-cols-2 gap-4 mt-2">
-                        <div><label className="block text-sm font-medium text-ink mb-1">Jenis Transaksi</label><select required name="jenis" value={formData.jenis || 'Setor'} onChange={handleInputChange} className={inputBase}><option value="Setor">Setor (Nabung)</option><option value="Tarik">Tarik (Ambil)</option></select></div>
+                        <div><label className="block text-sm font-medium text-ink mb-1">Jenis Transaksi</label><select required name="jenis" value={formData.jenis || 'Setor'} onChange={handleInputChange} className={inputBase}><option value="Setor">Setor (Nabung / Tambah Saldo)</option><option value="Tarik">Tarik (Ambil Saldo)</option></select></div>
                         <div><label className="block text-sm font-medium text-ink mb-1">Nominal (Rp)</label><input required name="nominal" value={formData.nominal || ''} onChange={handleInputChange} type="number" className={inputBase} /></div>
                     </div>
-                    <div className="mt-2"><label className="block text-sm font-medium text-ink mb-1">Keterangan Tambahan</label><input name="keterangan" value={formData.keterangan || ''} onChange={handleInputChange} type="text" className={inputBase} placeholder="Contoh: Uang jajan, dll..." /></div>
+                    <div className="mt-2"><label className="block text-sm font-medium text-ink mb-1">Keterangan Tambahan</label><input name="keterangan" value={formData.keterangan || ''} onChange={handleInputChange} type="text" className={inputBase} placeholder="Contoh: Uang saku tambahan, dll..." /></div>
                 </FormWrapper>
             );
         }
