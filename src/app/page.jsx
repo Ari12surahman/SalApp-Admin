@@ -44,7 +44,7 @@ async function supabaseSaveTableData(tableName, dataArr) {
         });
     }
 
-    const fullReplaceTables = ['MasterPeriode', 'MasterJabatan', 'MasterKelas', 'MasterTagihan', 'KategoriKas', 'MasterConfig', 'MasterRoleAccess', 'Data Pegawai', 'Data Santri'];
+    const fullReplaceTables = ['MasterPeriode', 'MasterJabatan', 'MasterKelas', 'MasterTagihan', 'KategoriKas', 'MasterConfig', 'MasterRoleAccess'];
     if (fullReplaceTables.includes(tableName)) {
         const dummyCol = Object.keys(finalData[0] || {})[0];
         if (dummyCol) {
@@ -62,11 +62,12 @@ async function supabaseSaveTableData(tableName, dataArr) {
     if (tableName === 'Data Santri') {
         const seen = new Set();
         uniqueData = cleanData.filter(item => {
-            if (seen.has(item.nis)) return false;
-            seen.add(item.nis);
+            const key = item.id || item.nis;
+            if (seen.has(key)) return false;
+            seen.add(key);
             return true;
         });
-        upsertOptions = { onConflict: 'nis' };
+        upsertOptions = { onConflict: 'id' };
     } else if (tableName === 'Tabungan') {
         const seen = new Set();
         uniqueData = cleanData.filter(item => {
@@ -645,9 +646,36 @@ function App() {
             })
             .subscribe();
 
+        // Realtime Subscription untuk Data Santri (sinkron jika dihapus/diedit langsung di Supabase)
+        const santriChannel = supabase
+            .channel('realtime-admin-santri')
+            .on('postgres_changes', { event: '*', schema: 'public', table: 'Data Santri' }, async (payload) => {
+                console.log("[Supabase Real-time] Data Santri berubah:", payload.eventType);
+                if (payload.eventType === 'DELETE') {
+                    const oldRow = payload.old || {};
+                    setDataSantri(prev => prev.filter(s => {
+                        if (oldRow.id && s.id === oldRow.id) return false;
+                        if (oldRow.nis && String(s.nis).trim() === String(oldRow.nis).trim()) return false;
+                        return true;
+                    }));
+                } else {
+                    const { data } = await supabase.from('Data Santri').select('*');
+                    if (data) {
+                        const sorted = sortSupabaseData('Data Santri', data);
+                        const serverStr = JSON.stringify(sorted);
+                        if (!window['_pending_Santri'] && (!window['lastWrite_Santri'] || Date.now() - window['lastWrite_Santri'] >= 30000)) {
+                            window['lastSync_Santri'] = serverStr;
+                            setDataSantri(sorted);
+                        }
+                    }
+                }
+            })
+            .subscribe();
+
         return () => {
             clearInterval(interval);
             supabase.removeChannel(tagihanChannel);
+            supabase.removeChannel(santriChannel);
         };
     }, [isLoaded]);
 
@@ -804,9 +832,19 @@ function App() {
         if (confirmDialog.type === 'BULK') {
             const ids = confirmDialog.id;
             const bType = confirmDialog.bulkType;
-            if (bType === 'SANTRI') setDataSantri(prev => prev.filter(s => !ids.includes(s.id)));
-            if (bType === 'PEGAWAI') setDataPegawai(prev => prev.filter(p => !ids.includes(p.id)));
+            if (bType === 'SANTRI') {
+                const targetSantris = dataSantri.filter(s => ids.includes(s.id));
+                const targetNises = targetSantris.map(s => s.nis).filter(Boolean);
+                if (ids.length > 0) supabase.from('Data Santri').delete().in('id', ids).then(({ error }) => { if (error) console.error("Gagal bulk delete santri by id:", error); });
+                if (targetNises.length > 0) supabase.from('Data Santri').delete().in('nis', targetNises).then(({ error }) => { if (error) console.error("Gagal bulk delete santri by nis:", error); });
+                setDataSantri(prev => prev.filter(s => !ids.includes(s.id)));
+            }
+            if (bType === 'PEGAWAI') {
+                if (ids.length > 0) supabase.from('Data Pegawai').delete().in('id', ids).then(({ error }) => { if (error) console.error("Gagal bulk delete pegawai:", error); });
+                setDataPegawai(prev => prev.filter(p => !ids.includes(p.id)));
+            }
             if (bType === 'TAGIHAN') {
+                if (ids.length > 0) supabase.from('Tagihan').delete().in('id', ids).then(({ error }) => { if (error) console.error("Gagal bulk delete tagihan:", error); });
                 const deletedTags = dataTagihan.filter(t => ids.includes(t.id));
                 setDataPembayaran(prev => prev.filter(p => {
                     return !deletedTags.some(deletedTagihan => {
@@ -825,6 +863,7 @@ function App() {
                 setDataTagihan(prev => prev.filter(t => !ids.includes(t.id)));
             }
             if (bType === 'PEMBAYARAN') {
+                if (ids.length > 0) supabase.from('Pembayaran').delete().in('id', ids).then(({ error }) => { if (error) console.error("Gagal bulk delete pembayaran:", error); });
                 const deletedTxs = dataPembayaran.filter(p => ids.includes(p.id));
                 setDataTagihan(prev => {
                     let updatedTags = [...prev];
@@ -847,9 +886,18 @@ function App() {
                 });
                 setDataPembayaran(prev => prev.filter(p => !ids.includes(p.id)));
             }
-            if (bType === 'TABUNGAN') setDataTabungan(prev => prev.filter(t => !ids.includes(t.id)));
-            if (bType === 'KAS') setDataKas(prev => prev.filter(k => !ids.includes(k.id)));
-            if (bType === 'GAJI') setDataGaji(prev => prev.filter(g => !ids.includes(g.id)));
+            if (bType === 'TABUNGAN') {
+                if (ids.length > 0) supabase.from('Tabungan').delete().in('id', ids).then(({ error }) => { if (error) console.error("Gagal bulk delete tabungan:", error); });
+                setDataTabungan(prev => prev.filter(t => !ids.includes(t.id)));
+            }
+            if (bType === 'KAS') {
+                if (ids.length > 0) supabase.from('Kas').delete().in('id', ids).then(({ error }) => { if (error) console.error("Gagal bulk delete kas:", error); });
+                setDataKas(prev => prev.filter(k => !ids.includes(k.id)));
+            }
+            if (bType === 'GAJI') {
+                if (ids.length > 0) supabase.from('Gaji').delete().in('id', ids).then(({ error }) => { if (error) console.error("Gagal bulk delete gaji:", error); });
+                setDataGaji(prev => prev.filter(g => !ids.includes(g.id)));
+            }
             addLog('BULK_DELETE', bType, `Menghapus ${ids.length} data sekaligus`);
             showNotification(`${ids.length} data berhasil dihapus!`);
             setSelectedIds([]);
@@ -878,9 +926,20 @@ function App() {
             return;
         }
 
-        if (confirmDialog.type === 'SANTRI') setDataSantri(prev => prev.filter(s => s.id !== confirmDialog.id));
-        if (confirmDialog.type === 'PEGAWAI') setDataPegawai(prev => prev.filter(p => p.id !== confirmDialog.id));
+        if (confirmDialog.type === 'SANTRI') {
+            const targetId = confirmDialog.id;
+            const targetSantri = dataSantri.find(s => s.id === targetId || s.nis === targetId);
+            const targetNis = targetSantri ? targetSantri.nis : null;
+            if (targetId) supabase.from('Data Santri').delete().eq('id', targetId).then(({ error }) => { if (error) console.error("Gagal hapus santri by id dari Supabase:", error); });
+            if (targetNis) supabase.from('Data Santri').delete().eq('nis', targetNis).then(({ error }) => { if (error) console.error("Gagal hapus santri by nis dari Supabase:", error); });
+            setDataSantri(prev => prev.filter(s => s.id !== targetId && s.nis !== targetId));
+        }
+        if (confirmDialog.type === 'PEGAWAI') {
+            supabase.from('Data Pegawai').delete().eq('id', confirmDialog.id).then(({ error }) => { if (error) console.error("Gagal hapus pegawai:", error); });
+            setDataPegawai(prev => prev.filter(p => p.id !== confirmDialog.id));
+        }
         if (confirmDialog.type === 'TAGIHAN_SANTRI') {
+            supabase.from('Tagihan').delete().eq('id', confirmDialog.id).then(({ error }) => { if (error) console.error("Gagal hapus tagihan:", error); });
             const deletedTagihan = dataTagihan.find(t => t.id === confirmDialog.id);
             if (deletedTagihan) {
                 setDataPembayaran(prev => prev.filter(p => {
@@ -900,6 +959,7 @@ function App() {
             setDataTagihan(prev => prev.filter(t => t.id !== confirmDialog.id));
         }
         if (confirmDialog.type === 'PEMBAYARAN') {
+            supabase.from('Pembayaran').delete().eq('id', confirmDialog.id).then(({ error }) => { if (error) console.error("Gagal hapus pembayaran:", error); });
             const deletedTrx = dataPembayaran.find(p => p.id === confirmDialog.id);
             if (deletedTrx) {
                 setDataTagihan(prev => {
@@ -922,14 +982,26 @@ function App() {
             }
             setDataPembayaran(prev => prev.filter(p => p.id !== confirmDialog.id));
         }
-        if (confirmDialog.type === 'TABUNGAN') setDataTabungan(prev => prev.filter(t => t.id !== confirmDialog.id));
-        if (confirmDialog.type === 'KAS') setDataKas(prev => prev.filter(k => k.id !== confirmDialog.id));
-        if (confirmDialog.type === 'GAJI') setDataGaji(prev => prev.filter(g => g.id !== confirmDialog.id));
+        if (confirmDialog.type === 'TABUNGAN') {
+            supabase.from('Tabungan').delete().eq('id', confirmDialog.id).then(({ error }) => { if (error) console.error("Gagal hapus tabungan:", error); });
+            setDataTabungan(prev => prev.filter(t => t.id !== confirmDialog.id));
+        }
+        if (confirmDialog.type === 'KAS') {
+            supabase.from('Kas').delete().eq('id', confirmDialog.id).then(({ error }) => { if (error) console.error("Gagal hapus kas:", error); });
+            setDataKas(prev => prev.filter(k => k.id !== confirmDialog.id));
+        }
+        if (confirmDialog.type === 'GAJI') {
+            supabase.from('Gaji').delete().eq('id', confirmDialog.id).then(({ error }) => { if (error) console.error("Gagal hapus gaji:", error); });
+            setDataGaji(prev => prev.filter(g => g.id !== confirmDialog.id));
+        }
         if (confirmDialog.type === 'MASTER_PERIODE') setMasterPeriodeList(prev => prev.filter(p => p !== confirmDialog.id));
         if (confirmDialog.type === 'MASTER_KELAS') setMasterKelasList(prev => prev.filter(k => k !== confirmDialog.id));
         if (confirmDialog.type === 'MASTER_TAGIHAN') setMasterTagihanList(prev => prev.filter(t => t.tagihan !== confirmDialog.id));
         if (confirmDialog.type === 'MASTER_JABATAN') setMasterJabatanList(prev => prev.filter(j => j !== confirmDialog.id));
-        if (confirmDialog.type === 'LOG') setDataLog(prev => prev.filter(l => l.id !== confirmDialog.id));
+        if (confirmDialog.type === 'LOG') {
+            supabase.from('Logs').delete().eq('id', confirmDialog.id).then(({ error }) => { if (error) console.error("Gagal hapus log:", error); });
+            setDataLog(prev => prev.filter(l => l.id !== confirmDialog.id));
+        }
 
         addLog('DELETE', confirmDialog.type.replace('_', ' '), `Menghapus data: ${deletedName}`);
         showNotification('Data berhasil dihapus!');
