@@ -146,7 +146,8 @@ import {
     LayoutDashboard, Users, CreditCard, Wallet, TrendingUp, AlertCircle, Plus, Search, Filter, Bell,
     User, X, Trash2, Settings, FileSpreadsheet, FileText, BadgePercent, Zap, ArrowDownCircle,
     ArrowUpCircle, Edit, Printer, CheckCircle2, BarChart3, History, Activity, QrCode, Link as LinkIcon,
-    Copy, ExternalLink, RefreshCw, Check, Briefcase, BookOpen, DownloadCloud, TrendingDown, Menu, ArrowRight, ArrowLeft, Eye, EyeOff, ChevronRight, Scan, Download
+    Copy, ExternalLink, RefreshCw, Check, Briefcase, BookOpen, DownloadCloud, TrendingDown, Menu, ArrowRight, ArrowLeft, Eye, EyeOff, ChevronRight, Scan, Download,
+    SlidersHorizontal, ShieldAlert, ShieldCheck
 } from "lucide-react";
 
 // Import Recharts dengan parameter bundle untuk mencegah error lodash missing modules
@@ -283,6 +284,15 @@ function App() {
     const [formData, setFormData] = useState({});
     const [searchTerm, setSearchTerm] = useState('');
     const [currentPage, setCurrentPage] = useState(1);
+    const [tabunganSubTab, setTabunganSubTab] = useState('transaksi'); // 'transaksi' | 'limit'
+    const [tabunganKelasFilter, setTabunganKelasFilter] = useState('Semua');
+    const [limitModalData, setLimitModalData] = useState({
+        targetType: 'Semua', // 'Semua' | 'Kelas' | 'Santri'
+        selectedKelas: '',
+        selectedNis: '',
+        nominal: '',
+        periode: 'harian'
+    });
     
     useEffect(() => {
         setCurrentPage(1);
@@ -1638,14 +1648,188 @@ function App() {
         closeModal();
     };
 
+    // Helper hitung pemakaian penarikan/jajan tabungan santri dalam periode tertentu
+    const getUsageInPeriod = (nis, periode = 'harian', dataTabunganList = dataTabungan) => {
+        const sNisClean = String(nis || '').replace(/^0+/, '');
+        const now = new Date();
+        const todayStr = now.toISOString().split('T')[0];
+        
+        let startDateStr = todayStr;
+        if (periode === 'mingguan') {
+            const day = now.getDay();
+            const diffToMonday = (day === 0 ? -6 : 1) - day;
+            const monday = new Date(now);
+            monday.setDate(now.getDate() + diffToMonday);
+            startDateStr = monday.toISOString().split('T')[0];
+        } else if (periode === 'bulanan') {
+            startDateStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`;
+        }
+        
+        const userWithdrawals = (dataTabunganList || []).filter(t => {
+            const tNis = String(t.nis || t.NIS || '').replace(/^0+/, '');
+            const tJenis = String(t.jenis || t.Jenis || '').toLowerCase();
+            const tDate = String(t.tanggal || t.Tanggal || '').split('T')[0];
+            return tNis === sNisClean && tJenis === 'tarik' && tDate >= startDateStr && tDate <= todayStr;
+        });
+        
+        return userWithdrawals.reduce((sum, t) => sum + (Number(t.nominal || t.Nominal || 0)), 0);
+    };
+
+    // Helper untuk membaca konfigurasi limit santri (bisa custom atau default)
+    const getSantriLimitConfig = (santri, appConfigObj = appConfig) => {
+        if (!santri) return { limit: 0, periode: 'harian', isCustom: false };
+        const globalCfg = appConfigObj?.tabunganLimitConfig || {};
+        const santriMap = globalCfg?.santriLimits || {};
+        const sNisClean = String(santri.nis || '').replace(/^0+/, '');
+        const custom = santriMap[santri.nis] || santriMap[sNisClean];
+        
+        if (custom && custom.limit !== undefined) {
+            return {
+                limit: Number(custom.limit || 0),
+                periode: custom.periode || 'harian',
+                isCustom: true
+            };
+        }
+        
+        if (santri.limit_jajan_harian && Number(santri.limit_jajan_harian) > 0) {
+            return {
+                limit: Number(santri.limit_jajan_harian),
+                periode: santri.limit_periode || 'harian',
+                isCustom: true
+            };
+        }
+        
+        if (globalCfg.defaultLimit && Number(globalCfg.defaultLimit) > 0) {
+            return {
+                limit: Number(globalCfg.defaultLimit),
+                periode: globalCfg.defaultPeriode || 'harian',
+                isCustom: false
+            };
+        }
+        
+        return { limit: 0, periode: 'harian', isCustom: false };
+    };
+
+    const handleSaveLimitTabungan = async (e) => {
+        e.preventDefault();
+        const targetType = limitModalData.targetType || 'Semua';
+        const nominal = parseInt(String(limitModalData.nominal || 0).replace(/\D/g, ''), 10) || 0;
+        const periode = limitModalData.periode || 'harian';
+
+        const currentConfig = { ...(appConfig.tabunganLimitConfig || {}) };
+        const santriLimits = { ...(currentConfig.santriLimits || {}) };
+
+        let updatedSantriList = [...dataSantri];
+
+        if (targetType === 'Semua') {
+            currentConfig.defaultLimit = nominal;
+            currentConfig.defaultPeriode = periode;
+            updatedSantriList = updatedSantriList.map(s => {
+                const hasCustom = !!santriLimits[s.nis];
+                if (!hasCustom) {
+                    return { ...s, limit_jajan_harian: nominal, limit_periode: periode };
+                }
+                return s;
+            });
+        } else if (targetType === 'Kelas') {
+            const targetKelas = limitModalData.selectedKelas;
+            if (!targetKelas) return showNotification("Pilih kelas terlebih dahulu!");
+            
+            updatedSantriList = updatedSantriList.map(s => {
+                if (String(s.kelas).trim().toLowerCase() === String(targetKelas).trim().toLowerCase()) {
+                    santriLimits[s.nis] = { limit: nominal, periode: periode };
+                    return { ...s, limit_jajan_harian: nominal, limit_periode: periode };
+                }
+                return s;
+            });
+            currentConfig.santriLimits = santriLimits;
+        } else if (targetType === 'Santri') {
+            const targetNis = limitModalData.selectedNis;
+            if (!targetNis) return showNotification("Pilih santri terlebih dahulu!");
+
+            santriLimits[targetNis] = { limit: nominal, periode: periode };
+            currentConfig.santriLimits = santriLimits;
+
+            updatedSantriList = updatedSantriList.map(s => {
+                if (String(s.nis) === String(targetNis)) {
+                    return { ...s, limit_jajan_harian: nominal, limit_periode: periode };
+                }
+                return s;
+            });
+        }
+
+        setAppConfig(prev => ({ ...prev, tabunganLimitConfig: currentConfig }));
+        setDataSantri(updatedSantriList);
+
+        try {
+            await supabase.from('MasterConfig').upsert({
+                kunci: 'tabunganLimitConfig',
+                nilai: JSON.stringify(currentConfig)
+            }, { onConflict: 'kunci' });
+
+            if (targetType === 'Santri') {
+                await supabase.from('Data Santri').update({ limit_jajan_harian: nominal }).eq('nis', limitModalData.selectedNis);
+            } else if (targetType === 'Kelas') {
+                const affectedSantri = updatedSantriList.filter(s => String(s.kelas).trim().toLowerCase() === String(limitModalData.selectedKelas).trim().toLowerCase());
+                for (const s of affectedSantri) {
+                    await supabase.from('Data Santri').update({ limit_jajan_harian: nominal }).eq('nis', s.nis);
+                }
+            } else if (targetType === 'Semua') {
+                for (const s of updatedSantriList) {
+                    await supabase.from('Data Santri').update({ limit_jajan_harian: nominal }).eq('nis', s.nis);
+                }
+            }
+
+            const periodeText = periode === 'mingguan' ? 'Per Minggu' : periode === 'bulanan' ? 'Per Bulan' : 'Per Hari';
+            addLog('UPDATE', 'TABUNGAN', `Atur Limit Tabungan (${targetType}): Rp ${nominal.toLocaleString('id-ID')} (${periodeText})`);
+            showNotification(`Pengaturan limit tabungan berhasil disimpan!`);
+            closeModal();
+        } catch (err) {
+            console.error("Gagal simpan limit:", err);
+            showNotification(`Gagal menyimpan limit: ${err.message || 'Error'}`, "error");
+        }
+    };
+
     const submitTabungan = (e) => {
         e.preventDefault();
         const s = dataSantri.find(s => String(s.nis) === String(formData.nis)) || { nama: 'Unknown' };
         const nom = parseInt(String(formData.nominal || '').replace(/\D/g, ''), 10) || 0;
-        setDataTabungan(prev => [{ id: `TB-${Date.now()}`, tanggal: new Date().toISOString().split('T')[0], nis: formData.nis, nama: s.nama, jenis: formData.jenis || 'Setor', nominal: nom, keterangan: formData.keterangan || '' }, ...prev]);
-        addLog('CREATE', 'TABUNGAN', `${formData.jenis || 'Setor'} Rp ${nom.toLocaleString('id-ID')} - ${s.nama}`);
+        const jenis = formData.jenis || 'Setor';
+
+        if (nom <= 0) return showNotification("Nominal transaksi tidak valid!");
+
+        if (jenis === 'Tarik') {
+            const currentSaldo = dataTabungan
+                .filter(t => String(t.nis).replace(/^0+/, '') === String(formData.nis).replace(/^0+/, ''))
+                .reduce((sum, item) => item.jenis === 'Setor' ? sum + item.nominal : sum - item.nominal, 0);
+
+            if (nom > currentSaldo) {
+                return showNotification(`Saldo tabungan tidak mencukupi! Saldo saat ini: Rp ${currentSaldo.toLocaleString('id-ID')}`);
+            }
+
+            const { limit, periode } = getSantriLimitConfig(s);
+            if (limit > 0) {
+                const used = getUsageInPeriod(formData.nis, periode);
+                if (used + nom > limit) {
+                    const periodeLabel = periode === 'mingguan' ? 'minggu' : periode === 'bulanan' ? 'bulan' : 'hari';
+                    const confirmExceed = window.confirm(
+                        `PERINGATAN LIMIT TABUNGAN:\n\n` +
+                        `Santri: ${s.nama}\n` +
+                        `Batas Limit: Rp ${limit.toLocaleString('id-ID')} / ${periodeLabel}\n` +
+                        `Sudah Digunakan Periode Ini: Rp ${used.toLocaleString('id-ID')}\n` +
+                        `Penarikan Ini: Rp ${nom.toLocaleString('id-ID')}\n` +
+                        `Total Setelah Penarikan: Rp ${(used + nom).toLocaleString('id-ID')}\n\n` +
+                        `Penarikan ini MELEBIHI batas limit yang telah diatur. Apakah Anda (Admin) ingin tetap melanjutkan transaksi ini?`
+                    );
+                    if (!confirmExceed) return;
+                }
+            }
+        }
+
+        setDataTabungan(prev => [{ id: `TB-${Date.now()}`, tanggal: new Date().toISOString().split('T')[0], nis: formData.nis, nama: s.nama, jenis: jenis, nominal: nom, keterangan: formData.keterangan || '' }, ...prev]);
+        addLog('CREATE', 'TABUNGAN', `${jenis} Rp ${nom.toLocaleString('id-ID')} - ${s.nama}`);
         showNotification(`Tabungan dicatat!`);
-        triggerPushNotification(formData.nis, 'Info Tabungan', `Transaksi ${formData.jenis || 'Setor'} Tabungan Rp ${nom.toLocaleString('id-ID')} untuk Ananda ${s.nama} berhasil dicatat.`);
+        triggerPushNotification(formData.nis, 'Info Tabungan', `Transaksi ${jenis} Tabungan Rp ${nom.toLocaleString('id-ID')} untuk Ananda ${s.nama} berhasil dicatat.`);
         closeModal();
     };
 
@@ -2411,78 +2595,288 @@ function App() {
 
         const filteredIds = paginatedTabungan.map(t => t.id);
         const allChecked = filteredIds.length > 0 && filteredIds.every(id => selectedIds.includes(id));
+
+        // Perhitungan Limit Tabungan untuk sub-tab Limit
+        const filteredSantriForLimit = dataSantri.filter(s => {
+            const matchSearch = (s.nama || '').toLowerCase().includes(searchTerm.toLowerCase()) || String(s.nis || '').includes(searchTerm);
+            const matchKelas = tabunganKelasFilter === 'Semua' || String(s.kelas).trim().toLowerCase() === String(tabunganKelasFilter).trim().toLowerCase();
+            return matchSearch && matchKelas;
+        });
+
+        const totalSaldoAll = dataTabungan.reduce((sum, item) => item.jenis === 'Setor' ? sum + item.nominal : sum - item.nominal, 0);
+        const santriWithLimitCount = dataSantri.filter(s => getSantriLimitConfig(s).limit > 0).length;
+        const globalCfg = appConfig.tabunganLimitConfig || {};
+
         return (
             <div className="space-y-6 animate-in fade-in duration-500">
                 <div className="flex flex-col xl:flex-row justify-between items-start xl:items-center gap-4 mb-6 w-full">
-                    <div className="flex-1 min-w-0 pr-4"><h2 className="text-2xl font-semibold tracking-tight text-ink">Tabungan Santri</h2><p className="text-sm text-steel">Catat uang masuk (Setor) dan keluar (Tarik).</p></div>
-                    <div className="flex gap-2">
+                    <div className="flex-1 min-w-0 pr-4">
+                        <h2 className="text-2xl font-semibold tracking-tight text-ink">Tabungan Santri</h2>
+                        <p className="text-sm text-steel">Catat setor & tarik tabungan, serta atur limit penarikan/jajan per hari, minggu, atau bulan.</p>
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                        <button 
+                            onClick={() => {
+                                setLimitModalData({
+                                    targetType: 'Semua',
+                                    selectedKelas: '',
+                                    selectedNis: '',
+                                    nominal: globalCfg.defaultLimit || '',
+                                    periode: globalCfg.defaultPeriode || 'harian'
+                                });
+                                setModalType('FORM_ATUR_LIMIT_TABUNGAN');
+                            }} 
+                            className="px-4 py-2 bg-amber-500 hover:bg-amber-600 text-white font-medium text-sm rounded-xl flex items-center gap-2 shadow-sm transition-all"
+                        >
+                            <SlidersHorizontal className="w-4 h-4" /> Atur Limit Tabungan
+                        </button>
                         <button onClick={() => { setFormData({ jenis: 'Setor' }); setModalType('FORM_TABUNGAN'); }} className={btnPrimary}><Plus className="w-4 h-4" /> Transaksi Tabungan</button>
                         <button onClick={() => downloadStyledExcel('Tabungan Santri', ['Tanggal', 'NIS', 'Nama', 'Jenis', 'Nominal', 'Keterangan'], dataTabungan.map(t => [t.tanggal, t.nis, t.nama, t.jenis, t.nominal, t.keterangan]), 'Tabungan_Santri')} className={btnOutline}><FileSpreadsheet className="w-4 h-4 text-accent" /> Unduh</button>
                     </div>
                 </div>
-                <div className="bg-surface border border-whisper shadow-sm rounded-card overflow-hidden">
-                    <div className="p-4 border-b border-whisper/50 flex flex-col sm:flex-row justify-between sm:justify-end items-center gap-3 bg-canvas/40">
-                        <div className="relative w-full sm:w-auto">
-                            <Search className="w-4 h-4 absolute left-3 top-3 text-steel" />
-                            <input type="text" placeholder="Cari santri..." value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} className={`${inputBase} pl-9 w-full sm:w-64`} />
 
+                {/* Sub-tab Navigation */}
+                <div className="flex border-b border-whisper gap-2">
+                    <button 
+                        onClick={() => setTabunganSubTab('transaksi')} 
+                        className={`px-4 py-2.5 font-semibold text-sm border-b-2 transition-all flex items-center gap-2 ${tabunganSubTab === 'transaksi' ? 'border-accent text-accent' : 'border-transparent text-steel hover:text-ink'}`}
+                    >
+                        <Zap className="w-4 h-4" /> Riwayat Transaksi ({dataTabungan.length})
+                    </button>
+                    <button 
+                        onClick={() => setTabunganSubTab('limit')} 
+                        className={`px-4 py-2.5 font-semibold text-sm border-b-2 transition-all flex items-center gap-2 ${tabunganSubTab === 'limit' ? 'border-accent text-accent' : 'border-transparent text-steel hover:text-ink'}`}
+                    >
+                        <SlidersHorizontal className="w-4 h-4" /> Status & Pengaturan Limit Santri ({santriWithLimitCount} aktif)
+                    </button>
+                </div>
+
+                {tabunganSubTab === 'transaksi' ? (
+                    <div className="bg-surface border border-whisper shadow-sm rounded-card overflow-hidden">
+                        <div className="p-4 border-b border-whisper/50 flex flex-col sm:flex-row justify-between sm:justify-end items-center gap-3 bg-canvas/40">
+                            <div className="relative w-full sm:w-auto">
+                                <Search className="w-4 h-4 absolute left-3 top-3 text-steel" />
+                                <input type="text" placeholder="Cari santri..." value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} className={`${inputBase} pl-9 w-full sm:w-64`} />
+                            </div>
+                            {selectedIds.length > 0 && (
+                                <button onClick={() => executeBulkDelete('TABUNGAN', setDataTabungan, 'tabungan')} className="w-full sm:w-auto px-4 py-2.5 bg-rose-50 text-rose-600 font-medium text-sm rounded-xl hover:bg-rose-100 flex items-center justify-center gap-2 border border-rose-200"><Trash2 className="w-4 h-4" /> Hapus ({selectedIds.length})</button>
+                            )}
                         </div>
-                        {selectedIds.length > 0 && (
-                            <button onClick={() => executeBulkDelete('TABUNGAN', setDataTabungan, 'tabungan')} className="w-full sm:w-auto px-4 py-2.5 bg-rose-50 text-rose-600 font-medium text-sm rounded-xl hover:bg-rose-100 flex items-center justify-center gap-2 border border-rose-200"><Trash2 className="w-4 h-4" /> Hapus ({selectedIds.length})</button>
-                        )}
-                    </div>
-                    <div className="overflow-x-auto hidden md:block">
-                        <table className="w-full text-sm text-left">
-                            <thead className="bg-canvas/60 text-steel border-b border-whisper/50"><tr><th className="px-6 py-3 w-12 text-center"><input type="checkbox" checked={allChecked} onChange={() => toggleSelectAll(filteredIds)} className="w-4 h-4 rounded border-whisper text-accent cursor-pointer" /></th><th className="px-6 py-3">Tanggal</th><th className="px-6 py-3">Santri</th><th className="px-6 py-3 text-center">Jenis</th><th className="px-6 py-3 text-right">Nominal</th><th className="px-6 py-3">Keterangan</th><th className="px-6 py-3 text-center">Aksi</th></tr></thead>
-                            <tbody className="divide-y divide-slate-100">
-                                {paginatedTabungan.length === 0 ? (
-                                    <tr><td colSpan="100%" className="text-center py-8 text-steel">Belum ada catatan tabungan santri.</td></tr>
-                                ) : paginatedTabungan.map((trx) => (
-                                    <tr key={trx.id} className="bg-surface hover:bg-canvas">
-                                        <td className="px-6 py-4 text-center"><input type="checkbox" checked={selectedIds.includes(trx.id)} onChange={() => toggleSelectId(trx.id)} className="w-4 h-4 rounded border-whisper text-accent cursor-pointer" /></td>
-                                        <td className="px-6 py-4">{trx.tanggal}</td><td className="px-6 py-4 font-medium">{trx.nama}</td>
-                                        <td className="px-6 py-4 text-center"><span className={`inline-flex px-2 py-1 text-xs font-medium rounded-md ${trx.jenis === 'Setor' ? 'bg-emerald-50 text-emerald-700' : 'bg-rose-50 text-rose-700'}`}>{trx.jenis}</span></td>
-                                        <td className="px-6 py-4 text-right font-medium">Rp {Number(trx.nominal || 0).toLocaleString('id-ID')}</td><td className="px-6 py-4 text-steel">{trx.keterangan}</td>
-                                        <td className="px-6 py-4 text-center flex gap-3 justify-center"><button onClick={() => confirmDelete('TABUNGAN', trx.id, 'Transaksi Tabungan')} className="text-rose-600 hover:text-rose-800"><Trash2 className="w-4 h-4" /></button></td>
-                                    </tr>
-                                ))}
-                            </tbody>
-                        </table>
-                    </div>
-                    <div className="md:hidden flex flex-col divide-y divide-whisper/50">
-                        {paginatedTabungan.length === 0 ? (
-                            <div className="text-center py-8 text-steel text-sm">Belum ada catatan tabungan santri.</div>
-                        ) : paginatedTabungan.map((trx) => (
-                            <div key={trx.id} className={`p-4 flex flex-col gap-3 ${selectedIds.includes(trx.id) ? 'bg-accent/5' : 'bg-surface'}`}>
-                                <div className="flex justify-between items-start gap-3">
-                                    <div className="flex items-start gap-3 min-w-0">
-                                        <input type="checkbox" checked={selectedIds.includes(trx.id)} onChange={() => toggleSelectId(trx.id)} className="w-4 h-4 mt-1 shrink-0 rounded border-whisper text-accent focus:ring-accent/30 cursor-pointer" />
-                                        <div className="min-w-0">
-                                            <div className="font-bold text-ink truncate text-sm">{trx.nama}</div>
-                                            <div className="text-[10px] text-steel mt-0.5">{trx.tanggal}</div>
-                                            <div className="text-[10px] text-slate mt-1 line-clamp-2">{trx.keterangan}</div>
+                        <div className="overflow-x-auto hidden md:block">
+                            <table className="w-full text-sm text-left">
+                                <thead className="bg-canvas/60 text-steel border-b border-whisper/50"><tr><th className="px-6 py-3 w-12 text-center"><input type="checkbox" checked={allChecked} onChange={() => toggleSelectAll(filteredIds)} className="w-4 h-4 rounded border-whisper text-accent cursor-pointer" /></th><th className="px-6 py-3">Tanggal</th><th className="px-6 py-3">Santri</th><th className="px-6 py-3 text-center">Jenis</th><th className="px-6 py-3 text-right">Nominal</th><th className="px-6 py-3">Keterangan</th><th className="px-6 py-3 text-center">Aksi</th></tr></thead>
+                                <tbody className="divide-y divide-slate-100">
+                                    {paginatedTabungan.length === 0 ? (
+                                        <tr><td colSpan="100%" className="text-center py-8 text-steel">Belum ada catatan tabungan santri.</td></tr>
+                                    ) : paginatedTabungan.map((trx) => (
+                                        <tr key={trx.id} className="bg-surface hover:bg-canvas">
+                                            <td className="px-6 py-4 text-center"><input type="checkbox" checked={selectedIds.includes(trx.id)} onChange={() => toggleSelectId(trx.id)} className="w-4 h-4 rounded border-whisper text-accent cursor-pointer" /></td>
+                                            <td className="px-6 py-4">{trx.tanggal}</td><td className="px-6 py-4 font-medium">{trx.nama}</td>
+                                            <td className="px-6 py-4 text-center"><span className={`inline-flex px-2 py-1 text-xs font-medium rounded-md ${trx.jenis === 'Setor' ? 'bg-emerald-50 text-emerald-700' : 'bg-rose-50 text-rose-700'}`}>{trx.jenis}</span></td>
+                                            <td className="px-6 py-4 text-right font-medium">Rp {Number(trx.nominal || 0).toLocaleString('id-ID')}</td><td className="px-6 py-4 text-steel">{trx.keterangan}</td>
+                                            <td className="px-6 py-4 text-center flex gap-3 justify-center"><button onClick={() => confirmDelete('TABUNGAN', trx.id, 'Transaksi Tabungan')} className="text-rose-600 hover:text-rose-800"><Trash2 className="w-4 h-4" /></button></td>
+                                        </tr>
+                                    ))}
+                                </tbody>
+                            </table>
+                        </div>
+                        <div className="md:hidden flex flex-col divide-y divide-whisper/50">
+                            {paginatedTabungan.length === 0 ? (
+                                <div className="text-center py-8 text-steel text-sm">Belum ada catatan tabungan santri.</div>
+                            ) : paginatedTabungan.map((trx) => (
+                                <div key={trx.id} className={`p-4 flex flex-col gap-3 ${selectedIds.includes(trx.id) ? 'bg-accent/5' : 'bg-surface'}`}>
+                                    <div className="flex justify-between items-start gap-3">
+                                        <div className="flex items-start gap-3 min-w-0">
+                                            <input type="checkbox" checked={selectedIds.includes(trx.id)} onChange={() => toggleSelectId(trx.id)} className="w-4 h-4 mt-1 shrink-0 rounded border-whisper text-accent focus:ring-accent/30 cursor-pointer" />
+                                            <div className="min-w-0">
+                                                <div className="font-bold text-ink truncate text-sm">{trx.nama}</div>
+                                                <div className="text-[10px] text-steel mt-0.5">{trx.tanggal}</div>
+                                                <div className="text-[10px] text-slate mt-1 line-clamp-2">{trx.keterangan}</div>
+                                            </div>
+                                        </div>
+                                        <div className="text-right shrink-0">
+                                            <div className={`text-sm font-bold ${trx.jenis === 'Setor' ? 'text-emerald-600' : 'text-rose-600'}`}>{trx.jenis === 'Setor' ? '+' : '-'} Rp {Number(trx.nominal || 0).toLocaleString('id-ID')}</div>
+                                            <span className={`inline-block mt-1 px-1.5 py-0.5 text-[10px] font-bold uppercase rounded ${trx.jenis === 'Setor' ? 'bg-emerald-50 text-emerald-700' : 'bg-rose-50 text-rose-700'}`}>{trx.jenis}</span>
                                         </div>
                                     </div>
-                                    <div className="text-right shrink-0">
-                                        <div className={`text-sm font-bold ${trx.jenis === 'Setor' ? 'text-emerald-600' : 'text-rose-600'}`}>{trx.jenis === 'Setor' ? '+' : '-'} Rp {Number(trx.nominal || 0).toLocaleString('id-ID')}</div>
-                                        <span className={`inline-block mt-1 px-1.5 py-0.5 text-[10px] font-bold uppercase rounded ${trx.jenis === 'Setor' ? 'bg-emerald-50 text-emerald-700' : 'bg-rose-50 text-rose-700'}`}>{trx.jenis}</span>
+                                    <div className="flex flex-wrap items-center gap-2 justify-end w-full border-t border-whisper/50 pt-3 mt-1">
+                                        <button onClick={() => confirmDelete('TABUNGAN', trx.id, 'Transaksi Tabungan')} className="flex items-center gap-1 text-danger bg-dangerBg hover:bg-red-100 font-medium text-xs px-3 py-1.5 rounded-lg border border-red-100"><Trash2 className="w-3.5 h-3.5" /> Hapus</button>
                                     </div>
                                 </div>
-                                <div className="flex flex-wrap items-center gap-2 justify-end w-full border-t border-whisper/50 pt-3 mt-1">
-                                    <button onClick={() => confirmDelete('TABUNGAN', trx.id, 'Transaksi Tabungan')} className="flex items-center gap-1 text-danger bg-dangerBg hover:bg-red-100 font-medium text-xs px-3 py-1.5 rounded-lg border border-red-100"><Trash2 className="w-3.5 h-3.5" /> Hapus</button>
+                            ))}
+                        </div>
+                        
+                        {totalPages > 0 && (
+                            <div className="flex justify-center items-center gap-4 p-4 border-t border-whisper/50 bg-canvas/30">
+                                <button onClick={() => setCurrentPage(p => Math.max(1, p - 1))} disabled={currentPage === 1} className="px-3 py-1.5 text-sm font-medium border border-whisper rounded-lg bg-surface hover:bg-canvas disabled:opacity-50 disabled:cursor-not-allowed text-ink">Prev</button>
+                                <span className="text-sm text-steel font-medium">Hal {currentPage} dari {totalPages}</span>
+                                <button onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))} disabled={currentPage === totalPages} className="px-3 py-1.5 text-sm font-medium border border-whisper rounded-lg bg-surface hover:bg-canvas disabled:opacity-50 disabled:cursor-not-allowed text-ink">Next</button>
+                            </div>
+                        )}
+                    </div>
+                ) : (
+                    /* Sub-tab: Status & Pengaturan Limit Santri */
+                    <div className="space-y-6">
+                        {/* Summary KPI Cards */}
+                        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+                            <div className="bg-surface border border-whisper p-5 rounded-2xl shadow-sm">
+                                <div className="flex items-center gap-3 mb-2">
+                                    <div className="w-8 h-8 rounded-lg bg-emerald-50 text-emerald-600 flex items-center justify-center font-bold"><Wallet className="w-4 h-4" /></div>
+                                    <span className="text-xs text-steel font-semibold uppercase">Total Tabungan</span>
+                                </div>
+                                <div className="text-xl font-bold text-ink">Rp {totalSaldoAll.toLocaleString('id-ID')}</div>
+                            </div>
+                            <div className="bg-surface border border-whisper p-5 rounded-2xl shadow-sm">
+                                <div className="flex items-center gap-3 mb-2">
+                                    <div className="w-8 h-8 rounded-lg bg-amber-50 text-amber-600 flex items-center justify-center font-bold"><ShieldAlert className="w-4 h-4" /></div>
+                                    <span className="text-xs text-steel font-semibold uppercase">Santri Dibatasi</span>
+                                </div>
+                                <div className="text-xl font-bold text-amber-600">{santriWithLimitCount} <span className="text-xs text-steel font-normal">dari {dataSantri.length} santri</span></div>
+                            </div>
+                            <div className="bg-surface border border-whisper p-5 rounded-2xl shadow-sm">
+                                <div className="flex items-center gap-3 mb-2">
+                                    <div className="w-8 h-8 rounded-lg bg-blue-50 text-blue-600 flex items-center justify-center font-bold"><ShieldCheck className="w-4 h-4" /></div>
+                                    <span className="text-xs text-steel font-semibold uppercase">Tanpa Batasan</span>
+                                </div>
+                                <div className="text-xl font-bold text-blue-600">{dataSantri.length - santriWithLimitCount} <span className="text-xs text-steel font-normal">santri bebas</span></div>
+                            </div>
+                            <div className="bg-surface border border-whisper p-5 rounded-2xl shadow-sm">
+                                <div className="flex items-center gap-3 mb-2">
+                                    <div className="w-8 h-8 rounded-lg bg-purple-50 text-purple-600 flex items-center justify-center font-bold"><SlidersHorizontal className="w-4 h-4" /></div>
+                                    <span className="text-xs text-steel font-semibold uppercase">Default Sistem</span>
+                                </div>
+                                <div className="text-base font-bold text-ink">
+                                    {globalCfg.defaultLimit > 0 
+                                        ? `Rp ${Number(globalCfg.defaultLimit).toLocaleString('id-ID')} / ${globalCfg.defaultPeriode === 'mingguan' ? 'Minggu' : globalCfg.defaultPeriode === 'bulanan' ? 'Bulan' : 'Hari'}`
+                                        : 'Tidak Dibatasi'
+                                    }
                                 </div>
                             </div>
-                        ))}
-                    </div>
-                    
-                    {totalPages > 0 && (
-                        <div className="flex justify-center items-center gap-4 p-4 border-t border-whisper/50 bg-canvas/30">
-                            <button onClick={() => setCurrentPage(p => Math.max(1, p - 1))} disabled={currentPage === 1} className="px-3 py-1.5 text-sm font-medium border border-whisper rounded-lg bg-surface hover:bg-canvas disabled:opacity-50 disabled:cursor-not-allowed text-ink">Prev</button>
-                            <span className="text-sm text-steel font-medium">Hal {currentPage} dari {totalPages}</span>
-                            <button onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))} disabled={currentPage === totalPages} className="px-3 py-1.5 text-sm font-medium border border-whisper rounded-lg bg-surface hover:bg-canvas disabled:opacity-50 disabled:cursor-not-allowed text-ink">Next</button>
                         </div>
-                    )}
-                </div>
+
+                        {/* Search & Kelas Filter Bar */}
+                        <div className="bg-surface border border-whisper shadow-sm rounded-card overflow-hidden">
+                            <div className="p-4 border-b border-whisper/50 flex flex-col sm:flex-row justify-between items-center gap-3 bg-canvas/40">
+                                <div className="flex items-center gap-2 w-full sm:w-auto">
+                                    <span className="text-xs font-semibold text-steel uppercase">Filter Kelas:</span>
+                                    <select 
+                                        value={tabunganKelasFilter} 
+                                        onChange={(e) => setTabunganKelasFilter(e.target.value)} 
+                                        className={`${inputBase} py-1.5 text-xs w-auto`}
+                                    >
+                                        <option value="Semua">Semua Kelas</option>
+                                        {masterKelasList.map(k => <option key={k} value={k}>{k}</option>)}
+                                    </select>
+                                </div>
+                                <div className="relative w-full sm:w-auto">
+                                    <Search className="w-4 h-4 absolute left-3 top-3 text-steel" />
+                                    <input 
+                                        type="text" 
+                                        placeholder="Cari santri / NIS..." 
+                                        value={searchTerm} 
+                                        onChange={(e) => setSearchTerm(e.target.value)} 
+                                        className={`${inputBase} pl-9 w-full sm:w-64`} 
+                                    />
+                                </div>
+                            </div>
+
+                            {/* Table List Santri & Limits */}
+                            <div className="overflow-x-auto">
+                                <table className="w-full text-sm text-left">
+                                    <thead className="bg-canvas/60 text-steel border-b border-whisper/50">
+                                        <tr>
+                                            <th className="px-6 py-3">NIS</th>
+                                            <th className="px-6 py-3">Nama Santri</th>
+                                            <th className="px-6 py-3">Kelas</th>
+                                            <th className="px-6 py-3 text-right">Saldo Tabungan</th>
+                                            <th className="px-6 py-3 text-center">Aturan Limit</th>
+                                            <th className="px-6 py-3 text-right">Pemakaian Periode Ini</th>
+                                            <th className="px-6 py-3 text-right">Sisa Limit</th>
+                                            <th className="px-6 py-3 text-center">Aksi</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody className="divide-y divide-slate-100">
+                                        {filteredSantriForLimit.length === 0 ? (
+                                            <tr><td colSpan="8" className="text-center py-8 text-steel">Tidak ada santri ditemukan.</td></tr>
+                                        ) : filteredSantriForLimit.map((s) => {
+                                            const saldo = dataTabungan
+                                                .filter(t => String(t.nis).replace(/^0+/, '') === String(s.nis).replace(/^0+/, ''))
+                                                .reduce((sum, item) => item.jenis === 'Setor' ? sum + item.nominal : sum - item.nominal, 0);
+                                            
+                                            const limitCfg = getSantriLimitConfig(s);
+                                            const used = getUsageInPeriod(s.nis, limitCfg.periode);
+                                            const sisa = limitCfg.limit > 0 ? Math.max(0, limitCfg.limit - used) : null;
+                                            const percentageUsed = limitCfg.limit > 0 ? Math.min(100, Math.round((used / limitCfg.limit) * 100)) : 0;
+                                            const periodeLabel = limitCfg.periode === 'mingguan' ? 'Minggu' : limitCfg.periode === 'bulanan' ? 'Bulan' : 'Hari';
+
+                                            return (
+                                                <tr key={s.nis} className="bg-surface hover:bg-canvas transition-colors">
+                                                    <td className="px-6 py-4 font-mono text-xs text-steel">{s.nis}</td>
+                                                    <td className="px-6 py-4 font-semibold text-ink">{s.nama}</td>
+                                                    <td className="px-6 py-4 text-steel text-xs"><span className="px-2 py-1 bg-slate-100 rounded-md font-medium">{s.kelas || '-'}</span></td>
+                                                    <td className="px-6 py-4 text-right font-bold text-emerald-600">Rp {saldo.toLocaleString('id-ID')}</td>
+                                                    <td className="px-6 py-4 text-center">
+                                                        {limitCfg.limit > 0 ? (
+                                                            <div className="inline-flex flex-col items-center">
+                                                                <span className="px-2.5 py-1 text-xs font-semibold rounded-lg bg-amber-50 text-amber-700 border border-amber-200">
+                                                                    Rp {limitCfg.limit.toLocaleString('id-ID')} / {periodeLabel}
+                                                                </span>
+                                                                {limitCfg.isCustom && <span className="text-[10px] text-steel mt-0.5 font-medium">(Khusus)</span>}
+                                                            </div>
+                                                        ) : (
+                                                            <span className="px-2 py-0.5 text-xs text-slate-500 bg-slate-100 rounded-md font-medium">Bebas (Tanpa Limit)</span>
+                                                        )}
+                                                    </td>
+                                                    <td className="px-6 py-4 text-right">
+                                                        {limitCfg.limit > 0 ? (
+                                                            <div>
+                                                                <div className="font-medium text-ink">Rp {used.toLocaleString('id-ID')}</div>
+                                                                <div className="w-24 bg-slate-100 h-1.5 rounded-full overflow-hidden mt-1 ml-auto">
+                                                                    <div 
+                                                                        className={`h-full rounded-full ${percentageUsed >= 100 ? 'bg-red-500' : percentageUsed > 75 ? 'bg-amber-500' : 'bg-emerald-500'}`} 
+                                                                        style={{ width: `${percentageUsed}%` }}
+                                                                    />
+                                                                </div>
+                                                            </div>
+                                                        ) : (
+                                                            <span className="text-steel text-xs">Rp {used.toLocaleString('id-ID')}</span>
+                                                        )}
+                                                    </td>
+                                                    <td className="px-6 py-4 text-right font-bold">
+                                                        {limitCfg.limit > 0 ? (
+                                                            <span className={`text-xs px-2 py-1 rounded-md ${sisa <= 0 ? 'bg-rose-50 text-rose-700 font-bold' : sisa <= (limitCfg.limit * 0.25) ? 'bg-amber-50 text-amber-700' : 'text-emerald-700 bg-emerald-50'}`}>
+                                                                Rp {sisa.toLocaleString('id-ID')}
+                                                            </span>
+                                                        ) : (
+                                                            <span className="text-steel text-xs font-normal">Tak Terbatas</span>
+                                                        )}
+                                                    </td>
+                                                    <td className="px-6 py-4 text-center">
+                                                        <button 
+                                                            onClick={() => {
+                                                                setLimitModalData({
+                                                                    targetType: 'Santri',
+                                                                    selectedKelas: s.kelas || '',
+                                                                    selectedNis: s.nis,
+                                                                    nominal: limitCfg.limit || '',
+                                                                    periode: limitCfg.periode || 'harian'
+                                                                });
+                                                                setModalType('FORM_ATUR_LIMIT_TABUNGAN');
+                                                            }} 
+                                                            className="px-3 py-1.5 text-xs font-medium text-amber-700 bg-amber-50 hover:bg-amber-100 border border-amber-200 rounded-lg flex items-center gap-1.5 mx-auto transition-colors"
+                                                        >
+                                                            <Edit className="w-3.5 h-3.5" /> Atur Limit
+                                                        </button>
+                                                    </td>
+                                                </tr>
+                                            );
+                                        })}
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+                )}
             </div>
         );
     };
@@ -3233,6 +3627,130 @@ function App() {
                         <div><label className="block text-sm font-medium text-ink mb-1">Nominal (Rp)</label><input required name="nominal" value={formData.nominal || ''} onChange={handleInputChange} type="number" className={inputBase} /></div>
                     </div>
                     <div className="mt-2"><label className="block text-sm font-medium text-ink mb-1">Keterangan Tambahan</label><input name="keterangan" value={formData.keterangan || ''} onChange={handleInputChange} type="text" className={inputBase} placeholder="Contoh: Uang jajan, dll..." /></div>
+                </FormWrapper>
+            );
+        }
+
+        if (modalType === 'FORM_ATUR_LIMIT_TABUNGAN') {
+            const santriRef = limitModalData.selectedNis ? dataSantri.find(s => s.nis === limitModalData.selectedNis) : null;
+            return (
+                <FormWrapper title="Atur Limit Tabungan & Jajan Santri" onClose={closeModal} onSubmit={handleSaveLimitTabungan}>
+                    <div>
+                        <label className="block text-sm font-medium text-ink mb-1">Target Pengaturan</label>
+                        <select 
+                            value={limitModalData.targetType} 
+                            onChange={(e) => setLimitModalData(prev => ({ ...prev, targetType: e.target.value }))}
+                            className={inputBase}
+                        >
+                            <option value="Semua">Semua Santri (Default Sistem)</option>
+                            <option value="Kelas">Berdasarkan Kelas</option>
+                            <option value="Santri">Santri Tertentu (Per Santri)</option>
+                        </select>
+                    </div>
+
+                    {limitModalData.targetType === 'Kelas' && (
+                        <div>
+                            <label className="block text-sm font-medium text-ink mb-1">Pilih Kelas</label>
+                            <select 
+                                required 
+                                value={limitModalData.selectedKelas} 
+                                onChange={(e) => setLimitModalData(prev => ({ ...prev, selectedKelas: e.target.value }))} 
+                                className={inputBase}
+                            >
+                                <option value="">-- Pilih Kelas --</option>
+                                {masterKelasList.map(k => <option key={k} value={k}>{k}</option>)}
+                            </select>
+                        </div>
+                    )}
+
+                    {limitModalData.targetType === 'Santri' && (
+                        <div>
+                            <label className="block text-sm font-medium text-ink mb-1">Pilih Santri</label>
+                            <SantriCombobox 
+                                dataSantri={dataSantri} 
+                                formData={{ nis: limitModalData.selectedNis }} 
+                                setFormData={(val) => {
+                                    const nisVal = typeof val === 'function' ? val({ nis: limitModalData.selectedNis }).nis : val.nis;
+                                    const s = dataSantri.find(x => x.nis === nisVal);
+                                    const currentCfg = s ? getSantriLimitConfig(s) : { limit: 0, periode: 'harian' };
+                                    setLimitModalData(prev => ({ 
+                                        ...prev, 
+                                        selectedNis: nisVal,
+                                        nominal: currentCfg.limit || '',
+                                        periode: currentCfg.periode || 'harian'
+                                    }));
+                                }} 
+                            />
+                            {santriRef && (
+                                <p className="text-xs text-steel mt-1">Santri terpilih: <span className="font-semibold text-ink">{santriRef.nama}</span> (Kelas {santriRef.kelas || '-'})</p>
+                            )}
+                        </div>
+                    )}
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                        <div>
+                            <label className="block text-sm font-medium text-ink mb-1">Periode Limit</label>
+                            <select 
+                                required 
+                                value={limitModalData.periode} 
+                                onChange={(e) => setLimitModalData(prev => ({ ...prev, periode: e.target.value }))} 
+                                className={inputBase}
+                            >
+                                <option value="harian">Per Hari (Harian)</option>
+                                <option value="mingguan">Per Minggu (Mingguan)</option>
+                                <option value="bulanan">Per Bulan (Bulanan)</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label className="block text-sm font-medium text-ink mb-1">Batas Maksimal (Rp)</label>
+                            <input 
+                                required 
+                                type="number" 
+                                min="0" 
+                                step="1000"
+                                value={limitModalData.nominal} 
+                                onChange={(e) => setLimitModalData(prev => ({ ...prev, nominal: e.target.value }))} 
+                                className={inputBase} 
+                                placeholder="0 = Bebas (Tanpa Limit)"
+                            />
+                        </div>
+                    </div>
+
+                    <div>
+                        <p className="text-xs text-steel mb-1.5">Pilihan Nominal Cepat:</p>
+                        <div className="flex flex-wrap gap-2">
+                            {[
+                                { label: 'Bebas (0)', val: 0 },
+                                { label: 'Rp 10.000', val: 10000 },
+                                { label: 'Rp 20.000', val: 20000 },
+                                { label: 'Rp 50.000', val: 50000 },
+                                { label: 'Rp 100.000', val: 100000 },
+                                { label: 'Rp 250.000', val: 250000 },
+                                { label: 'Rp 500.000', val: 500000 }
+                            ].map(item => (
+                                <button
+                                    type="button"
+                                    key={item.val}
+                                    onClick={() => setLimitModalData(prev => ({ ...prev, nominal: item.val }))}
+                                    className={`px-2.5 py-1 text-xs rounded-lg border transition-all ${Number(limitModalData.nominal) === item.val ? 'bg-accent text-white border-accent' : 'bg-surface text-steel hover:bg-canvas border-whisper'}`}
+                                >
+                                    {item.label}
+                                </button>
+                            ))}
+                        </div>
+                    </div>
+
+                    <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 text-xs text-amber-800">
+                        <div className="font-semibold flex items-center gap-1.5 mb-1">
+                            <AlertCircle className="w-4 h-4 text-amber-600" /> Informasi Aturan Limit:
+                        </div>
+                        <ul className="list-disc list-inside space-y-0.5 text-amber-700">
+                            <li><strong>Per Hari</strong>: Direset otomatis setiap tengah malam (00:00).</li>
+                            <li><strong>Per Minggu</strong>: Direset setiap awal pekan (Senin - Minggu).</li>
+                            <li><strong>Per Bulan</strong>: Direset setiap tanggal 1 awal bulan baru.</li>
+                            <li>Limit ini membatasi <strong>penarikan tabungan</strong> di Admin dan <strong>transaksi jajan di kantin POS</strong>.</li>
+                        </ul>
+                    </div>
                 </FormWrapper>
             );
         }
