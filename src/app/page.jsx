@@ -3077,18 +3077,34 @@ function App() {
     };
     // --- PENCAIRAN WARUNG ---
     const [dataPencairan, setDataPencairan] = useState([]);
+    const [dataWarung, setDataWarung] = useState([]);
     const [loadingPencairan, setLoadingPencairan] = useState(false);
     const [modalDetailPencairan, setModalDetailPencairan] = useState(null);
     const [detailPencairanData, setDetailPencairanData] = useState([]);
+    const [modalEditPencairan, setModalEditPencairan] = useState(null);
+    const [pencairanSearchTerm, setPencairanSearchTerm] = useState('');
+    const [pencairanStatusFilter, setPencairanStatusFilter] = useState('Semua');
+
+    const getNamaWarung = (warungId) => {
+        if (!warungId) return '-';
+        const w = (dataWarung || []).find(item => String(item.ID || item.id) === String(warungId));
+        return w ? (w.Nama || w.nama || warungId) : warungId;
+    };
 
     const fetchPencairanGlobal = async () => {
         setLoadingPencairan(true);
         try {
-            const { data, error } = await supabase.from('Pencairan').select('*').order('WaktuPengajuan', { ascending: false });
-            if (!error) {
-                setDataPencairan(data || []);
+            const [pRes, wRes] = await Promise.all([
+                supabase.from('Pencairan').select('*').order('WaktuPengajuan', { ascending: false }),
+                supabase.from('Warung').select('*')
+            ]);
+            if (!pRes.error) {
+                setDataPencairan(pRes.data || []);
             } else {
                 showNotification('Gagal memuat data pencairan', 'error');
+            }
+            if (!wRes.error) {
+                setDataWarung(wRes.data || []);
             }
         } catch (e) {
             showNotification('Gagal memuat data pencairan', 'error');
@@ -3115,7 +3131,7 @@ function App() {
             const { data, error } = await supabase.from('Transaksi').select('*').eq('IDPencairan', idPencairan);
             if (!error) {
                 const detailData = (data || []).map(trx => {
-                    const santri = dataSantri.find(s => s.nis === trx.SantriID);
+                    const santri = dataSantri.find(s => String(s.nis).replace(/^0+/, '') === String(trx.SantriID).replace(/^0+/, ''));
                     return { ...trx, NamaSantri: santri ? santri.nama : '-' };
                 });
                 setDetailPencairanData(detailData);
@@ -3129,13 +3145,16 @@ function App() {
     };
 
     const handleSelesaiPencairan = async (idPencairan) => {
-        if (!confirm('Tandai pencairan ini sebagai Selesai?')) return;
+        const item = dataPencairan.find(x => x.IDPencairan === idPencairan);
+        const warungName = item ? getNamaWarung(item.WarungID) : '';
+        if (!confirm(`Tandai pencairan ${idPencairan} (${warungName}) sebagai Selesai?`)) return;
         showNotification('Menyimpan status...', 'info');
         try {
             const { error } = await supabase.from('Pencairan').update({ Status: 'Selesai', WaktuSelesai: new Date().toISOString() }).eq('IDPencairan', idPencairan);
             if (!error) {
                 await supabase.from('Transaksi').update({ StatusPencairan: 'Selesai' }).eq('IDPencairan', idPencairan);
-                showNotification('Status berhasil diupdate!', 'success');
+                addLog('UPDATE', 'PENCAIRAN', `Cairkan / Selesai: ${idPencairan} (${warungName})`);
+                showNotification('Status berhasil diupdate menjadi Selesai!', 'success');
                 fetchPencairanGlobal();
                 if (modalDetailPencairan === idPencairan) setModalDetailPencairan(null);
             } else {
@@ -3146,8 +3165,99 @@ function App() {
         }
     };
 
+    const handleOpenEditPencairan = (item) => {
+        setModalEditPencairan({
+            IDPencairan: item.IDPencairan,
+            WarungID: item.WarungID || '',
+            TotalDana: item.TotalDana || 0,
+            Status: item.Status || 'Menunggu',
+            WaktuPengajuan: item.WaktuPengajuan ? new Date(item.WaktuPengajuan).toISOString().slice(0, 16) : '',
+            WaktuSelesai: item.WaktuSelesai ? new Date(item.WaktuSelesai).toISOString().slice(0, 16) : ''
+        });
+    };
+
+    const handleSaveEditPencairan = async (e) => {
+        e.preventDefault();
+        if (!modalEditPencairan) return;
+        showNotification('Menyimpan perubahan pencairan...', 'info');
+        try {
+            const updatePayload = {
+                WarungID: modalEditPencairan.WarungID,
+                TotalDana: Number(modalEditPencairan.TotalDana || 0),
+                Status: modalEditPencairan.Status,
+                WaktuPengajuan: modalEditPencairan.WaktuPengajuan ? new Date(modalEditPencairan.WaktuPengajuan).toISOString() : new Date().toISOString(),
+                WaktuSelesai: modalEditPencairan.Status === 'Selesai' 
+                    ? (modalEditPencairan.WaktuSelesai ? new Date(modalEditPencairan.WaktuSelesai).toISOString() : new Date().toISOString())
+                    : null
+            };
+
+            const { error } = await supabase
+                .from('Pencairan')
+                .update(updatePayload)
+                .eq('IDPencairan', modalEditPencairan.IDPencairan);
+
+            if (error) throw error;
+
+            // Sesuaikan status transaksi terkait jika status berubah
+            if (modalEditPencairan.Status === 'Selesai') {
+                await supabase.from('Transaksi').update({ StatusPencairan: 'Selesai' }).eq('IDPencairan', modalEditPencairan.IDPencairan);
+            } else if (modalEditPencairan.Status === 'Menunggu') {
+                await supabase.from('Transaksi').update({ StatusPencairan: 'Sedang Diajukan' }).eq('IDPencairan', modalEditPencairan.IDPencairan);
+            }
+
+            addLog('UPDATE', 'PENCAIRAN', `Edit pencairan ${modalEditPencairan.IDPencairan} (${getNamaWarung(modalEditPencairan.WarungID)}): Rp ${Number(modalEditPencairan.TotalDana || 0).toLocaleString('id-ID')} [${modalEditPencairan.Status}]`);
+            showNotification('Data pencairan berhasil diperbarui!', 'success');
+            setModalEditPencairan(null);
+            fetchPencairanGlobal();
+        } catch (err) {
+            console.error(err);
+            showNotification(`Gagal menyimpan perubahan: ${err.message || 'Error'}`, 'error');
+        }
+    };
+
+    const handleHapusPencairan = async (item) => {
+        const warungName = getNamaWarung(item.WarungID);
+        const confirmDelete = window.confirm(
+            `HAPUS PENCAIRAN DANA?\n\n` +
+            `ID: ${item.IDPencairan}\n` +
+            `Warung: ${warungName}\n` +
+            `Total Dana: Rp ${Number(item.TotalDana || 0).toLocaleString('id-ID')}\n` +
+            `Status: ${item.Status}\n\n` +
+            `Transaksi non-tunai terkait akan dikembalikan ke status 'Belum Dicairkan' sehingga warung dapat mengajukannya kembali.\n\n` +
+            `Apakah Anda yakin ingin menghapus pencairan ini?`
+        );
+        if (!confirmDelete) return;
+
+        showNotification('Menghapus data pencairan...', 'info');
+        try {
+            // 1. Reset relasi Transaksi agar transaksi warung tidak terikat IDPencairan yang sudah dihapus
+            await supabase.from('Transaksi').update({ IDPencairan: null, StatusPencairan: null }).eq('IDPencairan', item.IDPencairan);
+            
+            // 2. Hapus data Pencairan
+            const { error } = await supabase.from('Pencairan').delete().eq('IDPencairan', item.IDPencairan);
+            if (error) throw error;
+
+            addLog('DELETE', 'PENCAIRAN', `Hapus pencairan ${item.IDPencairan} - Warung ${warungName}`);
+            showNotification('Data pencairan berhasil dihapus!', 'success');
+            fetchPencairanGlobal();
+            if (modalDetailPencairan === item.IDPencairan) setModalDetailPencairan(null);
+        } catch (err) {
+            console.error(err);
+            showNotification(`Gagal menghapus pencairan: ${err.message || 'Error'}`, 'error');
+        }
+    };
+
     const renderPencairanWarung = () => {
-        const filtered = dataPencairan;
+        const filtered = dataPencairan.filter(item => {
+            const warungNama = getNamaWarung(item.WarungID).toLowerCase();
+            const warungId = String(item.WarungID || '').toLowerCase();
+            const idPencairan = String(item.IDPencairan || '').toLowerCase();
+            const term = pencairanSearchTerm.toLowerCase();
+            const matchSearch = warungNama.includes(term) || warungId.includes(term) || idPencairan.includes(term);
+            const matchStatus = pencairanStatusFilter === 'Semua' || item.Status === pencairanStatusFilter;
+            return matchSearch && matchStatus;
+        });
+
         const itemsPerPage = 10;
         const totalPages = Math.ceil(filtered.length / itemsPerPage);
         const paginatedPencairan = filtered.slice((currentPage - 1) * itemsPerPage, currentPage * itemsPerPage);
@@ -3157,21 +3267,51 @@ function App() {
                 <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4">
                     <div>
                         <h1 className="text-2xl font-bold text-ink flex items-center gap-2"><Wallet className="w-6 h-6 text-primary" /> Pencairan Warung</h1>
-                        <p className="text-steel text-sm mt-1">Kelola dan pantau pengajuan pencairan dana dari seluruh warung.</p>
+                        <p className="text-steel text-sm mt-1">Kelola dan pantau pengajuan pencairan dana dari seluruh merchant/warung.</p>
                     </div>
-                    <button onClick={fetchPencairanGlobal} className={btnOutline}>
-                        <RefreshCw className={`w-4 h-4 ${loadingPencairan ? 'animate-spin' : ''}`} /> Refresh
-                    </button>
+                    <div className="flex flex-wrap items-center gap-2">
+                        <button onClick={fetchPencairanGlobal} className={btnOutline}>
+                            <RefreshCw className={`w-4 h-4 ${loadingPencairan ? 'animate-spin' : ''}`} /> Refresh
+                        </button>
+                    </div>
+                </div>
+
+                {/* Filter & Search Bar */}
+                <div className="bg-surface border border-whisper rounded-card p-4 shadow-sm flex flex-col sm:flex-row items-center justify-between gap-3">
+                    <div className="relative w-full sm:w-80">
+                        <Search className="w-4 h-4 absolute left-3 top-3 text-steel" />
+                        <input 
+                            type="text" 
+                            placeholder="Cari nama warung atau ID pencairan..." 
+                            value={pencairanSearchTerm} 
+                            onChange={(e) => { setPencairanSearchTerm(e.target.value); setCurrentPage(1); }} 
+                            className={`${inputBase} pl-9 w-full`} 
+                        />
+                    </div>
+                    <div className="flex items-center gap-2 w-full sm:w-auto">
+                        <label className="text-xs text-steel font-medium shrink-0">Filter Status:</label>
+                        <select 
+                            value={pencairanStatusFilter} 
+                            onChange={(e) => { setPencairanStatusFilter(e.target.value); setCurrentPage(1); }}
+                            className={`${inputBase} py-2 text-xs w-full sm:w-40`}
+                        >
+                            <option value="Semua">Semua Status</option>
+                            <option value="Menunggu">Menunggu</option>
+                            <option value="Selesai">Selesai</option>
+                            <option value="Ditolak">Ditolak</option>
+                        </select>
+                    </div>
                 </div>
 
                 <div className="bg-surface border border-whisper rounded-card p-6 shadow-sm overflow-hidden">
-                    <div className="overflow-x-auto">
+                    {/* Desktop Table View */}
+                    <div className="overflow-x-auto hidden md:block">
                         <table className="w-full text-left border-collapse">
                             <thead>
                                 <tr className="border-b border-whisper text-steel text-sm">
                                     <th className="pb-3 font-medium">ID Pencairan</th>
                                     <th className="pb-3 font-medium">Waktu Pengajuan</th>
-                                    <th className="pb-3 font-medium">Warung</th>
+                                    <th className="pb-3 font-medium">Warung / Merchant</th>
                                     <th className="pb-3 font-medium text-right">Total Dana</th>
                                     <th className="pb-3 font-medium text-center">Status</th>
                                     <th className="pb-3 font-medium text-right">Aksi</th>
@@ -3179,30 +3319,126 @@ function App() {
                             </thead>
                             <tbody className="text-sm">
                                 {loadingPencairan ? (
-                                    <tr><td colSpan="6" className="text-center py-8 text-steel">Memuat data...</td></tr>
+                                    <tr><td colSpan="6" className="text-center py-8 text-steel">Memuat data pencairan...</td></tr>
                                 ) : paginatedPencairan.length === 0 ? (
-                                    <tr><td colSpan="6" className="text-center py-8 text-steel">Belum ada pengajuan pencairan.</td></tr>
-                                ) : paginatedPencairan.map((item, idx) => (
-                                    <tr key={idx} className="border-b border-slate-50 hover:bg-slate-50 transition-colors">
-                                        <td className="py-4 text-ink font-medium">{item.IDPencairan}</td>
-                                        <td className="py-4 text-steel">{formatDateTimeID(new Date(item.WaktuPengajuan))}</td>
-                                        <td className="py-4 text-ink font-medium">{item.NamaWarung || item.WarungID}</td>
-                                        <td className="py-4 text-ink font-bold text-right">Rp {Number(item.TotalDana || 0).toLocaleString('id-ID')}</td>
+                                    <tr><td colSpan="6" className="text-center py-8 text-steel">Tidak ada data pencairan yang sesuai.</td></tr>
+                                ) : paginatedPencairan.map((item) => (
+                                    <tr key={item.IDPencairan} className="border-b border-slate-50 hover:bg-slate-50 transition-colors">
+                                        <td className="py-4 font-mono text-xs font-semibold text-slate-700">{item.IDPencairan}</td>
+                                        <td className="py-4 text-steel text-xs">{item.WaktuPengajuan ? formatDateTimeID(new Date(item.WaktuPengajuan)) : '-'}</td>
+                                        <td className="py-4">
+                                            <div className="font-semibold text-ink text-sm">{getNamaWarung(item.WarungID)}</div>
+                                            <div className="text-[11px] text-steel font-mono">{item.WarungID}</div>
+                                        </td>
+                                        <td className="py-4 text-ink font-bold text-right text-base">Rp {Number(item.TotalDana || 0).toLocaleString('id-ID')}</td>
                                         <td className="py-4 text-center">
-                                            <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${item.Status === 'Selesai' ? 'bg-successBg text-success' : 'bg-warning/20 text-warning'}`}>
-                                                {item.Status}
+                                            <span className={`inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold ${
+                                                item.Status === 'Selesai' 
+                                                    ? 'bg-emerald-50 text-emerald-700 border border-emerald-200' 
+                                                    : item.Status === 'Ditolak'
+                                                    ? 'bg-rose-50 text-rose-700 border border-rose-200'
+                                                    : 'bg-amber-50 text-amber-700 border border-amber-200'
+                                            }`}>
+                                                {item.Status || 'Menunggu'}
                                             </span>
                                         </td>
-                                        <td className="py-4 text-right space-x-2">
-                                            <button onClick={() => handleDetailPencairan(item.IDPencairan)} className="text-primary hover:underline text-xs font-bold">Detail</button>
-                                            {item.Status === 'Menunggu' && (
-                                                <button onClick={() => handleSelesaiPencairan(item.IDPencairan)} className="text-success hover:underline text-xs font-bold ml-2">Cairkan/Selesai</button>
-                                            )}
+                                        <td className="py-4 text-right">
+                                            <div className="flex items-center justify-end gap-1.5">
+                                                <button 
+                                                    onClick={() => handleDetailPencairan(item.IDPencairan)} 
+                                                    className="p-1.5 text-steel hover:text-accent hover:bg-canvas rounded-lg transition-colors border border-transparent hover:border-whisper"
+                                                    title="Lihat Detail Transaksi"
+                                                >
+                                                    <Eye className="w-4 h-4" />
+                                                </button>
+                                                <button 
+                                                    onClick={() => handleOpenEditPencairan(item)} 
+                                                    className="p-1.5 text-steel hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-colors border border-transparent hover:border-blue-100"
+                                                    title="Edit Data Pencairan"
+                                                >
+                                                    <Edit className="w-4 h-4" />
+                                                </button>
+                                                {item.Status === 'Menunggu' && (
+                                                    <button 
+                                                        onClick={() => handleSelesaiPencairan(item.IDPencairan)} 
+                                                        className="px-2.5 py-1 text-xs font-semibold bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded-lg transition-colors flex items-center gap-1 shadow-sm"
+                                                        title="Cairkan / Tandai Selesai"
+                                                    >
+                                                        <CheckCircle2 className="w-3.5 h-3.5" /> Cairkan
+                                                    </button>
+                                                )}
+                                                <button 
+                                                    onClick={() => handleHapusPencairan(item)} 
+                                                    className="p-1.5 text-rose-500 hover:text-rose-700 hover:bg-rose-50 rounded-lg transition-colors border border-transparent hover:border-rose-100"
+                                                    title="Hapus Pencairan"
+                                                >
+                                                    <Trash2 className="w-4 h-4" />
+                                                </button>
+                                            </div>
                                         </td>
                                     </tr>
                                 ))}
                             </tbody>
                         </table>
+                    </div>
+
+                    {/* Mobile Card View */}
+                    <div className="md:hidden flex flex-col divide-y divide-whisper/50">
+                        {loadingPencairan ? (
+                            <div className="text-center py-8 text-steel text-sm">Memuat data pencairan...</div>
+                        ) : paginatedPencairan.length === 0 ? (
+                            <div className="text-center py-8 text-steel text-sm">Tidak ada data pencairan yang sesuai.</div>
+                        ) : paginatedPencairan.map((item) => (
+                            <div key={item.IDPencairan} className="p-4 flex flex-col gap-3 bg-surface">
+                                <div className="flex justify-between items-start gap-2">
+                                    <div className="min-w-0">
+                                        <div className="font-bold text-ink text-base truncate">{getNamaWarung(item.WarungID)}</div>
+                                        <div className="text-xs text-steel font-mono">{item.IDPencairan} • Warung ID: {item.WarungID}</div>
+                                        <div className="text-[11px] text-steel mt-0.5">{item.WaktuPengajuan ? formatDateTimeID(new Date(item.WaktuPengajuan)) : '-'}</div>
+                                    </div>
+                                    <div className="text-right shrink-0">
+                                        <div className="text-base font-bold text-ink">Rp {Number(item.TotalDana || 0).toLocaleString('id-ID')}</div>
+                                        <span className={`inline-block mt-1 px-2 py-0.5 text-[11px] font-semibold rounded-full ${
+                                            item.Status === 'Selesai' 
+                                                ? 'bg-emerald-50 text-emerald-700 border border-emerald-200' 
+                                                : item.Status === 'Ditolak'
+                                                ? 'bg-rose-50 text-rose-700 border border-rose-200'
+                                                : 'bg-amber-50 text-amber-700 border border-amber-200'
+                                        }`}>
+                                            {item.Status || 'Menunggu'}
+                                        </span>
+                                    </div>
+                                </div>
+                                <div className="flex flex-wrap items-center gap-2 justify-end pt-2 border-t border-whisper/50">
+                                    <button 
+                                        onClick={() => handleDetailPencairan(item.IDPencairan)} 
+                                        className="flex items-center gap-1 text-steel hover:text-ink text-xs px-2.5 py-1.5 rounded-lg border border-whisper bg-surface"
+                                    >
+                                        <Eye className="w-3.5 h-3.5" /> Detail
+                                    </button>
+                                    <button 
+                                        onClick={() => handleOpenEditPencairan(item)} 
+                                        className="flex items-center gap-1 text-blue-600 bg-blue-50 text-xs px-2.5 py-1.5 rounded-lg border border-blue-100"
+                                    >
+                                        <Edit className="w-3.5 h-3.5" /> Edit
+                                    </button>
+                                    {item.Status === 'Menunggu' && (
+                                        <button 
+                                            onClick={() => handleSelesaiPencairan(item.IDPencairan)} 
+                                            className="flex items-center gap-1 text-emerald-700 bg-emerald-50 text-xs px-2.5 py-1.5 rounded-lg border border-emerald-200 font-semibold"
+                                        >
+                                            <CheckCircle2 className="w-3.5 h-3.5" /> Cairkan
+                                        </button>
+                                    )}
+                                    <button 
+                                        onClick={() => handleHapusPencairan(item)} 
+                                        className="flex items-center gap-1 text-rose-600 bg-rose-50 text-xs px-2.5 py-1.5 rounded-lg border border-rose-100"
+                                    >
+                                        <Trash2 className="w-3.5 h-3.5" /> Hapus
+                                    </button>
+                                </div>
+                            </div>
+                        ))}
                     </div>
                     
                     {totalPages > 0 && (
@@ -3215,44 +3451,170 @@ function App() {
                 </div>
 
                 {/* Modal Detail Pencairan */}
-                {modalDetailPencairan && (
-                    <FormWrapper title={`Detail Pencairan - ${modalDetailPencairan}`} onClose={() => setModalDetailPencairan(null)} customFooter={
-                        <div className="px-6 py-4 bg-canvas border-t border-whisper flex justify-end gap-3 shrink-0 rounded-b-card">
-                            <button type="button" onClick={() => setModalDetailPencairan(null)} className={btnOutline}>Tutup</button>
-                            {dataPencairan.find(x => x.IDPencairan === modalDetailPencairan)?.Status === 'Menunggu' && (
-                                <button onClick={() => handleSelesaiPencairan(modalDetailPencairan)} className={btnPrimary}>Tandai Selesai</button>
-                            )}
-                        </div>
-                    }>
-                        <div className="space-y-4">
-                            <p className="text-sm text-steel mb-4">Berikut adalah daftar rincian transaksi non-tunai yang termasuk dalam pencairan ini:</p>
-                            <div className="overflow-x-auto border border-whisper rounded-lg">
-                                <table className="w-full text-left text-sm">
-                                    <thead className="bg-canvas border-b border-whisper text-steel">
-                                        <tr>
-                                            <th className="py-2 px-3">Trx ID</th>
-                                            <th className="py-2 px-3">Metode</th>
-                                            <th className="py-2 px-3">Santri (UID/NIS)</th>
-                                            <th className="py-2 px-3 text-right">Nominal</th>
-                                        </tr>
-                                    </thead>
-                                    <tbody>
-                                        {detailPencairanData.length === 0 ? (
-                                            <tr><td colSpan="4" className="text-center py-4">Data kosong</td></tr>
-                                        ) : detailPencairanData.map((trx, tIdx) => (
-                                            <tr key={tIdx} className="border-b border-whisper last:border-0 hover:bg-slate-50">
-                                                <td className="py-2 px-3 font-mono text-xs">{trx.TrxID}</td>
-                                                <td className="py-2 px-3 font-medium text-xs">{trx.Metode}</td>
-                                                <td className="py-2 px-3">
-                                                    <div className="font-bold text-ink">{trx.NamaSantri}</div>
-                                                    <div className="text-xs text-steel">{trx.SantriID}</div>
-                                                </td>
-                                                <td className="py-2 px-3 text-right font-bold text-ink">Rp {Number(trx.TotalHarga || 0).toLocaleString('id-ID')}</td>
-                                            </tr>
-                                        ))}
-                                    </tbody>
-                                </table>
+                {modalDetailPencairan && (() => {
+                    const pencairanItem = dataPencairan.find(x => x.IDPencairan === modalDetailPencairan);
+                    const namaWarung = pencairanItem ? getNamaWarung(pencairanItem.WarungID) : '-';
+                    return (
+                        <FormWrapper title={`Detail Pencairan - ${modalDetailPencairan}`} onClose={() => setModalDetailPencairan(null)} customFooter={
+                            <div className="px-6 py-4 bg-canvas border-t border-whisper flex flex-wrap justify-between items-center gap-3 shrink-0 rounded-b-card w-full">
+                                <div>
+                                    {pencairanItem && (
+                                        <button 
+                                            type="button" 
+                                            onClick={() => handleHapusPencairan(pencairanItem)} 
+                                            className="px-3 py-2 bg-rose-50 hover:bg-rose-100 text-rose-600 font-medium text-xs rounded-xl flex items-center gap-1.5 border border-rose-200"
+                                        >
+                                            <Trash2 className="w-3.5 h-3.5" /> Hapus Pencairan
+                                        </button>
+                                    )}
+                                </div>
+                                <div className="flex items-center gap-2">
+                                    <button type="button" onClick={() => setModalDetailPencairan(null)} className={btnOutline}>Tutup</button>
+                                    {pencairanItem && (
+                                        <button 
+                                            type="button" 
+                                            onClick={() => {
+                                                setModalDetailPencairan(null);
+                                                handleOpenEditPencairan(pencairanItem);
+                                            }} 
+                                            className="px-4 py-2.5 bg-blue-50 hover:bg-blue-100 text-blue-700 font-medium text-sm rounded-xl flex items-center gap-1.5 border border-blue-200"
+                                        >
+                                            <Edit className="w-4 h-4" /> Edit
+                                        </button>
+                                    )}
+                                    {pencairanItem?.Status === 'Menunggu' && (
+                                        <button onClick={() => handleSelesaiPencairan(modalDetailPencairan)} className={btnPrimary}>
+                                            <CheckCircle2 className="w-4 h-4" /> Tandai Selesai
+                                        </button>
+                                    )}
+                                </div>
                             </div>
+                        }>
+                            <div className="space-y-4">
+                                <div className="p-4 bg-slate-50 border border-slate-200 rounded-xl grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm">
+                                    <div>
+                                        <span className="text-xs text-steel block">Nama Warung:</span>
+                                        <span className="font-bold text-ink text-base">{namaWarung}</span>
+                                        <span className="text-xs font-mono text-steel block">{pencairanItem?.WarungID}</span>
+                                    </div>
+                                    <div className="sm:text-right">
+                                        <span className="text-xs text-steel block">Total Dana Pengajuan:</span>
+                                        <span className="font-bold text-emerald-600 text-lg">Rp {Number(pencairanItem?.TotalDana || 0).toLocaleString('id-ID')}</span>
+                                    </div>
+                                </div>
+
+                                <p className="text-sm text-steel">Berikut adalah daftar rincian transaksi non-tunai yang termasuk dalam pencairan ini:</p>
+                                <div className="overflow-x-auto border border-whisper rounded-xl">
+                                    <table className="w-full text-left text-sm">
+                                        <thead className="bg-canvas border-b border-whisper text-steel text-xs uppercase">
+                                            <tr>
+                                                <th className="py-2.5 px-3">Trx ID</th>
+                                                <th className="py-2.5 px-3">Metode</th>
+                                                <th className="py-2.5 px-3">Santri (UID/NIS)</th>
+                                                <th className="py-2.5 px-3 text-right">Nominal</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody className="divide-y divide-whisper/50">
+                                            {detailPencairanData.length === 0 ? (
+                                                <tr><td colSpan="4" className="text-center py-6 text-steel">Data rincian transaksi tidak ditemukan atau kosong.</td></tr>
+                                            ) : detailPencairanData.map((trx, tIdx) => (
+                                                <tr key={tIdx} className="hover:bg-slate-50">
+                                                    <td className="py-2.5 px-3 font-mono text-xs">{trx.TrxID}</td>
+                                                    <td className="py-2.5 px-3 font-medium text-xs">
+                                                        <span className="px-2 py-0.5 rounded bg-slate-100 text-slate-700">{trx.Metode}</span>
+                                                    </td>
+                                                    <td className="py-2.5 px-3">
+                                                        <div className="font-bold text-ink">{trx.NamaSantri}</div>
+                                                        <div className="text-xs text-steel">{trx.SantriID}</div>
+                                                    </td>
+                                                    <td className="py-2.5 px-3 text-right font-bold text-ink">Rp {Number(trx.TotalHarga || 0).toLocaleString('id-ID')}</td>
+                                                </tr>
+                                            ))}
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        </FormWrapper>
+                    );
+                })()}
+
+                {/* Modal Edit Pencairan */}
+                {modalEditPencairan && (
+                    <FormWrapper 
+                        title={`Edit Pencairan - ${modalEditPencairan.IDPencairan}`} 
+                        onClose={() => setModalEditPencairan(null)}
+                        onSubmit={handleSaveEditPencairan}
+                    >
+                        <div className="space-y-4">
+                            <div>
+                                <label className="block text-sm font-medium text-ink mb-1">ID Pencairan (Tetap)</label>
+                                <input 
+                                    type="text" 
+                                    value={modalEditPencairan.IDPencairan} 
+                                    disabled 
+                                    className={`${inputBase} bg-slate-100 cursor-not-allowed font-mono text-steel`} 
+                                />
+                            </div>
+                            <div>
+                                <label className="block text-sm font-medium text-ink mb-1">Warung / Merchant</label>
+                                <select 
+                                    value={modalEditPencairan.WarungID || ''} 
+                                    onChange={(e) => setModalEditPencairan(prev => ({ ...prev, WarungID: e.target.value }))}
+                                    className={inputBase}
+                                    required
+                                >
+                                    <option value="">Pilih Warung</option>
+                                    {dataWarung.map(w => (
+                                        <option key={w.ID || w.id} value={w.ID || w.id}>
+                                            {w.Nama || w.nama} ({w.ID || w.id})
+                                        </option>
+                                    ))}
+                                </select>
+                            </div>
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                                <div>
+                                    <label className="block text-sm font-medium text-ink mb-1">Total Dana (Rp)</label>
+                                    <input 
+                                        type="number" 
+                                        required 
+                                        value={modalEditPencairan.TotalDana || ''} 
+                                        onChange={(e) => setModalEditPencairan(prev => ({ ...prev, TotalDana: e.target.value }))}
+                                        className={inputBase} 
+                                    />
+                                </div>
+                                <div>
+                                    <label className="block text-sm font-medium text-ink mb-1">Status Pencairan</label>
+                                    <select 
+                                        value={modalEditPencairan.Status || 'Menunggu'} 
+                                        onChange={(e) => setModalEditPencairan(prev => ({ ...prev, Status: e.target.value }))}
+                                        className={inputBase}
+                                    >
+                                        <option value="Menunggu">Menunggu</option>
+                                        <option value="Selesai">Selesai</option>
+                                        <option value="Ditolak">Ditolak</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <div>
+                                <label className="block text-sm font-medium text-ink mb-1">Waktu Pengajuan</label>
+                                <input 
+                                    type="datetime-local" 
+                                    value={modalEditPencairan.WaktuPengajuan || ''} 
+                                    onChange={(e) => setModalEditPencairan(prev => ({ ...prev, WaktuPengajuan: e.target.value }))}
+                                    className={inputBase} 
+                                />
+                            </div>
+                            {modalEditPencairan.Status === 'Selesai' && (
+                                <div>
+                                    <label className="block text-sm font-medium text-ink mb-1">Waktu Selesai</label>
+                                    <input 
+                                        type="datetime-local" 
+                                        value={modalEditPencairan.WaktuSelesai || ''} 
+                                        onChange={(e) => setModalEditPencairan(prev => ({ ...prev, WaktuSelesai: e.target.value }))}
+                                        className={inputBase} 
+                                    />
+                                </div>
+                            )}
                         </div>
                     </FormWrapper>
                 )}
