@@ -148,7 +148,7 @@ import {
     User, X, Trash2, Settings, FileSpreadsheet, FileText, BadgePercent, Zap, ArrowDownCircle,
     ArrowUpCircle, Edit, Printer, CheckCircle2, BarChart3, History, Activity, QrCode, Link as LinkIcon,
     Copy, ExternalLink, RefreshCw, Check, Briefcase, BookOpen, DownloadCloud, TrendingDown, Menu, ArrowRight, ArrowLeft, Eye, EyeOff, ChevronRight, Scan, Download,
-    SlidersHorizontal, ShieldAlert, ShieldCheck
+    SlidersHorizontal, ShieldAlert, ShieldCheck, ShoppingBag, Store, CalendarDays, Package
 } from "lucide-react";
 
 // Import Recharts dengan parameter bundle untuk mencegah error lodash missing modules
@@ -287,6 +287,25 @@ function App() {
     const [currentPage, setCurrentPage] = useState(1);
     const [tabunganSubTab, setTabunganSubTab] = useState('transaksi'); // 'transaksi' | 'limit'
     const [tabunganKelasFilter, setTabunganKelasFilter] = useState('Semua');
+    // --- DETAIL TABUNGAN POS ---
+    const [detailTabunganModal, setDetailTabunganModal] = useState(null); // { trx, detailItems, warungName, loading }
+    // --- REKAP PENCAIRAN PER WARUNG ---
+    const [pencairanSubTab, setPencairanSubTab] = useState('daftar'); // 'daftar' | 'rekap'
+    const [rekapPeriode, setRekapPeriode] = useState('harian'); // 'harian' | 'mingguan' | 'bulanan' | 'custom'
+    const [rekapStartDate, setRekapStartDate] = useState(() => {
+        const d = new Date();
+        return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    });
+    const [rekapEndDate, setRekapEndDate] = useState(() => {
+        const d = new Date();
+        return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    });
+    const [rekapData, setRekapData] = useState([]);
+    const [loadingRekap, setLoadingRekap] = useState(false);
+    const [rekapWarungSubTab, setRekapWarungSubTab] = useState({}); // { [warungId]: 'santri' | 'hari' }
+    const [rekapSearchSantri, setRekapSearchSantri] = useState({}); // { [warungId]: string }
+    const [rekapFilterTanggal, setRekapFilterTanggal] = useState({}); // { [warungId]: string }
+    const [rekapPagePerWarung, setRekapPagePerWarung] = useState({}); // { [warungId]: number }
     const [limitModalData, setLimitModalData] = useState({
         targetType: 'Semua', // 'Semua' | 'Kelas' | 'Santri'
         selectedKelas: '',
@@ -2674,6 +2693,304 @@ function App() {
         );
     };
 
+    // --- HANDLER DETAIL TABUNGAN POS ---
+    const handleDetailTabungan = async (trx) => {
+        // Extract TrxID from keterangan format: "Belanja Kantin (POS) [TRX-xxx]"
+        const ket = trx.keterangan || '';
+        const trxIdMatch = ket.match(/\[(TRX-[^\]]+)\]/);
+        
+        setDetailTabunganModal({ trx, detailItems: [], warungName: '-', loading: true });
+
+        if (trxIdMatch) {
+            const trxId = trxIdMatch[1];
+            try {
+                const [trxRes, detailRes] = await Promise.all([
+                    supabase.from('Transaksi').select('*').eq('TrxID', trxId).maybeSingle(),
+                    supabase.from('DetailTransaksi').select('*').eq('TrxID', trxId)
+                ]);
+                const warungId = trxRes.data?.WarungID;
+                let warungName = warungId || '-';
+                if (warungId) {
+                    const { data: wData } = await supabase.from('Warung').select('Nama').eq('ID', warungId).maybeSingle();
+                    if (wData?.Nama) warungName = wData.Nama;
+                }
+                setDetailTabunganModal({ 
+                    trx, 
+                    detailItems: detailRes.data || [], 
+                    warungName, 
+                    warungId: warungId || '-',
+                    metode: trxRes.data?.Metode || '-',
+                    waktu: trxRes.data?.Waktu || null,
+                    trxId,
+                    loading: false 
+                });
+            } catch (e) {
+                console.error(e);
+                setDetailTabunganModal(prev => ({ ...prev, loading: false }));
+                showNotification('Gagal memuat detail transaksi', 'error');
+            }
+        } else {
+            // No TrxID in keterangan — try to find by NIS + date + approximate total
+            try {
+                const { data: trxList } = await supabase.from('Transaksi')
+                    .select('*')
+                    .eq('SantriID', trx.nis)
+                    .eq('TotalHarga', trx.nominal)
+                    .order('Waktu', { ascending: false })
+                    .limit(5);
+                
+                if (trxList && trxList.length > 0) {
+                    // Find closest matching date
+                    const matchedTrx = trxList.find(t => t.Waktu && t.Waktu.startsWith(trx.tanggal)) || trxList[0];
+                    const { data: detailData } = await supabase.from('DetailTransaksi').select('*').eq('TrxID', matchedTrx.TrxID);
+                    const warungId = matchedTrx.WarungID;
+                    let warungName = warungId || '-';
+                    if (warungId) {
+                        const { data: wData } = await supabase.from('Warung').select('Nama').eq('ID', warungId).maybeSingle();
+                        if (wData?.Nama) warungName = wData.Nama;
+                    }
+                    setDetailTabunganModal({ 
+                        trx, 
+                        detailItems: detailData || [], 
+                        warungName, 
+                        warungId: warungId || '-',
+                        metode: matchedTrx.Metode || '-',
+                        waktu: matchedTrx.Waktu || null,
+                        trxId: matchedTrx.TrxID,
+                        loading: false 
+                    });
+                } else {
+                    setDetailTabunganModal(prev => ({ ...prev, loading: false }));
+                }
+            } catch (e) {
+                console.error(e);
+                setDetailTabunganModal(prev => ({ ...prev, loading: false }));
+            }
+        }
+    };
+
+    // --- HANDLER REKAP TRANSAKSI PER WARUNG ---
+    const fetchRekapPerWarung = async (periode = rekapPeriode, customStart = null, customEnd = null) => {
+        setLoadingRekap(true);
+        try {
+            const now = new Date();
+            let startDate;
+            let endDate;
+
+            const effectiveStart = customStart || rekapStartDate;
+            const effectiveEnd = customEnd || rekapEndDate;
+
+            if (periode === 'custom') {
+                const [sy, sm, sd] = (effectiveStart || `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`).split('-').map(Number);
+                startDate = new Date(sy, sm - 1, sd, 0, 0, 0, 0);
+
+                const [ey, em, ed] = (effectiveEnd || effectiveStart || `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`).split('-').map(Number);
+                endDate = new Date(ey, em - 1, ed, 23, 59, 59, 999);
+            } else if (periode === 'harian') {
+                startDate = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0);
+                endDate = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999);
+            } else if (periode === 'mingguan') {
+                const day = now.getDay();
+                const diff = (day === 0 ? -6 : 1) - day;
+                startDate = new Date(now.getFullYear(), now.getMonth(), now.getDate() + diff, 0, 0, 0, 0);
+                endDate = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999);
+            } else {
+                startDate = new Date(now.getFullYear(), now.getMonth(), 1, 0, 0, 0, 0);
+                endDate = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999);
+            }
+
+            const startStr = startDate.toISOString();
+            const endStr = endDate.toISOString();
+
+            const [trxRes, warungRes] = await Promise.all([
+                supabase.from('Transaksi')
+                    .select('TrxID, WarungID, TotalHarga, Waktu, Metode, SantriID')
+                    .gte('Waktu', startStr)
+                    .lte('Waktu', endStr)
+                    .order('Waktu', { ascending: false }),
+                supabase.from('Warung').select('*')
+            ]);
+
+            const warungs = warungRes.data || [];
+            const transactions = trxRes.data || [];
+
+            // Ambil DetailTransaksi untuk semua transaksi yang ada
+            const trxIds = transactions.map(t => t.TrxID).filter(Boolean);
+            const detailsMap = {};
+            if (trxIds.length > 0) {
+                const chunkSize = 200;
+                for (let i = 0; i < trxIds.length; i += chunkSize) {
+                    const chunk = trxIds.slice(i, i + chunkSize);
+                    const { data: dData } = await supabase
+                        .from('DetailTransaksi')
+                        .select('*')
+                        .in('TrxID', chunk);
+                    if (dData) {
+                        dData.forEach(item => {
+                            if (!detailsMap[item.TrxID]) detailsMap[item.TrxID] = [];
+                            detailsMap[item.TrxID].push(item);
+                        });
+                    }
+                }
+            }
+
+            // Group by WarungID
+            const grouped = {};
+            transactions.forEach(trx => {
+                const wId = trx.WarungID || 'UNKNOWN';
+                if (!grouped[wId]) {
+                    const w = warungs.find(wr => String(wr.ID || wr.id) === String(wId));
+                    grouped[wId] = {
+                        warungId: wId,
+                        warungName: w ? (w.Nama || w.nama || wId) : wId,
+                        totalTransaksi: 0,
+                        totalNominal: 0,
+                        transaksiList: [],
+                        perHari: {}
+                    };
+                }
+                grouped[wId].totalTransaksi += 1;
+                grouped[wId].totalNominal += Number(trx.TotalHarga || 0);
+
+                // Sinkronkan nama santri & barang belanjaan
+                const santri = (dataSantri || []).find(s => 
+                    String(s.nis || '').replace(/^0+/, '') === String(trx.SantriID || '').replace(/^0+/, '')
+                );
+                const items = detailsMap[trx.TrxID] || [];
+                const itemSummary = items.length > 0 
+                    ? items.map(i => `${i.NamaProduk} (${i.Kuantitas}x)`).join(', ')
+                    : '-';
+
+                const enrichedTrx = {
+                    ...trx,
+                    santriNama: santri ? santri.nama : (trx.SantriID === 'GUEST' ? 'Umum / Tamu' : (trx.SantriID ? `Santri (${trx.SantriID})` : '-')),
+                    santriNis: trx.SantriID || '-',
+                    santriKelas: santri?.kelas || '-',
+                    items,
+                    itemSummary
+                };
+
+                grouped[wId].transaksiList.push(enrichedTrx);
+
+                // Group per-day within the selected period (menggunakan tanggal lokal)
+                const trxDate = trx.Waktu ? new Date(trx.Waktu) : null;
+                const tgl = trxDate && !isNaN(trxDate.getTime()) 
+                    ? `${trxDate.getFullYear()}-${String(trxDate.getMonth() + 1).padStart(2, '0')}-${String(trxDate.getDate()).padStart(2, '0')}`
+                    : (trx.Waktu ? trx.Waktu.split('T')[0] : 'N/A');
+
+                if (!grouped[wId].perHari[tgl]) {
+                    grouped[wId].perHari[tgl] = { count: 0, total: 0, transaksiList: [] };
+                }
+                grouped[wId].perHari[tgl].count += 1;
+                grouped[wId].perHari[tgl].total += Number(trx.TotalHarga || 0);
+                grouped[wId].perHari[tgl].transaksiList.push(enrichedTrx);
+            });
+
+            const result = Object.values(grouped).sort((a, b) => b.totalNominal - a.totalNominal);
+            setRekapData(result);
+        } catch (e) {
+            console.error(e);
+            showNotification('Gagal memuat rekap', 'error');
+        }
+        setLoadingRekap(false);
+    };
+
+    const handleSelectPeriodePreset = (p) => {
+        const now = new Date();
+        const todayStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+        
+        let start = todayStr;
+        let end = todayStr;
+
+        if (p === 'harian') {
+            start = todayStr;
+            end = todayStr;
+        } else if (p === 'mingguan') {
+            const day = now.getDay();
+            const diff = (day === 0 ? -6 : 1) - day;
+            const monday = new Date(now.getFullYear(), now.getMonth(), now.getDate() + diff);
+            start = `${monday.getFullYear()}-${String(monday.getMonth() + 1).padStart(2, '0')}-${String(monday.getDate()).padStart(2, '0')}`;
+            end = todayStr;
+        } else if (p === 'bulanan') {
+            start = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`;
+            end = todayStr;
+        } else if (p === 'custom') {
+            setRekapPeriode('custom');
+            return;
+        }
+
+        setRekapStartDate(start);
+        setRekapEndDate(end);
+        setRekapPeriode(p);
+        fetchRekapPerWarung(p, start, end);
+    };
+
+    const handleOpenTrxDetail = (trx, warungName, warungId) => {
+        setDetailTabunganModal({
+            trx: {
+                nama: trx.santriNama,
+                nis: trx.santriNis,
+                tanggal: trx.Waktu ? formatDateID(trx.Waktu) : '-',
+                nominal: trx.TotalHarga
+            },
+            detailItems: trx.items || [],
+            warungName: warungName || getNamaWarung(trx.WarungID),
+            warungId: warungId || trx.WarungID || '-',
+            metode: trx.Metode || '-',
+            waktu: trx.Waktu || null,
+            trxId: trx.TrxID,
+            loading: false
+        });
+    };
+
+    const downloadRekapSummaryExcel = () => {
+        const rows = [];
+        rekapData.forEach(w => {
+            Object.entries(w.perHari).sort(([a], [b]) => b.localeCompare(a)).forEach(([tgl, data]) => {
+                rows.push([w.warungName, w.warungId, formatDateID(tgl), data.count, data.total]);
+            });
+            rows.push([w.warungName, w.warungId, 'SUBTOTAL', w.totalTransaksi, w.totalNominal]);
+        });
+        const labelPeriode = rekapPeriode === 'custom' 
+            ? `${formatDateID(rekapStartDate)}_sd_${formatDateID(rekapEndDate)}` 
+            : (rekapPeriode === 'harian' ? 'Hari_Ini' : rekapPeriode === 'mingguan' ? 'Minggu_Ini' : 'Bulan_Ini');
+        downloadStyledExcel(
+            `Rekap Ringkasan Transaksi per Warung (${labelPeriode})`,
+            ['Nama Warung', 'ID Warung', 'Tanggal', 'Jumlah Transaksi', 'Total Omzet'],
+            rows,
+            `Rekap_Warung_Ringkasan_${labelPeriode}`
+        );
+    };
+
+    const downloadRekapDetailSantriExcel = () => {
+        const rows = [];
+        rekapData.forEach(w => {
+            (w.transaksiList || []).forEach(trx => {
+                rows.push([
+                    w.warungName,
+                    w.warungId,
+                    trx.TrxID || '-',
+                    trx.Waktu ? formatDateTimeID(trx.Waktu) : '-',
+                    trx.santriNis || '-',
+                    trx.santriNama || '-',
+                    trx.santriKelas || '-',
+                    trx.Metode || 'Tunai',
+                    trx.itemSummary || '-',
+                    Number(trx.TotalHarga || 0)
+                ]);
+            });
+        });
+        const labelPeriode = rekapPeriode === 'custom' 
+            ? `${formatDateID(rekapStartDate)}_sd_${formatDateID(rekapEndDate)}` 
+            : (rekapPeriode === 'harian' ? 'Hari_Ini' : rekapPeriode === 'mingguan' ? 'Minggu_Ini' : 'Bulan_Ini');
+        downloadStyledExcel(
+            `Rincian Pembelian Santri per Warung (${labelPeriode})`,
+            ['Nama Warung', 'ID Warung', 'Trx ID', 'Waktu Transaksi', 'NIS', 'Nama Santri', 'Kelas', 'Metode', 'Item Dibeli', 'Total Belanja'],
+            rows,
+            `Rincian_Pembelian_Santri_${labelPeriode}`
+        );
+    };
+
     const renderTabungan = () => {
         const filtered = dataTabungan.filter(t => (t.nama || '').toLowerCase().includes(searchTerm.toLowerCase()) || String(t.nis || '').includes(searchTerm));
         
@@ -2743,7 +3060,7 @@ function App() {
                     </button>
                 </div>
 
-                {tabunganSubTab === 'transaksi' ? (
+                {tabunganSubTab === 'transaksi' ? (<>
                     <div className="bg-surface border border-whisper shadow-sm rounded-card overflow-hidden">
                         <div className="p-4 border-b border-whisper/50 flex flex-col sm:flex-row justify-between sm:justify-end items-center gap-3 bg-canvas/40">
                             <div className="relative w-full sm:w-auto">
@@ -2774,7 +3091,12 @@ function App() {
                                             </td>
                                             <td className="px-6 py-4 text-center"><span className={`inline-flex px-2 py-1 text-xs font-medium rounded-md ${trx.jenis === 'Setor' ? 'bg-emerald-50 text-emerald-700' : 'bg-rose-50 text-rose-700'}`}>{trx.jenis}</span></td>
                                             <td className="px-6 py-4 text-right font-medium">Rp {Number(trx.nominal || 0).toLocaleString('id-ID')}</td><td className="px-6 py-4 text-steel">{trx.keterangan}</td>
-                                            <td className="px-6 py-4 text-center flex gap-3 justify-center"><button onClick={() => confirmDelete('TABUNGAN', trx.id, 'Transaksi Tabungan')} className="text-rose-600 hover:text-rose-800"><Trash2 className="w-4 h-4" /></button></td>
+                                            <td className="px-6 py-4 text-center flex gap-3 justify-center">
+                                                {String(trx.keterangan || '').toLowerCase().includes('kantin') && (
+                                                    <button onClick={() => handleDetailTabungan(trx)} className="text-steel hover:text-accent transition-colors" title="Lihat Detail Belanja"><Eye className="w-4 h-4" /></button>
+                                                )}
+                                                <button onClick={() => confirmDelete('TABUNGAN', trx.id, 'Transaksi Tabungan')} className="text-rose-600 hover:text-rose-800"><Trash2 className="w-4 h-4" /></button>
+                                            </td>
                                         </tr>
                                     ))}
                                 </tbody>
@@ -2801,6 +3123,9 @@ function App() {
                                         </div>
                                     </div>
                                     <div className="flex flex-wrap items-center gap-2 justify-end w-full border-t border-whisper/50 pt-3 mt-1">
+                                        {String(trx.keterangan || '').toLowerCase().includes('kantin') && (
+                                            <button onClick={() => handleDetailTabungan(trx)} className="flex items-center gap-1 text-steel hover:text-accent bg-canvas hover:bg-whisper/50 font-medium text-xs px-3 py-1.5 rounded-lg border border-whisper"><Eye className="w-3.5 h-3.5" /> Detail</button>
+                                        )}
                                         <button onClick={() => confirmDelete('TABUNGAN', trx.id, 'Transaksi Tabungan')} className="flex items-center gap-1 text-danger bg-dangerBg hover:bg-red-100 font-medium text-xs px-3 py-1.5 rounded-lg border border-red-100"><Trash2 className="w-3.5 h-3.5" /> Hapus</button>
                                     </div>
                                 </div>
@@ -2815,7 +3140,9 @@ function App() {
                             </div>
                         )}
                     </div>
-                ) : (
+
+
+                </>) : (
                     /* Sub-tab: Status & Pengaturan Limit Santri */
                     <div className="space-y-6">
                         {/* Summary KPI Cards */}
@@ -3084,6 +3411,7 @@ function App() {
     const [modalEditPencairan, setModalEditPencairan] = useState(null);
     const [pencairanSearchTerm, setPencairanSearchTerm] = useState('');
     const [pencairanStatusFilter, setPencairanStatusFilter] = useState('Semua');
+    const [rekapExpandedWarung, setRekapExpandedWarung] = useState(null);
 
     const getNamaWarung = (warungId) => {
         if (!warungId) return '-';
@@ -3276,6 +3604,23 @@ function App() {
                     </div>
                 </div>
 
+                {/* Sub-tab Navigation: Daftar Pencairan | Rekap per Warung */}
+                <div className="flex border-b border-whisper gap-2">
+                    <button 
+                        onClick={() => setPencairanSubTab('daftar')} 
+                        className={`px-4 py-2.5 font-semibold text-sm border-b-2 transition-all flex items-center gap-2 ${pencairanSubTab === 'daftar' ? 'border-accent text-accent' : 'border-transparent text-steel hover:text-ink'}`}
+                    >
+                        <Wallet className="w-4 h-4" /> Daftar Pencairan ({dataPencairan.length})
+                    </button>
+                    <button 
+                        onClick={() => { setPencairanSubTab('rekap'); fetchRekapPerWarung(rekapPeriode); }} 
+                        className={`px-4 py-2.5 font-semibold text-sm border-b-2 transition-all flex items-center gap-2 ${pencairanSubTab === 'rekap' ? 'border-accent text-accent' : 'border-transparent text-steel hover:text-ink'}`}
+                    >
+                        <BarChart3 className="w-4 h-4" /> Rekap Transaksi per Warung
+                    </button>
+                </div>
+
+                {pencairanSubTab === 'daftar' ? (<>
                 {/* Filter & Search Bar */}
                 <div className="bg-surface border border-whisper rounded-card p-4 shadow-sm flex flex-col sm:flex-row items-center justify-between gap-3">
                     <div className="relative w-full sm:w-80">
@@ -3617,6 +3962,409 @@ function App() {
                             )}
                         </div>
                     </FormWrapper>
+                )}
+                </>) : (
+                    /* Sub-tab: Rekap Transaksi per Warung */
+                    <div className="space-y-4">
+                        {/* Periode Filter */}
+                        <div className="bg-surface border border-whisper rounded-card p-4 shadow-sm flex flex-col xl:flex-row items-start xl:items-center justify-between gap-4">
+                            <div className="flex items-center gap-3">
+                                <div className="w-10 h-10 rounded-xl bg-accent/10 text-accent flex items-center justify-center shrink-0">
+                                    <CalendarDays className="w-5 h-5" />
+                                </div>
+                                <div>
+                                    <div className="text-sm font-bold text-ink">Periode Rekap Transaksi</div>
+                                    <div className="text-xs text-steel mt-0.5">
+                                        {rekapPeriode === 'harian' && `Hari Ini (${formatDateID(rekapStartDate)})`}
+                                        {rekapPeriode === 'mingguan' && `Minggu Ini (${formatDateID(rekapStartDate)} s/d ${formatDateID(rekapEndDate)})`}
+                                        {rekapPeriode === 'bulanan' && `Bulan Ini (${formatDateID(rekapStartDate)} s/d ${formatDateID(rekapEndDate)})`}
+                                        {rekapPeriode === 'custom' && `Rentang Tanggal (${formatDateID(rekapStartDate)} s/d ${formatDateID(rekapEndDate)})`}
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div className="flex flex-wrap items-center gap-2.5 w-full xl:w-auto">
+                                {/* Preset Buttons */}
+                                <div className="flex flex-wrap items-center gap-1 p-1 bg-canvas border border-whisper rounded-xl">
+                                    {[
+                                        { id: 'harian', label: 'Hari Ini' },
+                                        { id: 'mingguan', label: 'Minggu Ini' },
+                                        { id: 'bulanan', label: 'Bulan Ini' },
+                                        { id: 'custom', label: 'Rentang Tanggal' }
+                                    ].map(p => (
+                                        <button 
+                                            key={p.id} 
+                                            onClick={() => handleSelectPeriodePreset(p.id)}
+                                            className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${rekapPeriode === p.id ? 'bg-accent text-white shadow-sm' : 'text-steel hover:text-ink'}`}
+                                        >
+                                            {p.label}
+                                        </button>
+                                    ))}
+                                </div>
+
+                                {/* Date-to-Date Inputs */}
+                                <div className="flex flex-wrap items-center gap-2 bg-canvas px-3 py-1.5 border border-whisper rounded-xl text-xs w-full sm:w-auto">
+                                    <span className="text-steel font-medium shrink-0">Dari:</span>
+                                    <input 
+                                        type="date" 
+                                        value={rekapStartDate} 
+                                        onChange={(e) => {
+                                            setRekapStartDate(e.target.value);
+                                            setRekapPeriode('custom');
+                                        }}
+                                        className="bg-surface border border-whisper rounded-lg px-2 py-1 text-ink text-xs focus:outline-none focus:border-accent"
+                                    />
+                                    <span className="text-steel font-medium shrink-0">s/d</span>
+                                    <input 
+                                        type="date" 
+                                        value={rekapEndDate} 
+                                        onChange={(e) => {
+                                            setRekapEndDate(e.target.value);
+                                            setRekapPeriode('custom');
+                                        }}
+                                        className="bg-surface border border-whisper rounded-lg px-2 py-1 text-ink text-xs focus:outline-none focus:border-accent"
+                                    />
+                                    <button 
+                                        onClick={() => fetchRekapPerWarung('custom', rekapStartDate, rekapEndDate)}
+                                        className="bg-accent hover:bg-accentDark active:scale-95 text-white px-3 py-1 rounded-lg font-semibold flex items-center gap-1 shadow-sm transition-all shrink-0"
+                                        title="Terapkan Filter Tanggal"
+                                    >
+                                        <Filter className="w-3.5 h-3.5" /> Filter
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+
+                        {loadingRekap ? (
+                            <div className="text-center py-12 text-steel"><RefreshCw className="w-5 h-5 animate-spin inline mr-2" />Memuat rekap transaksi per warung...</div>
+                        ) : rekapData.length === 0 ? (
+                            <div className="bg-surface border border-whisper rounded-card p-8 shadow-sm text-center">
+                                <Store className="w-12 h-12 text-whisper mx-auto mb-3" />
+                                <div className="font-semibold text-ink">Belum Ada Transaksi</div>
+                                <div className="text-sm text-steel mt-1">Tidak ada transaksi warung pada periode {rekapPeriode === 'custom' ? `${formatDateID(rekapStartDate)} s/d ${formatDateID(rekapEndDate)}` : (rekapPeriode === 'harian' ? 'hari ini' : rekapPeriode === 'mingguan' ? 'minggu ini' : 'bulan ini')}.</div>
+                            </div>
+                        ) : (
+                            <>
+                                {/* Summary KPI Cards */}
+                                <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                                    <div className="bg-surface border border-whisper p-5 rounded-2xl shadow-sm">
+                                        <div className="flex items-center gap-3 mb-2">
+                                            <div className="w-8 h-8 rounded-lg bg-blue-50 text-blue-600 flex items-center justify-center"><Store className="w-4 h-4" /></div>
+                                            <span className="text-xs text-steel font-semibold uppercase">Total Warung Aktif</span>
+                                        </div>
+                                        <div className="text-xl font-bold text-ink">{rekapData.length} <span className="text-xs text-steel font-normal">warung</span></div>
+                                    </div>
+                                    <div className="bg-surface border border-whisper p-5 rounded-2xl shadow-sm">
+                                        <div className="flex items-center gap-3 mb-2">
+                                            <div className="w-8 h-8 rounded-lg bg-emerald-50 text-emerald-600 flex items-center justify-center"><ShoppingBag className="w-4 h-4" /></div>
+                                            <span className="text-xs text-steel font-semibold uppercase">Total Transaksi</span>
+                                        </div>
+                                        <div className="text-xl font-bold text-emerald-600">{rekapData.reduce((s, w) => s + w.totalTransaksi, 0).toLocaleString('id-ID')} <span className="text-xs text-steel font-normal">transaksi</span></div>
+                                    </div>
+                                    <div className="bg-surface border border-whisper p-5 rounded-2xl shadow-sm">
+                                        <div className="flex items-center gap-3 mb-2">
+                                            <div className="w-8 h-8 rounded-lg bg-amber-50 text-amber-600 flex items-center justify-center"><Wallet className="w-4 h-4" /></div>
+                                            <span className="text-xs text-steel font-semibold uppercase">Total Omzet</span>
+                                        </div>
+                                        <div className="text-xl font-bold text-amber-600">Rp {rekapData.reduce((s, w) => s + w.totalNominal, 0).toLocaleString('id-ID')}</div>
+                                    </div>
+                                </div>
+
+                                {/* Rekap Table per Warung */}
+                                <div className="bg-surface border border-whisper rounded-card shadow-sm overflow-hidden">
+                                    <div className="overflow-x-auto">
+                                        <table className="w-full text-sm text-left">
+                                            <thead className="bg-canvas/60 text-steel border-b border-whisper/50">
+                                                <tr>
+                                                    <th className="px-5 py-3 font-medium">Warung / Merchant</th>
+                                                    <th className="px-5 py-3 text-center font-medium">Jumlah Transaksi</th>
+                                                    <th className="px-5 py-3 text-right font-medium">Total Omzet</th>
+                                                    <th className="px-5 py-3 text-center font-medium">Detail</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody className="divide-y divide-slate-100">
+                                                {rekapData.map((w) => {
+                                                    const isExpanded = rekapExpandedWarung === w.warungId;
+                                                    const subView = rekapWarungSubTab[w.warungId] || 'santri';
+                                                    const searchKwd = (rekapSearchSantri[w.warungId] || '').toLowerCase();
+                                                    const filterTgl = rekapFilterTanggal[w.warungId] || 'ALL';
+                                                    const pageSantri = rekapPagePerWarung[w.warungId] || 1;
+                                                    const itemsPerPageSantri = 10;
+
+                                                    // Filter daftar transaksi untuk santri
+                                                    const allTrx = w.transaksiList || [];
+                                                    const filteredTrx = allTrx.filter(trx => {
+                                                        const matchSearch = 
+                                                            (trx.santriNama || '').toLowerCase().includes(searchKwd) ||
+                                                            String(trx.santriNis || '').includes(searchKwd) ||
+                                                            String(trx.santriKelas || '').toLowerCase().includes(searchKwd) ||
+                                                            (trx.itemSummary || '').toLowerCase().includes(searchKwd) ||
+                                                            String(trx.TrxID || '').toLowerCase().includes(searchKwd);
+                                                        
+                                                        const trxDate = trx.Waktu ? new Date(trx.Waktu) : null;
+                                                        const tglStr = trxDate && !isNaN(trxDate.getTime()) 
+                                                            ? `${trxDate.getFullYear()}-${String(trxDate.getMonth() + 1).padStart(2, '0')}-${String(trxDate.getDate()).padStart(2, '0')}`
+                                                            : (trx.Waktu ? trx.Waktu.split('T')[0] : '');
+
+                                                        const matchDate = filterTgl === 'ALL' || tglStr === filterTgl;
+                                                        return matchSearch && matchDate;
+                                                    });
+
+                                                    const totalPagesSantri = Math.max(1, Math.ceil(filteredTrx.length / itemsPerPageSantri));
+                                                    const paginatedTrx = filteredTrx.slice((pageSantri - 1) * itemsPerPageSantri, pageSantri * itemsPerPageSantri);
+
+                                                    return (
+                                                        <React.Fragment key={w.warungId}>
+                                                            <tr className="bg-surface hover:bg-canvas/80 transition-colors cursor-pointer" onClick={() => setRekapExpandedWarung(isExpanded ? null : w.warungId)}>
+                                                                <td className="px-5 py-4">
+                                                                    <div className="font-semibold text-ink flex items-center gap-2">
+                                                                        <Store className="w-4 h-4 text-accent shrink-0" />
+                                                                        {w.warungName}
+                                                                    </div>
+                                                                    <div className="text-[11px] text-steel font-mono ml-6">ID: {w.warungId}</div>
+                                                                </td>
+                                                                <td className="px-5 py-4 text-center">
+                                                                    <span className="inline-flex items-center px-3 py-1 bg-blue-50 text-blue-700 font-bold rounded-full text-sm">{w.totalTransaksi}</span>
+                                                                </td>
+                                                                <td className="px-5 py-4 text-right">
+                                                                    <span className="font-bold text-ink text-base">Rp {w.totalNominal.toLocaleString('id-ID')}</span>
+                                                                </td>
+                                                                <td className="px-5 py-4 text-center">
+                                                                    <button className="p-1.5 text-steel hover:text-accent hover:bg-canvas rounded-lg transition-colors" title="Buka / Tutup Rincian">
+                                                                        {isExpanded ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                                                                    </button>
+                                                                </td>
+                                                            </tr>
+                                                            {isExpanded && (
+                                                                <tr>
+                                                                    <td colSpan="4" className="bg-slate-50/80 px-4 sm:px-6 py-4 border-y border-whisper">
+                                                                        <div className="space-y-3">
+                                                                            {/* Header Rincian & Tab Switcher */}
+                                                                            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-whisper">
+                                                                                <div className="flex items-center gap-2">
+                                                                                    <button 
+                                                                                        onClick={() => setRekapWarungSubTab(prev => ({ ...prev, [w.warungId]: 'santri' }))}
+                                                                                        className={`px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-all ${subView === 'santri' ? 'bg-accent text-white shadow-sm' : 'bg-canvas text-steel hover:text-ink border border-whisper'}`}
+                                                                                    >
+                                                                                        <ShoppingBag className="w-3.5 h-3.5" /> Rincian Pembelian Santri ({w.totalTransaksi})
+                                                                                    </button>
+                                                                                    <button 
+                                                                                        onClick={() => setRekapWarungSubTab(prev => ({ ...prev, [w.warungId]: 'hari' }))}
+                                                                                        className={`px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-all ${subView === 'hari' ? 'bg-accent text-white shadow-sm' : 'bg-canvas text-steel hover:text-ink border border-whisper'}`}
+                                                                                    >
+                                                                                        <CalendarDays className="w-3.5 h-3.5" /> Ringkasan per Hari ({Object.keys(w.perHari).length})
+                                                                                    </button>
+                                                                                </div>
+                                                                                <div className="text-xs text-steel font-medium">
+                                                                                    Merchant: <span className="font-bold text-ink">{w.warungName}</span>
+                                                                                </div>
+                                                                            </div>
+
+                                                                            {/* View 1: Rincian Pembelian Santri */}
+                                                                            {subView === 'santri' && (
+                                                                                <div className="space-y-3 animate-fade-in-up">
+                                                                                    {/* Filter Bar Santri */}
+                                                                                    <div className="flex flex-col sm:flex-row items-center justify-between gap-2.5">
+                                                                                        <div className="flex flex-wrap items-center gap-2 w-full sm:w-auto">
+                                                                                            {/* Dropdown Filter Tanggal */}
+                                                                                            <select 
+                                                                                                value={filterTgl} 
+                                                                                                onChange={(e) => {
+                                                                                                    setRekapFilterTanggal(prev => ({ ...prev, [w.warungId]: e.target.value }));
+                                                                                                    setRekapPagePerWarung(prev => ({ ...prev, [w.warungId]: 1 }));
+                                                                                                }}
+                                                                                                className="bg-surface border border-whisper rounded-lg px-2.5 py-1.5 text-xs text-ink focus:outline-none focus:border-accent"
+                                                                                            >
+                                                                                                <option value="ALL">Semua Tanggal ({allTrx.length} trx)</option>
+                                                                                                {Object.entries(w.perHari).sort(([a], [b]) => b.localeCompare(a)).map(([tgl, data]) => (
+                                                                                                    <option key={tgl} value={tgl}>{formatDateID(tgl)} ({data.count} trx)</option>
+                                                                                                ))}
+                                                                                            </select>
+
+                                                                                            {/* Search Santri / Produk */}
+                                                                                            <div className="relative flex-1 sm:w-64">
+                                                                                                <Search className="w-3.5 h-3.5 absolute left-2.5 top-2.5 text-steel" />
+                                                                                                <input 
+                                                                                                    type="text" 
+                                                                                                    placeholder="Cari santri, NIS, kelas, produk..." 
+                                                                                                    value={rekapSearchSantri[w.warungId] || ''}
+                                                                                                    onChange={(e) => {
+                                                                                                        setRekapSearchSantri(prev => ({ ...prev, [w.warungId]: e.target.value }));
+                                                                                                        setRekapPagePerWarung(prev => ({ ...prev, [w.warungId]: 1 }));
+                                                                                                    }}
+                                                                                                    className="w-full bg-surface border border-whisper rounded-lg pl-8 pr-3 py-1.5 text-xs text-ink focus:outline-none focus:border-accent"
+                                                                                                />
+                                                                                            </div>
+                                                                                        </div>
+
+                                                                                        <div className="text-xs text-steel font-medium shrink-0 self-end sm:self-center">
+                                                                                            Ditemukan: <strong className="text-ink">{filteredTrx.length}</strong> transaksi (Rp {filteredTrx.reduce((s, t) => s + Number(t.TotalHarga || 0), 0).toLocaleString('id-ID')})
+                                                                                        </div>
+                                                                                    </div>
+
+                                                                                    {/* Tabel Transaksi Santri */}
+                                                                                    {filteredTrx.length === 0 ? (
+                                                                                        <div className="text-center py-6 text-steel text-xs bg-surface border border-dashed border-whisper rounded-xl">
+                                                                                            Tidak ada transaksi santri yang sesuai filter.
+                                                                                        </div>
+                                                                                    ) : (
+                                                                                        <div className="overflow-x-auto border border-whisper rounded-xl bg-surface shadow-xs">
+                                                                                            <table className="w-full text-xs">
+                                                                                                <thead className="bg-canvas/70 border-b border-whisper text-steel font-medium">
+                                                                                                    <tr>
+                                                                                                        <th className="py-2.5 px-3 text-left">Waktu</th>
+                                                                                                        <th className="py-2.5 px-3 text-left">Santri</th>
+                                                                                                        <th className="py-2.5 px-3 text-left">Item yang Dibeli</th>
+                                                                                                        <th className="py-2.5 px-3 text-center">Metode</th>
+                                                                                                        <th className="py-2.5 px-3 text-right">Total Belanja</th>
+                                                                                                        <th className="py-2.5 px-3 text-center">Struk</th>
+                                                                                                    </tr>
+                                                                                                </thead>
+                                                                                                <tbody className="divide-y divide-whisper/50">
+                                                                                                    {paginatedTrx.map((trx) => (
+                                                                                                        <tr key={trx.TrxID} className="hover:bg-canvas/40 transition-colors">
+                                                                                                            <td className="py-2.5 px-3 whitespace-nowrap">
+                                                                                                                <div className="font-medium text-ink">{trx.Waktu ? formatDateTimeID(trx.Waktu) : '-'}</div>
+                                                                                                                <div className="text-[10px] text-steel font-mono">{trx.TrxID}</div>
+                                                                                                            </td>
+                                                                                                            <td className="py-2.5 px-3">
+                                                                                                                <div className="font-bold text-ink text-xs">{trx.santriNama}</div>
+                                                                                                                <div className="text-[11px] text-steel">
+                                                                                                                    {trx.santriNis !== '-' && <span>NIS: {trx.santriNis}</span>}
+                                                                                                                    {trx.santriKelas !== '-' && <span className="ml-1.5">• Kelas: {trx.santriKelas}</span>}
+                                                                                                                </div>
+                                                                                                            </td>
+                                                                                                            <td className="py-2.5 px-3">
+                                                                                                                {trx.items && trx.items.length > 0 ? (
+                                                                                                                    <div className="flex flex-wrap gap-1 max-w-sm">
+                                                                                                                        {trx.items.map((item, iIdx) => (
+                                                                                                                            <span key={iIdx} className="inline-flex items-center gap-1 px-2 py-0.5 bg-canvas border border-whisper rounded text-[11px] text-ink">
+                                                                                                                                <span className="font-medium">{item.NamaProduk}</span>
+                                                                                                                                <span className="text-accent font-semibold">{item.Kuantitas}x</span>
+                                                                                                                            </span>
+                                                                                                                        ))}
+                                                                                                                    </div>
+                                                                                                                ) : (
+                                                                                                                    <span className="text-steel italic text-[11px]">{trx.itemSummary || 'Item tidak tercatat'}</span>
+                                                                                                                )}
+                                                                                                            </td>
+                                                                                                            <td className="py-2.5 px-3 text-center whitespace-nowrap">
+                                                                                                                <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                                                                                                                    trx.Metode === 'Tabungan' 
+                                                                                                                        ? 'bg-blue-50 text-blue-700 border border-blue-200' 
+                                                                                                                        : trx.Metode === 'Tunai' 
+                                                                                                                        ? 'bg-emerald-50 text-emerald-700 border border-emerald-200' 
+                                                                                                                        : 'bg-canvas text-steel border border-whisper'
+                                                                                                                }`}>
+                                                                                                                    {trx.Metode || 'Tunai'}
+                                                                                                                </span>
+                                                                                                            </td>
+                                                                                                            <td className="py-2.5 px-3 text-right font-bold text-ink whitespace-nowrap">
+                                                                                                                Rp {Number(trx.TotalHarga || 0).toLocaleString('id-ID')}
+                                                                                                            </td>
+                                                                                                            <td className="py-2.5 px-3 text-center whitespace-nowrap">
+                                                                                                                <button 
+                                                                                                                    onClick={() => handleOpenTrxDetail(trx, w.warungName, w.warungId)}
+                                                                                                                    className="p-1.5 text-steel hover:text-accent hover:bg-canvas rounded-lg transition-colors" 
+                                                                                                                    title="Lihat Struk Pembelian"
+                                                                                                                >
+                                                                                                                    <Eye className="w-3.5 h-3.5" />
+                                                                                                                </button>
+                                                                                                            </td>
+                                                                                                        </tr>
+                                                                                                    ))}
+                                                                                                </tbody>
+                                                                                            </table>
+                                                                                        </div>
+                                                                                    )}
+
+                                                                                    {/* Pagination Santri */}
+                                                                                    {totalPagesSantri > 1 && (
+                                                                                        <div className="flex items-center justify-between text-xs text-steel pt-2">
+                                                                                            <div>Halaman {pageSantri} dari {totalPagesSantri}</div>
+                                                                                            <div className="flex items-center gap-1.5">
+                                                                                                <button 
+                                                                                                    disabled={pageSantri <= 1}
+                                                                                                    onClick={() => setRekapPagePerWarung(prev => ({ ...prev, [w.warungId]: pageSantri - 1 }))}
+                                                                                                    className="px-2.5 py-1 bg-surface border border-whisper rounded-lg text-ink font-medium disabled:opacity-40 disabled:cursor-not-allowed hover:bg-canvas"
+                                                                                                >
+                                                                                                    Sebelumnya
+                                                                                                </button>
+                                                                                                <button 
+                                                                                                    disabled={pageSantri >= totalPagesSantri}
+                                                                                                    onClick={() => setRekapPagePerWarung(prev => ({ ...prev, [w.warungId]: pageSantri + 1 }))}
+                                                                                                    className="px-2.5 py-1 bg-surface border border-whisper rounded-lg text-ink font-medium disabled:opacity-40 disabled:cursor-not-allowed hover:bg-canvas"
+                                                                                                >
+                                                                                                    Selanjutnya
+                                                                                                </button>
+                                                                                            </div>
+                                                                                        </div>
+                                                                                    )}
+                                                                                </div>
+                                                                            )}
+
+                                                                            {/* View 2: Ringkasan per Hari */}
+                                                                            {subView === 'hari' && (
+                                                                                <div className="space-y-2 animate-fade-in-up">
+                                                                                    <div className="overflow-x-auto border border-whisper rounded-xl bg-surface shadow-xs">
+                                                                                        <table className="w-full text-xs">
+                                                                                            <thead className="bg-canvas/70 border-b border-whisper text-steel font-medium">
+                                                                                                <tr>
+                                                                                                    <th className="py-2.5 px-3 text-left font-medium">Tanggal</th>
+                                                                                                    <th className="py-2.5 px-3 text-center font-medium">Jumlah Transaksi</th>
+                                                                                                    <th className="py-2.5 px-3 text-right font-medium">Total Omzet</th>
+                                                                                                    <th className="py-2.5 px-3 text-center font-medium">Aksi</th>
+                                                                                                </tr>
+                                                                                            </thead>
+                                                                                            <tbody className="divide-y divide-whisper/50">
+                                                                                                {Object.entries(w.perHari).sort(([a], [b]) => b.localeCompare(a)).map(([tgl, data]) => (
+                                                                                                    <tr key={tgl} className="hover:bg-canvas/40 transition-colors">
+                                                                                                        <td className="py-2.5 px-3 font-medium text-ink">{formatDateID(tgl)}</td>
+                                                                                                        <td className="py-2.5 px-3 text-center text-steel font-medium">{data.count} transaksi</td>
+                                                                                                        <td className="py-2.5 px-3 text-right font-bold text-ink">Rp {data.total.toLocaleString('id-ID')}</td>
+                                                                                                        <td className="py-2.5 px-3 text-center">
+                                                                                                            <button 
+                                                                                                                onClick={() => {
+                                                                                                                    setRekapFilterTanggal(prev => ({ ...prev, [w.warungId]: tgl }));
+                                                                                                                    setRekapWarungSubTab(prev => ({ ...prev, [w.warungId]: 'santri' }));
+                                                                                                                    setRekapPagePerWarung(prev => ({ ...prev, [w.warungId]: 1 }));
+                                                                                                                }}
+                                                                                                                className="text-xs text-accent hover:underline font-semibold inline-flex items-center gap-1"
+                                                                                                            >
+                                                                                                                Lihat Santri ({data.count}) →
+                                                                                                            </button>
+                                                                                                        </td>
+                                                                                                    </tr>
+                                                                                                ))}
+                                                                                            </tbody>
+                                                                                        </table>
+                                                                                    </div>
+                                                                                </div>
+                                                                            )}
+                                                                        </div>
+                                                                    </td>
+                                                                </tr>
+                                                            )}
+                                                        </React.Fragment>
+                                                    );
+                                                })}
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                </div>
+
+                                {/* Unduh Rekap Buttons */}
+                                <div className="flex flex-wrap items-center justify-end gap-3 pt-2">
+                                    <button onClick={downloadRekapSummaryExcel} className={btnOutline}>
+                                        <FileSpreadsheet className="w-4 h-4 text-accent" /> Unduh Ringkasan (Excel)
+                                    </button>
+                                    <button onClick={downloadRekapDetailSantriExcel} className={btnPrimary}>
+                                        <Download className="w-4 h-4" /> Unduh Rincian Belanja Santri (Excel)
+                                    </button>
+                                </div>
+                            </>
+                        )}
+                    </div>
                 )}
             </div>
         );
@@ -4883,6 +5631,88 @@ function App() {
             )}
 
             {renderModals()}
+
+            {/* Modal Detail Tabungan POS (Dapat dibuka dari Tabungan & Rekap Warung) */}
+            {detailTabunganModal && (
+                <FormWrapper title="Detail Belanja Kantin (POS)" onClose={() => setDetailTabunganModal(null)} customFooter={
+                    <div className="px-6 py-4 bg-canvas border-t border-whisper flex justify-end gap-3 shrink-0 rounded-b-card w-full">
+                        <button type="button" onClick={() => setDetailTabunganModal(null)} className={btnOutline}>Tutup</button>
+                    </div>
+                }>
+                    {detailTabunganModal.loading ? (
+                        <div className="text-center py-8 text-steel"><RefreshCw className="w-5 h-5 animate-spin inline mr-2" />Memuat detail transaksi...</div>
+                    ) : (
+                        <div className="space-y-4">
+                            {/* Header Info */}
+                            <div className="p-4 bg-gradient-to-br from-slate-50 to-blue-50 border border-slate-200 rounded-xl space-y-2">
+                                <div className="flex justify-between items-start">
+                                    <div>
+                                        <div className="text-xs text-steel">Santri / Pembeli</div>
+                                        <div className="font-bold text-ink text-base">{detailTabunganModal.trx.nama}</div>
+                                        {detailTabunganModal.trx.nis && detailTabunganModal.trx.nis !== '-' && (
+                                            <div className="text-xs text-steel">NIS: {detailTabunganModal.trx.nis}</div>
+                                        )}
+                                    </div>
+                                    <div className="text-right">
+                                        <div className="text-xs text-steel">Total Belanja</div>
+                                        <div className="font-bold text-rose-600 text-lg">Rp {Number(detailTabunganModal.trx.nominal || 0).toLocaleString('id-ID')}</div>
+                                    </div>
+                                </div>
+                                <div className="border-t border-slate-200 pt-2 grid grid-cols-2 gap-2 text-xs">
+                                    <div><span className="text-steel">Tanggal:</span> <span className="font-medium text-ink">{detailTabunganModal.trx.tanggal}</span></div>
+                                    <div><span className="text-steel">Warung:</span> <span className="font-medium text-ink">{detailTabunganModal.warungName}</span></div>
+                                    {detailTabunganModal.trxId && <div><span className="text-steel">TrxID:</span> <span className="font-mono text-[10px] text-steel">{detailTabunganModal.trxId}</span></div>}
+                                    {detailTabunganModal.metode && <div><span className="text-steel">Metode:</span> <span className="font-medium text-ink">{detailTabunganModal.metode}</span></div>}
+                                </div>
+                            </div>
+
+                            {/* Detail Items */}
+                            <div>
+                                <div className="flex items-center gap-2 mb-2">
+                                    <ShoppingBag className="w-4 h-4 text-accent" />
+                                    <span className="font-semibold text-ink text-sm">Rincian Belanjaan</span>
+                                </div>
+                                {detailTabunganModal.detailItems.length === 0 ? (
+                                    <div className="text-center py-6 text-steel text-sm border border-dashed border-whisper rounded-xl bg-canvas/50">
+                                        <Package className="w-8 h-8 mx-auto mb-2 text-whisper" />
+                                        <div>Data rincian belanjaan tidak ditemukan</div>
+                                        <div className="text-xs mt-1">Transaksi mungkin dilakukan sebelum pencatatan rincian aktif.</div>
+                                    </div>
+                                ) : (
+                                    <div className="overflow-x-auto border border-whisper rounded-xl">
+                                        <table className="w-full text-sm">
+                                            <thead className="bg-canvas/60 text-steel border-b border-whisper/50">
+                                                <tr>
+                                                    <th className="py-2 px-3 text-left text-xs font-medium">Produk</th>
+                                                    <th className="py-2 px-3 text-center text-xs font-medium">Qty</th>
+                                                    <th className="py-2 px-3 text-right text-xs font-medium">Harga</th>
+                                                    <th className="py-2 px-3 text-right text-xs font-medium">Subtotal</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody className="divide-y divide-whisper/50">
+                                                {detailTabunganModal.detailItems.map((item, idx) => (
+                                                    <tr key={idx} className="hover:bg-canvas/40">
+                                                        <td className="py-2.5 px-3 font-medium text-ink">{item.NamaProduk}</td>
+                                                        <td className="py-2.5 px-3 text-center text-steel">{item.Kuantitas}x</td>
+                                                        <td className="py-2.5 px-3 text-right text-steel">Rp {Number(item.HargaSatuan || 0).toLocaleString('id-ID')}</td>
+                                                        <td className="py-2.5 px-3 text-right font-medium text-ink">Rp {Number(item.Subtotal || 0).toLocaleString('id-ID')}</td>
+                                                    </tr>
+                                                ))}
+                                            </tbody>
+                                            <tfoot className="bg-canvas/60 border-t border-whisper">
+                                                <tr>
+                                                    <td colSpan="3" className="py-2.5 px-3 text-right font-semibold text-ink">Total:</td>
+                                                    <td className="py-2.5 px-3 text-right font-bold text-emerald-600">Rp {detailTabunganModal.detailItems.reduce((s, i) => s + Number(i.Subtotal || 0), 0).toLocaleString('id-ID')}</td>
+                                                </tr>
+                                            </tfoot>
+                                        </table>
+                                    </div>
+                                )}
+                            </div>
+                        </div>
+                    )}
+                </FormWrapper>
+            )}
             {confirmDialog && (
                 <div className="fixed inset-0 z-[110] flex items-center justify-center p-4 bg-ink/20 backdrop-blur-[3px]"><div className="bg-surface rounded-card shadow-diffused w-full max-w-sm p-8 flex flex-col items-center text-center animate-fade-in-up"><div className="w-14 h-14 rounded-2xl bg-dangerBg flex items-center justify-center mb-5"><AlertCircle className="w-7 h-7 text-danger" /></div><h3 className="font-bold text-lg text-ink mb-1">{confirmDialog.type === 'NAIK_KELAS' ? 'Konfirmasi?' : 'Hapus Data?'}</h3><p className="text-steel text-sm mb-6">{confirmDialog.type === 'NAIK_KELAS' ? 'Lanjutkan proses Kenaikan Kelas Massal?' : `Anda yakin ingin menghapus`} <strong className="text-ink">{confirmDialog.nama}</strong>?</p><div className="flex gap-3 w-full"><button onClick={() => setConfirmDialog(null)} className={`${btnOutline} flex-1 justify-center`}>Batal</button><button onClick={executeDelete} className={`${confirmDialog.type === 'NAIK_KELAS' ? btnPrimary : btnDanger} flex-1 justify-center`}>Ya, {confirmDialog.type === 'NAIK_KELAS' ? 'Lanjutkan' : 'Hapus'}</button></div></div></div>
             )}
