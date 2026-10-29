@@ -402,6 +402,122 @@ function App() {
     const [masterJabatanList, setMasterJabatanList] = useState(['Kepala Sekolah', 'Pengajar', 'Administrasi', 'Dapur', 'Kebersihan']);
     const listBulan = ['Januari', 'Februari', 'Maret', 'April', 'Mei', 'Juni', 'Juli', 'Agustus', 'September', 'Oktober', 'November', 'Desember'];
 
+    // Helper normalisasi nama bulan
+    const normalizeMonth = (m) => {
+        if (!m) return '';
+        const clean = String(m).trim().toLowerCase();
+        const idx = listBulan.findIndex(b => b.toLowerCase().startsWith(clean.substring(0, 3)));
+        return idx >= 0 ? listBulan[idx] : m;
+    };
+
+    // Helper pencocokan nama tagihan (termasuk alias seperti 'SPP' dan 'SPP Bulanan')
+    const isTagihanMatch = (t1, t2) => {
+        if (!t1 || !t2) return false;
+        const a = String(t1).trim().toLowerCase();
+        const b = String(t2).trim().toLowerCase();
+        if (a === b) return true;
+        const isSppA = a === 'spp' || a === 'spp bulanan';
+        const isSppB = b === 'spp' || b === 'spp bulanan';
+        if (isSppA && isSppB) return true;
+        return false;
+    };
+
+    // Helper mengekstrak seluruh bulan dan tahun dari string periode (misal: 'Juli 2026', 'Juli - September 2026')
+    const parsePeriodeMonthsAndYear = (periodeStr) => {
+        if (!periodeStr) return { months: [], year: null };
+        const p = String(periodeStr).trim();
+        const yearMatch = p.match(/\b(20\d{2})\b/);
+        const year = yearMatch ? parseInt(yearMatch[1], 10) : null;
+
+        const rangeMatch = p.match(/([a-zA-Z]+)\s*-\s*([a-zA-Z]+)/);
+        if (rangeMatch) {
+            const m1 = normalizeMonth(rangeMatch[1]);
+            const m2 = normalizeMonth(rangeMatch[2]);
+            const i1 = listBulan.indexOf(m1);
+            const i2 = listBulan.indexOf(m2);
+            if (i1 >= 0 && i2 >= 0) {
+                const start = Math.min(i1, i2);
+                const end = Math.max(i1, i2);
+                const months = listBulan.slice(start, end + 1);
+                return { months, year };
+            }
+        }
+
+        for (const b of listBulan) {
+            if (new RegExp('\\b' + b.substring(0, 3), 'i').test(p)) {
+                return { months: [b], year };
+            }
+        }
+
+        return { months: [], year };
+    };
+
+    // Helper komprehensif mengecek apakah tagihan santri untuk periode tertentu sudah ada di Tagihan atau sudah Lunas di Pembayaran
+    const checkBillStatus = (targetTagihan, targetPembayaran, nis, tagihanName, bln, thn) => {
+        const cleanNis = String(nis || '').trim().replace(/^0+/, '');
+        const targetBln = normalizeMonth(bln);
+        const targetThn = thn ? parseInt(thn, 10) : null;
+
+        // 1. Cek di daftar Tagihan (tagihan yang masih aktif belum lunas / cicilan)
+        const existingTagihan = (targetTagihan || []).find(t => {
+            if (String(t.nis || '').trim().replace(/^0+/, '') !== cleanNis) return false;
+            if (!isTagihanMatch(t.tagihan, tagihanName)) return false;
+            const { months, year } = parsePeriodeMonthsAndYear(t.periode);
+            if (targetThn && year && year !== targetThn) return false;
+            return months.includes(targetBln);
+        });
+
+        if (existingTagihan) {
+            return {
+                status: 'IN_TAGIHAN',
+                tagihan: existingTagihan,
+                message: `Tagihan ${existingTagihan.tagihan} (${existingTagihan.periode}) sudah ada di daftar Tagihan (Status: ${existingTagihan.status || 'Belum Lunas'}).`
+            };
+        }
+
+        // 2. Cek di daftar Pembayaran (riwayat pembayaran yang sudah Lunas)
+        for (const p of (targetPembayaran || [])) {
+            if (String(p.nis || '').trim().replace(/^0+/, '') !== cleanNis) continue;
+            if (p.status && String(p.status).toLowerCase().includes('cicil')) continue;
+
+            let items = [];
+            if (p.items) {
+                try {
+                    items = typeof p.items === 'string' ? JSON.parse(p.items) : p.items;
+                } catch (e) {}
+            }
+
+            if (Array.isArray(items) && items.length > 0) {
+                const matchItem = items.find(it => {
+                    if (!isTagihanMatch(it.tagihan, tagihanName)) return false;
+                    const { months, year } = parsePeriodeMonthsAndYear(it.periode);
+                    if (targetThn && year && year !== targetThn) return false;
+                    return months.includes(targetBln);
+                });
+                if (matchItem) {
+                    return {
+                        status: 'ALREADY_PAID',
+                        pembayaran: p,
+                        message: `Tagihan ${matchItem.tagihan} (${matchItem.periode}) SUDAH LUNAS dibayar pada transaksi ${p.id} (${p.tanggal || ''}).`
+                    };
+                }
+            } else {
+                if (isTagihanMatch(p.tagihan, tagihanName)) {
+                    const { months, year } = parsePeriodeMonthsAndYear(p.periode);
+                    if ((!targetThn || !year || year === targetThn) && months.includes(targetBln)) {
+                        return {
+                            status: 'ALREADY_PAID',
+                            pembayaran: p,
+                            message: `Tagihan ${p.tagihan} (${p.periode}) SUDAH LUNAS dibayar pada transaksi ${p.id} (${p.tanggal || ''}).`
+                        };
+                    }
+                }
+            }
+        }
+
+        return { status: 'AVAILABLE' };
+    };
+
     const [periodeAktif, setPeriodeAktif] = useState('Semua');
     const [masterTagihanFilter, setMasterTagihanFilter] = useState('Semua Tagihan');
     const [isLoaded, setIsLoaded] = useState(false);
@@ -855,19 +971,23 @@ function App() {
             }
 
             for (const tagName of tagsToCheck) {
-                const tRef = dataTagihan.find(t => String(t.nis).replace(/^0+/, '') === String(formData.nis).replace(/^0+/, '') && String(t.tagihan).toLowerCase().trim() === String(tagName).toLowerCase().trim() && formatPeriodeStr(t.periode).toLowerCase().trim() === formatPeriodeStr(pStr).toLowerCase().trim());
-
-                if (tRef) {
-                    if (modalType === 'FORM_TAGIHAN_SANTRI') {
-                        showNotification(`Tagihan ${tagName} periode ${pStr} sudah ADA! (${tRef.status})`);
-                        e.preventDefault();
+                const check = checkBillStatus(dataTagihan, dataPembayaran, formData.nis, tagName, b, formData.tahun);
+                if (modalType === 'FORM_TAGIHAN_SANTRI') {
+                    if (check.status === 'IN_TAGIHAN') {
+                        showNotification(`Tagihan ${tagName} periode ${pStr} sudah ADA di daftar Tagihan!`);
                         return;
-                    } else {
-                        if (String(tRef.status).toLowerCase() === 'lunas') {
-                            showNotification(`Tagihan ${tagName} periode ${pStr} sudah LUNAS!`);
-                            e.preventDefault();
-                            return;
-                        } else if (String(tRef.status).toLowerCase() === 'cicil' || String(tRef.status).toLowerCase() === 'cicilan') {
+                    }
+                    if (check.status === 'ALREADY_PAID') {
+                        showNotification(`Tagihan ${tagName} periode ${pStr} SUDAH LUNAS dibayar sebelumnya!`);
+                        return;
+                    }
+                } else if (modalType === 'FORM_PEMBAYARAN') {
+                    if (check.status === 'ALREADY_PAID') {
+                        showNotification(`Tagihan ${tagName} periode ${pStr} SUDAH LUNAS dibayar!`);
+                        return;
+                    } else if (check.status === 'IN_TAGIHAN') {
+                        const tRef = check.tagihan;
+                        if (String(tRef.status).toLowerCase() === 'cicil' || String(tRef.status).toLowerCase() === 'cicilan') {
                             const sisa = Math.max(0, (tRef.nominal || 0) - (tRef.terbayar || 0));
                             showNotification(`Tagihan ${tagName} berstatus CICILAN. Sisa Tagihan: Rp ${sisa.toLocaleString('id-ID')}`);
                             setFormData(prev => ({ ...prev, nominal: sisa }));
@@ -904,6 +1024,29 @@ function App() {
             }
         }
     }, [formData.nis, formData.selectedTagihans, modalType]);
+
+    // Efek filter otomatis bulan yang sudah lunas atau sudah ada di tagihan agar tidak terpilih
+    useEffect(() => {
+        if (formData.nis && formData.selectedBulan?.length > 0 && formData.targetType !== 'Kelas' && formData.targetType !== 'Santri') {
+            const tagsToCheck = [];
+            if (formData.tagihan) tagsToCheck.push(formData.tagihan);
+            if (formData.selectedTagihans?.length > 0) tagsToCheck.push(...formData.selectedTagihans);
+
+            if (tagsToCheck.length > 0) {
+                const validMonths = formData.selectedBulan.filter(b => {
+                    for (const tag of tagsToCheck) {
+                        const st = checkBillStatus(dataTagihan, dataPembayaran, formData.nis, tag, b, formData.tahun);
+                        if (modalType === 'FORM_TAGIHAN_SANTRI' && st.status !== 'AVAILABLE') return false;
+                        if (modalType === 'FORM_PEMBAYARAN' && st.status === 'ALREADY_PAID') return false;
+                    }
+                    return true;
+                });
+                if (validMonths.length !== formData.selectedBulan.length) {
+                    setFormData(prev => ({ ...prev, selectedBulan: validMonths }));
+                }
+            }
+        }
+    }, [formData.nis, formData.tagihan, formData.selectedTagihans, formData.tahun, modalType, dataTagihan, dataPembayaran]);
 
     // Efek sinkronisasi potongan diskon otomatis saat santri atau jenis tagihan dipilih di Form Pembayaran
     useEffect(() => {
@@ -1511,12 +1654,21 @@ function App() {
             let targetSantri = formData.targetType === 'Kelas' ? dataSantri.filter(s => (formData.selectedKelas || []).includes(s.kelas)) : formData.targetType === 'Santri' ? dataSantri.filter(s => (formData.selectedSantri || []).includes(s.nis)) : dataSantri;
 
             const newTrxs = [];
+            let skippedMassalPembayaran = 0;
             targetSantri.forEach(santri => {
                 const itemsToPayMassal = []; let totalBayar = 0;
                 selectedTags.forEach(tagName => {
                     selectedB.forEach(bln => {
                         const pStr = `${bln} ${formData.tahun}`;
-                        const tRef = masterTagihanList.find(t => t.tagihan === tagName);
+
+                        // Cegah duplikat: lewati jika santri ini sudah lunas untuk tagihan & bulan ini
+                        const check = checkBillStatus(dataTagihan, dataPembayaran, santri.nis, tagName, bln, formData.tahun);
+                        if (check.status === 'ALREADY_PAID') {
+                            skippedMassalPembayaran++;
+                            return;
+                        }
+
+                        const tRef = masterTagihanList.find(t => isTagihanMatch(t.tagihan, tagName));
                         const diskon = (santri.diskonKhusus && santri.diskonKhusus[tagName] !== undefined && santri.diskonKhusus[tagName] !== '')
                             ? Number(santri.diskonKhusus[tagName]) || 0
                             : (santri.beasiswa ? Math.round(((tRef?.nominal || 0) * Number(santri.beasiswa)) / 100) : 0);
@@ -1567,13 +1719,9 @@ function App() {
             const selectedB = formData.selectedBulan || [];
             for (const bln of selectedB) {
                 const pStr = `${bln} ${formData.tahun || new Date().getFullYear()}`;
-                const tRef = dataTagihan.find(t =>
-                    String(t.nis).replace(/^0+/, '') === String(santriTerpilih.nis).replace(/^0+/, '') &&
-                    String(t.tagihan).toLowerCase().trim() === String(tagihanName).toLowerCase().trim() &&
-                    formatPeriodeStr(t.periode).toLowerCase().trim() === formatPeriodeStr(pStr).toLowerCase().trim()
-                );
-                if (tRef && String(tRef.status).toLowerCase() === 'lunas') {
-                    alert(`PERINGATAN: Tagihan ${tagihanName} periode ${pStr} SUDAH LUNAS!\n\nPembayaran dibatalkan otomatis agar tidak double.`);
+                const check = checkBillStatus(dataTagihan, dataPembayaran, santriTerpilih.nis, tagihanName, bln, formData.tahun);
+                if (check.status === 'ALREADY_PAID') {
+                    alert(`PERINGATAN: ${check.message}\n\nPembayaran dibatalkan otomatis agar tidak terjadi transaksi duplikat.`);
                     return;
                 }
             }
@@ -1759,11 +1907,20 @@ function App() {
             if (targetSantri.length === 0) return showNotification(formData.targetType === 'Kelas' ? 'Tidak ada santri di kelas yang dipilih!' : 'Harap cari dan pilih Santri terlebih dahulu!');
 
             const newTags = [];
+            let skippedMassalTagihan = 0;
             targetSantri.forEach(santriTerpilih => {
                 selectedTags.forEach(tagName => {
                     selectedB.forEach(bln => {
                         const periodeStr = `${bln} ${formData.tahun}`;
-                        const masterRef = masterTagihanList.find(m => String(tagName).toLowerCase().trim() === String(m.tagihan).toLowerCase().trim()) || masterTagihanList.find(m => String(tagName).toLowerCase().trim().startsWith(String(m.tagihan).toLowerCase().trim()));
+
+                        // Cegah duplikat: lewati jika sudah ada di Tagihan atau sudah Lunas di Pembayaran
+                        const check = checkBillStatus(dataTagihan, dataPembayaran, santriTerpilih.nis, tagName, bln, formData.tahun);
+                        if (check.status !== 'AVAILABLE') {
+                            skippedMassalTagihan++;
+                            return;
+                        }
+
+                        const masterRef = masterTagihanList.find(m => isTagihanMatch(m.tagihan, tagName)) || masterTagihanList.find(m => String(tagName).toLowerCase().trim().startsWith(String(m.tagihan).toLowerCase().trim()));
                         const awal = masterRef ? Number(masterRef.nominal) || 0 : 0;
                         
                         // Cek potongan diskon khusus santri (diskonKhusus) lebih dulu!
@@ -1775,18 +1932,15 @@ function App() {
                         }
                         const finalNominal = Math.max(0, awal - disk);
 
-                        const isDup = dataTagihan.some(t => String(t.nis).replace(/^0+/, '') === String(santriTerpilih.nis).replace(/^0+/, '') && String(t.tagihan).toLowerCase().trim() === String(tagName).toLowerCase().trim() && formatPeriodeStr(t.periode).toLowerCase().trim() === formatPeriodeStr(periodeStr).toLowerCase().trim());
-                        if (!isDup) {
-                            newTags.push({ id: `TGH-${Math.floor(Math.random() * 100000) + '-' + Date.now()}`, tanggal: new Date().toISOString().split('T')[0], nis: santriTerpilih.nis, nama: santriTerpilih.nama, tagihan: tagName, periode: periodeStr, nominalAwal: awal, diskon: disk, nominal: finalNominal, terbayar: 0, status: finalNominal === 0 ? 'Lunas' : 'Belum Lunas' });
-                        }
+                        newTags.push({ id: `TGH-${Math.floor(Math.random() * 100000) + '-' + Date.now()}`, tanggal: new Date().toISOString().split('T')[0], nis: santriTerpilih.nis, nama: santriTerpilih.nama, tagihan: tagName, periode: periodeStr, nominalAwal: awal, diskon: disk, nominal: finalNominal, terbayar: 0, status: finalNominal === 0 ? 'Lunas' : 'Belum Lunas' });
                     });
                 });
             });
 
-            if (newTags.length === 0) return showNotification('Tidak ada tagihan yang dibuat. Semua tagihan sudah ada (duplikat).');
+            if (newTags.length === 0) return showNotification('Tidak ada tagihan yang dibuat. Semua tagihan yang dipilih sudah ada atau sudah lunas dibayar.');
 
             setDataTagihan(prev => [...newTags, ...prev]);
-            showNotification(`${newTags.length} Tagihan massal berhasil dibuat!`);
+            showNotification(`${newTags.length} Tagihan massal berhasil dibuat!${skippedMassalTagihan > 0 ? ` (${skippedMassalTagihan} dilewati karena sudah ada/lunas)` : ''}`);
             closeModal();
             return;
         }
@@ -1821,9 +1975,13 @@ function App() {
                     }
                     const finalNominal = Math.max(0, awal - disk);
 
-                    const isDup = dataTagihan.some(t => String(t.nis).replace(/^0+/, '') === String(formData.nis).replace(/^0+/, '') && String(t.tagihan).toLowerCase().trim() === String(tagName).toLowerCase().trim() && formatPeriodeStr(t.periode).toLowerCase().trim() === formatPeriodeStr(periodeStr).toLowerCase().trim());
-                    if (isDup) {
-                        alert(`PERINGATAN: Tagihan ${tagName} periode ${periodeStr} SUDAH ADA!\n\nPembuatan tagihan dibatalkan agar tidak duplikat.`);
+                    const check = checkBillStatus(dataTagihan, dataPembayaran, formData.nis, tagName, bln, formData.tahun);
+                    if (check.status === 'IN_TAGIHAN') {
+                        alert(`PERINGATAN: ${check.message}\n\nPembuatan tagihan dibatalkan agar tidak duplikat.`);
+                        return;
+                    }
+                    if (check.status === 'ALREADY_PAID') {
+                        alert(`PERINGATAN: ${check.message}\n\nPembuatan tagihan dibatalkan karena tagihan tersebut sudah lunas dibayar.`);
                         return;
                     }
 
@@ -5221,7 +5379,37 @@ function App() {
                     ) : (<div className="mt-2"><label className="block text-sm font-medium text-ink mb-1">Jenis Tagihan</label><input type="text" value={formData.tagihan} disabled className={`${inputBase} bg-whisper`} /></div>)}
 
                     {!formData.id ? (
-                        <div className="mt-3"><label className="block text-sm font-medium text-ink mb-2">Bulan Tagihan (Bisa pilih lebih dari 1)</label><div className="grid grid-cols-3 sm:grid-cols-4 gap-2">{listBulan.map(b => (<label key={b} className="flex items-center gap-1.5 text-xs bg-canvas border border-whisper px-2 py-1.5 rounded cursor-pointer hover:bg-whisper"><input type="checkbox" checked={(formData.selectedBulan || []).includes(b)} onChange={(e) => handleBulanChange(b, e)} className="rounded text-blue-600" /> {b.substring(0, 3)}</label>))}</div></div>
+                        <div className="mt-3">
+                            <label className="block text-sm font-medium text-ink mb-2">Bulan Tagihan (Bisa pilih lebih dari 1)</label>
+                            <div className="grid grid-cols-3 sm:grid-cols-4 gap-2">
+                                {listBulan.map(b => {
+                                    const isChecked = (formData.selectedBulan || []).includes(b);
+                                    let badge = null;
+                                    let isDisabled = false;
+                                    if (formData.nis && (formData.selectedTagihans || []).length > 0) {
+                                        for (const tag of formData.selectedTagihans) {
+                                            const st = checkBillStatus(dataTagihan, dataPembayaran, formData.nis, tag, b, formData.tahun);
+                                            if (st.status === 'ALREADY_PAID') {
+                                                badge = <span className="ml-auto text-[10px] font-bold text-emerald-600 bg-emerald-50 px-1 py-0.5 rounded border border-emerald-200">Lunas</span>;
+                                                isDisabled = true;
+                                                break;
+                                            } else if (st.status === 'IN_TAGIHAN') {
+                                                badge = <span className="ml-auto text-[10px] font-bold text-amber-600 bg-amber-50 px-1 py-0.5 rounded border border-amber-200">Ada</span>;
+                                                isDisabled = true;
+                                                break;
+                                            }
+                                        }
+                                    }
+                                    return (
+                                        <label key={b} className={`flex items-center gap-1.5 text-xs px-2 py-1.5 rounded border transition-colors ${isDisabled ? 'bg-gray-100 border-gray-200 text-gray-400 cursor-not-allowed' : 'bg-canvas border-whisper cursor-pointer hover:bg-whisper'}`}>
+                                            <input type="checkbox" disabled={isDisabled} checked={isChecked && !isDisabled} onChange={(e) => handleBulanChange(b, e)} className="rounded text-blue-600 disabled:opacity-40" />
+                                            <span>{b.substring(0, 3)}</span>
+                                            {badge}
+                                        </label>
+                                    );
+                                })}
+                            </div>
+                        </div>
                     ) : (<div className="mt-2"><label className="block text-sm font-medium text-ink mb-1">Bulan</label><select required name="bulan" value={formData.bulan || ''} onChange={handleInputChange} className={inputBase}>{listBulan.map(b => <option key={b} value={b}>{b}</option>)}</select></div>)}
                     <div className="mt-2"><label className="block text-sm font-medium text-ink mb-1">Tahun</label><input required name="tahun" value={formData.tahun || ''} onChange={handleInputChange} type="number" className={inputBase} /></div>
 
@@ -5298,7 +5486,35 @@ function App() {
                                             </div>
                                         )}
                                     </div>
-                                    {!formData.id ? (<div className="mt-3"><label className="block text-sm font-medium text-ink mb-2">Bulan Dibayar (Bisa pilih lebih dari 1)</label><div className="grid grid-cols-3 sm:grid-cols-4 gap-2">{listBulan.map(b => (<label key={b} className="flex items-center gap-1.5 text-xs bg-canvas border border-whisper px-2 py-1.5 rounded cursor-pointer hover:bg-whisper"><input type="checkbox" checked={(formData.selectedBulan || []).includes(b)} onChange={(e) => handleBulanChange(b, e)} className="rounded text-blue-600" /> {b.substring(0, 3)}</label>))}</div></div>) : (<div className="mt-2"><label className="block text-sm font-medium text-ink mb-1">Bulan</label><select required name="bulan" value={formData.bulan || ''} onChange={handleInputChange} className={inputBase}>{listBulan.map(b => <option key={b} value={b}>{b}</option>)}</select></div>)}
+                                    {!formData.id ? (
+                                        <div className="mt-3">
+                                            <label className="block text-sm font-medium text-ink mb-2">Bulan Dibayar (Bisa pilih lebih dari 1)</label>
+                                            <div className="grid grid-cols-3 sm:grid-cols-4 gap-2">
+                                                {listBulan.map(b => {
+                                                    const isChecked = (formData.selectedBulan || []).includes(b);
+                                                    let badge = null;
+                                                    let isDisabled = false;
+                                                    if (formData.nis && formData.tagihan) {
+                                                        const st = checkBillStatus(dataTagihan, dataPembayaran, formData.nis, formData.tagihan, b, formData.tahun);
+                                                        if (st.status === 'ALREADY_PAID') {
+                                                            badge = <span className="ml-auto text-[10px] font-bold text-emerald-600 bg-emerald-50 px-1 py-0.5 rounded border border-emerald-200">Lunas</span>;
+                                                            isDisabled = true;
+                                                        } else if (st.status === 'IN_TAGIHAN') {
+                                                            const isCicil = st.tagihan?.status === 'Cicil' || st.tagihan?.status === 'Cicilan';
+                                                            badge = <span className={`ml-auto text-[10px] font-bold px-1 py-0.5 rounded border ${isCicil ? 'text-blue-600 bg-blue-50 border-blue-200' : 'text-amber-600 bg-amber-50 border-amber-200'}`}>{isCicil ? 'Cicil' : 'Tagihan'}</span>;
+                                                        }
+                                                    }
+                                                    return (
+                                                        <label key={b} className={`flex items-center gap-1.5 text-xs px-2 py-1.5 rounded border transition-colors ${isDisabled ? 'bg-gray-100 border-gray-200 text-gray-400 cursor-not-allowed' : 'bg-canvas border-whisper cursor-pointer hover:bg-whisper'}`}>
+                                                            <input type="checkbox" disabled={isDisabled} checked={isChecked && !isDisabled} onChange={(e) => handleBulanChange(b, e)} className="rounded text-blue-600 disabled:opacity-40" />
+                                                            <span>{b.substring(0, 3)}</span>
+                                                            {badge}
+                                                        </label>
+                                                    );
+                                                })}
+                                            </div>
+                                        </div>
+                                    ) : (<div className="mt-2"><label className="block text-sm font-medium text-ink mb-1">Bulan</label><select required name="bulan" value={formData.bulan || ''} onChange={handleInputChange} className={inputBase}>{listBulan.map(b => <option key={b} value={b}>{b}</option>)}</select></div>)}
                                     <div className="mt-2"><label className="block text-sm font-medium text-ink mb-1">Tahun</label><input required name="tahun" value={formData.tahun || ''} onChange={handleInputChange} type="number" className={inputBase} /></div>
                                 </>
                             )}
