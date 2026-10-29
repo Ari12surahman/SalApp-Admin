@@ -13,6 +13,28 @@ if (supabaseUrl === "https://placeholder.supabase.co") {
 
 const supabase = createClient(supabaseUrl, supabaseKey);
 
+// Helper to fetch all rows from a Supabase table by chunking to bypass the default 1000-row limit
+async function fetchAllSupabaseRows(tableName, selectColumns = '*') {
+    let allData = [];
+    let from = 0;
+    const step = 1000;
+    while (true) {
+        const { data, error } = await supabase
+            .from(tableName)
+            .select(selectColumns)
+            .range(from, from + step - 1);
+        if (error) {
+            console.error(`Error fetching rows from ${tableName}:`, error);
+            break;
+        }
+        if (!data || data.length === 0) break;
+        allData = allData.concat(data);
+        if (data.length < step) break;
+        from += step;
+    }
+    return allData;
+}
+
 // Helper for saveTableData replacement
 async function supabaseSaveTableData(tableName, dataArr) {
     if (!dataArr) return { success: true }; // if undefined, do nothing
@@ -79,7 +101,7 @@ async function supabaseSaveTableData(tableName, dataArr) {
 
     // Sync DELETES: delete rows in DB that are missing from uniqueData
     if (uniqueData.length > 0 && uniqueData[0].id) {
-        const { data: existingData } = await supabase.from(tableName).select('id');
+        const existingData = await fetchAllSupabaseRows(tableName, 'id');
         if (existingData) {
             const currentIds = new Set(uniqueData.map(r => String(r.id)));
             const toDeleteIds = existingData.filter(r => r.id && !currentIds.has(String(r.id))).map(r => r.id);
@@ -474,7 +496,7 @@ function App() {
                         if (t === 'Santri') actualT = 'Data Santri';
                         if (t === 'Pegawai') actualT = 'Data Pegawai';
 
-                        const { data } = await supabase.from(actualT).select('*');
+                        const data = await fetchAllSupabaseRows(actualT);
                         result[t] = data ? sortSupabaseData(actualT, data) : [];
                     }
                     const jsonString = JSON.stringify(result);
@@ -609,7 +631,7 @@ function App() {
                             if (t === 'Santri') actualT = 'Data Santri';
                             if (t === 'Pegawai') actualT = 'Data Pegawai';
 
-                            const { data } = await supabase.from(actualT).select('*');
+                            const data = await fetchAllSupabaseRows(actualT);
                             result[t] = data ? sortSupabaseData(actualT, data) : [];
                         }
                         const jsonStr = JSON.stringify(result);
@@ -653,7 +675,7 @@ function App() {
             .on('postgres_changes', { event: '*', schema: 'public', table: 'Tagihan' }, async () => {
                 // Fetch Tagihan terbaru ketika ada event (Insert/Update dari Webhook)
                 console.log("[Supabase Real-time] Tagihan berubah, memuat ulang data Tagihan...");
-                const { data } = await supabase.from('Tagihan').select('*');
+                const data = await fetchAllSupabaseRows('Tagihan');
                 if (data) {
                     const sortedData = sortSupabaseData('Tagihan', data);
                     const serverStr = JSON.stringify(sortedData);
@@ -678,7 +700,7 @@ function App() {
                         return true;
                     }));
                 } else {
-                    const { data } = await supabase.from('Data Santri').select('*');
+                    const data = await fetchAllSupabaseRows('Data Santri');
                     if (data) {
                         const sorted = sortSupabaseData('Data Santri', data);
                         const serverStr = JSON.stringify(sorted);
@@ -691,10 +713,27 @@ function App() {
             })
             .subscribe();
 
+        // Realtime Subscription untuk Tabungan (sinkron saat ada transaksi jajan/top-up)
+        const tabunganChannel = supabase
+            .channel('realtime-admin-tabungan')
+            .on('postgres_changes', { event: '*', schema: 'public', table: 'Tabungan' }, async () => {
+                const data = await fetchAllSupabaseRows('Tabungan');
+                if (data) {
+                    const sortedData = sortSupabaseData('Tabungan', data);
+                    const serverStr = JSON.stringify(sortedData);
+                    if (!window['_pending_Tabungan'] && (!window['lastWrite_Tabungan'] || Date.now() - window['lastWrite_Tabungan'] >= 30000)) {
+                        window['lastSync_Tabungan'] = serverStr;
+                        setDataTabungan(sortedData);
+                    }
+                }
+            })
+            .subscribe();
+
         return () => {
             clearInterval(interval);
             supabase.removeChannel(tagihanChannel);
             supabase.removeChannel(santriChannel);
+            supabase.removeChannel(tabunganChannel);
         };
     }, [isLoaded]);
 
