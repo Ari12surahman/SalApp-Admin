@@ -505,7 +505,7 @@ function App() {
                         const data = JSON.parse(jsonString);
                         if (data.Santri && data.Santri.length > 0) setDataSantri(data.Santri);
                         if (data.Pegawai && data.Pegawai.length > 0) setDataPegawai(data.Pegawai);
-                        if (data.Tagihan && data.Tagihan.length > 0) setDataTagihan(data.Tagihan);
+                        if (data.Tagihan && data.Tagihan.length > 0) setDataTagihan(data.Tagihan.filter(t => String(t.status || '').trim().toLowerCase() !== 'lunas'));
                         if (data.Pembayaran && data.Pembayaran.length > 0) setDataPembayaran(data.Pembayaran);
                         if (data.Tabungan && data.Tabungan.length > 0) setDataTabungan(data.Tabungan);
                         if (data.Kas && data.Kas.length > 0) setDataKas(data.Kas);
@@ -654,7 +654,7 @@ function App() {
 
                             updateIfChanged('Santri', setDataSantri);
                             updateIfChanged('Pegawai', setDataPegawai);
-                            updateIfChanged('Tagihan', setDataTagihan);
+                            updateIfChanged('Tagihan', (val) => setDataTagihan((val || []).filter(t => String(t.status || '').trim().toLowerCase() !== 'lunas')));
                             updateIfChanged('Pembayaran', setDataPembayaran);
                             updateIfChanged('Tabungan', setDataTabungan);
                             updateIfChanged('Kas', setDataKas);
@@ -879,6 +879,52 @@ function App() {
         handleCheckboxChange('selectedBulan', b);
     };
     const updateTagihanDetail = (tagName, field, value) => setFormData(prev => ({ ...prev, tagihanDetails: { ...prev.tagihanDetails, [tagName]: { ...(prev.tagihanDetails?.[tagName] || {}), [field]: value } } }));
+
+    // Efek sinkronisasi potongan diskon otomatis saat santri atau jenis tagihan dipilih di Form Tagihan
+    useEffect(() => {
+        if (modalType === 'FORM_TAGIHAN_SANTRI' && formData.nis) {
+            const santriRef = dataSantri.find(x => String(x.nis).replace(/^0+/, '') === String(formData.nis || '').replace(/^0+/, ''));
+            if (santriRef && formData.selectedTagihans?.length > 0) {
+                setFormData(prev => {
+                    const updatedDetails = { ...(prev.tagihanDetails || {}) };
+                    let changed = false;
+                    prev.selectedTagihans.forEach(tagName => {
+                        const tagRef = masterTagihanList.find(x => x.tagihan === tagName);
+                        const nomAwal = tagRef ? Number(tagRef.nominal) || 0 : (updatedDetails[tagName]?.nominalAwal || 0);
+                        const disk = (santriRef.diskonKhusus && santriRef.diskonKhusus[tagName] !== undefined && santriRef.diskonKhusus[tagName] !== '')
+                            ? Number(santriRef.diskonKhusus[tagName]) || 0
+                            : 0;
+                        if (!updatedDetails[tagName] || updatedDetails[tagName].diskon !== disk || updatedDetails[tagName].nominalAwal !== nomAwal) {
+                            updatedDetails[tagName] = { nominalAwal: nomAwal, diskon: disk };
+                            changed = true;
+                        }
+                    });
+                    return changed ? { ...prev, tagihanDetails: updatedDetails } : prev;
+                });
+            }
+        }
+    }, [formData.nis, formData.selectedTagihans, modalType]);
+
+    // Efek sinkronisasi potongan diskon otomatis saat santri atau jenis tagihan dipilih di Form Pembayaran
+    useEffect(() => {
+        if (modalType === 'FORM_PEMBAYARAN' && formData.nis && formData.tagihan && !formData.selectedTagihanBayar?.length && !formData.id) {
+            const santriRef = dataSantri.find(x => String(x.nis).replace(/^0+/, '') === String(formData.nis || '').replace(/^0+/, ''));
+            const tagRef = masterTagihanList.find(x => x.tagihan === formData.tagihan);
+            if (santriRef && tagRef) {
+                const diskon = (santriRef.diskonKhusus && santriRef.diskonKhusus[formData.tagihan] !== undefined && santriRef.diskonKhusus[formData.tagihan] !== '')
+                    ? Number(santriRef.diskonKhusus[formData.tagihan]) || 0
+                    : 0;
+                const nominalAwal = Number(tagRef.nominal) || 0;
+                const nominalBersih = Math.max(0, nominalAwal - diskon);
+                setFormData(prev => {
+                    if (prev.diskonPotongan !== diskon || prev.nominalAwal !== nominalAwal || prev.nominal !== nominalBersih) {
+                        return { ...prev, nominal: nominalBersih, diskonPotongan: diskon, nominalAwal: nominalAwal };
+                    }
+                    return prev;
+                });
+            }
+        }
+    }, [formData.nis, formData.tagihan, modalType]);
 
     const addLog = (aksi, modul, detail) => setDataLog(prev => [{ id: `LOG-${Date.now()}`, waktu: formatDateTimeID(new Date()), user: currentUser?.nama || 'Sistem', aksi, modul, detail }, ...prev]);
     const confirmDelete = (type, id, nama) => setConfirmDialog({ type, id, nama });
@@ -1441,7 +1487,11 @@ function App() {
                     newStatusTrx = tagihanStatus === 'Lunas' ? 'Lunas' : 'Cicilan';
                     newSisa = Math.max(0, targetTgh.nominal - newTerbayar);
                     
-                    setDataTagihan(prev => prev.map(t => t.id === targetTgh.id ? { ...t, terbayar: newTerbayar, status: tagihanStatus } : t));
+                    if (tagihanStatus === 'Lunas') {
+                        setDataTagihan(prev => prev.filter(t => t.id !== targetTgh.id));
+                    } else {
+                        setDataTagihan(prev => prev.map(t => t.id === targetTgh.id ? { ...t, terbayar: newTerbayar, status: tagihanStatus } : t));
+                    }
                 } else {
                     if (nominalAngka < oldTrx.nominal) newStatusTrx = 'Cicilan';
                 }
@@ -1460,33 +1510,42 @@ function App() {
 
             let targetSantri = formData.targetType === 'Kelas' ? dataSantri.filter(s => (formData.selectedKelas || []).includes(s.kelas)) : formData.targetType === 'Santri' ? dataSantri.filter(s => (formData.selectedSantri || []).includes(s.nis)) : dataSantri;
 
-            const newTags = []; const newTrxs = [];
+            const newTrxs = [];
             targetSantri.forEach(santri => {
-                const itemsToPay = []; let totalBayar = 0;
+                const itemsToPayMassal = []; let totalBayar = 0;
                 selectedTags.forEach(tagName => {
                     selectedB.forEach(bln => {
                         const pStr = `${bln} ${formData.tahun}`;
-                        const isDup = dataTagihan.some(t => String(t.nis).replace(/^0+/, '') === String(santri.nis).replace(/^0+/, '') && String(t.tagihan).toLowerCase().trim() === String(tagName).toLowerCase().trim() && formatPeriodeStr(t.periode).toLowerCase().trim() === formatPeriodeStr(pStr).toLowerCase().trim());
-                        if (isDup) return;
                         const tRef = masterTagihanList.find(t => t.tagihan === tagName);
-                        const diskon = santri.diskonKhusus?.[tagName] || 0;
+                        const diskon = (santri.diskonKhusus && santri.diskonKhusus[tagName] !== undefined && santri.diskonKhusus[tagName] !== '')
+                            ? Number(santri.diskonKhusus[tagName]) || 0
+                            : (santri.beasiswa ? Math.round(((tRef?.nominal || 0) * Number(santri.beasiswa)) / 100) : 0);
                         const finalNominal = Math.max(0, (tRef?.nominal || 0) - diskon);
                         if (finalNominal > 0) {
-                            itemsToPay.push({ tagihan: tagName, periode: pStr, nominal: finalNominal }); totalBayar += finalNominal;
-                            newTags.push({ id: `TGH-${Math.floor(Math.random() * 100000) + '-' + Date.now()}`, tanggal: new Date().toISOString().split('T')[0], nis: santri.nis, nama: santri.nama, tagihan: tagName, periode: pStr, nominalAwal: tRef?.nominal || 0, diskon: diskon, nominal: finalNominal, terbayar: finalNominal, status: 'Lunas' });
+                            itemsToPayMassal.push({ tagihan: tagName, periode: pStr, nominal: finalNominal });
+                            totalBayar += finalNominal;
                         }
                     });
                 });
-                if (itemsToPay.length > 0) {
-                    const tagihanNames = itemsToPay.map(i => i.tagihan).join(', ');
-                    const pInvoiceStr = itemsToPay.length > 1 ? `${selectedB[0]} - ${selectedB[selectedB.length - 1]} ${formData.tahun}` : `${selectedB[0]} ${formData.tahun}`;
-                    newTrxs.push({ id: `INV-${Math.floor(Math.random() * 100000) + '-' + Date.now()}`, tanggal: new Date().toISOString().split('T')[0], nis: santri.nis, nama: santri.nama, tagihan: tagihanNames.length > 30 ? tagihanNames.substring(0, 30) + '...' : tagihanNames, periode: pInvoiceStr, nominal: totalBayar, status: 'Lunas', sisa: 0, items: itemsToPay });
+                if (itemsToPayMassal.length > 0) {
+                    const tagihanNames = itemsToPayMassal.map(i => i.tagihan).join(', ');
+                    const pInvoiceStr = itemsToPayMassal.length > 1 ? `${selectedB[0]} - ${selectedB[selectedB.length - 1]} ${formData.tahun}` : `${selectedB[0]} ${formData.tahun}`;
+                    newTrxs.push({ id: `INV-${Math.floor(Math.random() * 100000) + '-' + Date.now()}`, tanggal: new Date().toISOString().split('T')[0], nis: santri.nis, nama: santri.nama, tagihan: tagihanNames.length > 30 ? tagihanNames.substring(0, 30) + '...' : tagihanNames, periode: pInvoiceStr, nominal: totalBayar, status: 'Lunas', sisa: 0, items: itemsToPayMassal });
                 }
             });
-            setDataTagihan(prev => [...newTags, ...prev]); setDataPembayaran(prev => [...newTrxs, ...prev]);
+            // Hapus tagihan yang sudah terbayar lunas dari dataTagihan agar tidak menumpuk di daftar tagihan
+            setDataTagihan(prevTags => {
+                return prevTags.filter(t => {
+                    const isPaidInMass = newTrxs.some(trx => 
+                        String(trx.nis).replace(/^0+/, '') === String(t.nis).replace(/^0+/, '') &&
+                        trx.items?.some(it => String(it.tagihan).toLowerCase().trim() === String(t.tagihan).toLowerCase().trim() && formatPeriodeStr(it.periode).toLowerCase().trim() === formatPeriodeStr(t.periode).toLowerCase().trim())
+                    );
+                    return !isPaidInMass;
+                });
+            });
+            setDataPembayaran(prev => [...newTrxs, ...prev]);
             addLog('CREATE', 'PEMBAYARAN MASSAL', `Menerima ${newTrxs.length} pembayaran massal`);
             showNotification(`${newTrxs.length} Transaksi Massal dicatat!`);
-            // Kirim notifikasi ke semua santri yang terkena pembayaran massal
             newTrxs.forEach(trx => {
                 triggerPushNotification(trx.nis, 'Pembayaran Tagihan', `Alhamdulillah, pembayaran massal Rp ${trx.nominal.toLocaleString('id-ID')} untuk Ananda ${trx.nama} berhasil dicatat.`);
             });
@@ -1522,106 +1581,161 @@ function App() {
 
         if (formData.selectedTagihanBayar?.length > 0) {
             if (formData.selectedTagihanBayar.length === 1) {
-                const tagihanId = formData.selectedTagihanBayar[0]; const tRef = dataTagihan.find(t => t.id === tagihanId);
+                const tagihanId = formData.selectedTagihanBayar[0];
+                const tRef = dataTagihan.find(t => t.id === tagihanId);
                 let nominalAngka = parseInt(String(formData.nominal || '').replace(/\D/g, ''), 10);
                 const totalTerbayarBaru = (tRef.terbayar || 0) + nominalAngka;
-                let statusTrx = 'Lunas'; let sisaTagihan = 0;
-                if (totalTerbayarBaru < tRef.nominal) { statusTrx = 'Cicil'; sisaTagihan = tRef.nominal - totalTerbayarBaru; }
-                setDataTagihan(prev => prev.map(t => t.id === tagihanId ? { ...t, status: statusTrx, terbayar: totalTerbayarBaru } : t));
-                const newTrx = { id: `INV-${Math.floor(Math.random() * 10000) + '-' + Date.now()}`, tanggal: new Date().toISOString().split('T')[0], nis: santriTerpilih.nis, nama: santriTerpilih.nama, tagihan: tRef.tagihan, periode: tRef.periode, nominal: nominalAngka, status: statusTrx === 'Cicil' ? 'Cicilan' : 'Lunas', sisa: sisaTagihan, items: [{ tagihan: tRef.tagihan, periode: tRef.periode, nominal: nominalAngka }] };
+                let statusTrx = 'Lunas';
+                let sisaTagihan = 0;
+
+                if (totalTerbayarBaru < tRef.nominal) {
+                    statusTrx = 'Cicil';
+                    sisaTagihan = tRef.nominal - totalTerbayarBaru;
+                    // Tagihan belum lunas: simpan sisa cicilan di Tagihan
+                    setDataTagihan(prev => prev.map(t => t.id === tagihanId ? { ...t, status: 'Cicil', terbayar: totalTerbayarBaru } : t));
+                } else {
+                    // Tagihan SUDAH LUNAS: Hapus dari daftar Tagihan agar tidak menumpuk
+                    setDataTagihan(prev => prev.filter(t => t.id !== tagihanId));
+                }
+
+                const newTrx = {
+                    id: `INV-${Math.floor(Math.random() * 10000) + '-' + Date.now()}`,
+                    tanggal: new Date().toISOString().split('T')[0],
+                    nis: santriTerpilih.nis,
+                    nama: santriTerpilih.nama,
+                    tagihan: tRef.tagihan,
+                    periode: tRef.periode,
+                    nominal: nominalAngka,
+                    status: statusTrx === 'Cicil' ? 'Cicilan' : 'Lunas',
+                    sisa: sisaTagihan,
+                    items: [{ tagihan: tRef.tagihan, periode: tRef.periode, nominal: nominalAngka }]
+                };
                 setDataPembayaran(prev => [newTrx, ...prev]);
                 addLog('CREATE', 'PEMBAYARAN', `Menerima pembayaran Rp ${nominalAngka.toLocaleString('id-ID')} dari ${santriTerpilih.nama}`);
                 showNotification(`Pembayaran Rp ${nominalAngka.toLocaleString('id-ID')} dicatat!`);
                 triggerPushNotification(santriTerpilih.nis, 'Pembayaran Tagihan', `Alhamdulillah, pembayaran Rp ${nominalAngka.toLocaleString('id-ID')} untuk ${tRef.tagihan} (${tRef.periode}) Ananda ${santriTerpilih.nama} berhasil dicatat.`);
             } else {
-                const itemsToPay = []; let totalPayment = 0;
-                const updatedTagsData = [];
+                const itemsToPay = [];
+                let totalPayment = 0;
 
                 formData.selectedTagihanBayar.forEach(tagihanId => {
                     const tRef = dataTagihan.find(t => t.id === tagihanId);
                     if (tRef) {
                         const sisa = Number(tRef.nominal) - (Number(tRef.terbayar) || 0);
-                        updatedTagsData.push({ id: tagihanId, terbayar: tRef.nominal, status: 'Lunas' });
                         itemsToPay.push({ tagihan: tRef.tagihan, periode: tRef.periode, nominal: sisa });
                         totalPayment += sisa;
                     }
                 });
 
-                setDataTagihan(prevTags => {
-                    return prevTags.map(t => {
-                        const upd = updatedTagsData.find(u => u.id === t.id);
-                        return upd ? { ...t, terbayar: upd.terbayar, status: upd.status } : t;
-                    });
-                });
+                // Semua tagihan yang dipilih sudah lunas dibayar sekaligus: hapus dari daftar Tagihan
+                setDataTagihan(prevTags => prevTags.filter(t => !formData.selectedTagihanBayar.includes(t.id)));
+
                 const tagihanNames = itemsToPay.map(i => i.tagihan).join(', ');
-                const newTrx = { id: `INV-${Math.floor(Math.random() * 100000) + '-' + Date.now()}`, tanggal: new Date().toISOString().split('T')[0], nis: santriTerpilih.nis, nama: santriTerpilih.nama, tagihan: tagihanNames.length > 30 ? tagihanNames.substring(0, 30) + '...' : tagihanNames, periode: itemsToPay[0]?.periode || 'Multi-Periode', nominal: totalPayment, status: 'Lunas', sisa: 0, items: itemsToPay };
+                const newTrx = {
+                    id: `INV-${Math.floor(Math.random() * 100000) + '-' + Date.now()}`,
+                    tanggal: new Date().toISOString().split('T')[0],
+                    nis: santriTerpilih.nis,
+                    nama: santriTerpilih.nama,
+                    tagihan: tagihanNames.length > 30 ? tagihanNames.substring(0, 30) + '...' : tagihanNames,
+                    periode: itemsToPay[0]?.periode || 'Multi-Periode',
+                    nominal: totalPayment,
+                    status: 'Lunas',
+                    sisa: 0,
+                    items: itemsToPay
+                };
                 setDataPembayaran(prev => [newTrx, ...prev]);
                 addLog('CREATE', 'PEMBAYARAN', `Menerima pembayaran ${itemsToPay.length} tagihan dari ${santriTerpilih.nama}`);
                 showNotification(`Pembayaran ${itemsToPay.length} tagihan sekaligus berhasil!`);
                 triggerPushNotification(santriTerpilih.nis, 'Pembayaran Tagihan', `Alhamdulillah, pembayaran ${itemsToPay.length} tagihan sekaligus (Total Rp ${totalPayment.toLocaleString('id-ID')}) untuk Ananda ${santriTerpilih.nama} berhasil dicatat.`);
             }
-            closeModal(); return;
+            closeModal();
+            return;
         }
 
         const selectedB = formData.selectedBulan || [];
         if (selectedB.length === 0) return showNotification('Pilih minimal 1 bulan!');
         let nominalPerBulan = parseInt(String(formData.nominal || '').replace(/\D/g, ''), 10);
-        const itemsToPay = []; let totalPayment = 0;
-        const updatedBulanMap = {};
+        const itemsToPay = [];
+        let totalPayment = 0;
+        let anyCicilan = false;
+        let totalSisa = 0;
+
+        // Ambil tarif normal dan potongan santri
+        const masterRef = masterTagihanList.find(m => String(m.tagihan).toLowerCase().trim() === String(formData.tagihan).toLowerCase().trim()) || masterTagihanList.find(m => String(formData.tagihan).toLowerCase().trim().includes(String(m.tagihan).toLowerCase().trim()));
+        const tarifNormal = masterRef ? Number(masterRef.nominal) || 0 : nominalPerBulan;
+        const diskonSantri = (santriTerpilih.diskonKhusus && santriTerpilih.diskonKhusus[formData.tagihan] !== undefined && santriTerpilih.diskonKhusus[formData.tagihan] !== '')
+            ? Number(santriTerpilih.diskonKhusus[formData.tagihan]) || 0
+            : (formData.diskonPotongan ? Number(formData.diskonPotongan) || 0 : 0);
+        const tagihanWajib = Math.max(0, tarifNormal - diskonSantri);
+
         selectedB.forEach(bln => {
             const pStr = `${bln} ${formData.tahun}`;
-            updatedBulanMap[pStr] = true;
-            itemsToPay.push({ tagihan: formData.tagihan, periode: pStr, nominal: nominalPerBulan }); totalPayment += nominalPerBulan;
+            itemsToPay.push({ tagihan: formData.tagihan, periode: pStr, nominal: nominalPerBulan });
+            totalPayment += nominalPerBulan;
+            if (nominalPerBulan < tagihanWajib) {
+                anyCicilan = true;
+                totalSisa += (tagihanWajib - nominalPerBulan);
+            }
         });
 
-        // Cari dan lunaskan Tagihan yang relevan di state dataTagihan
+        // Update Tagihan: hanya sisa cicilan yang masuk ke Tagihan! Yang LUNAS TIDAK masuk ke Tagihan!
         setDataTagihan(prevTags => {
-            const updatedTags = [...prevTags];
+            let updatedTags = [...prevTags];
             selectedB.forEach(bln => {
                 const pStr = `${bln} ${formData.tahun}`;
-                const idx = updatedTags.findIndex(t => String(t.nis).replace(/^0+/, '') === String(formData.nis).replace(/^0+/, '') && String(t.tagihan).toLowerCase().trim() === String(formData.tagihan).toLowerCase().trim() && formatPeriodeStr(t.periode).toLowerCase().trim() === formatPeriodeStr(pStr).toLowerCase().trim());
+                const idx = updatedTags.findIndex(t =>
+                    String(t.nis).replace(/^0+/, '') === String(formData.nis).replace(/^0+/, '') &&
+                    String(t.tagihan).toLowerCase().trim() === String(formData.tagihan).toLowerCase().trim() &&
+                    formatPeriodeStr(t.periode).toLowerCase().trim() === formatPeriodeStr(pStr).toLowerCase().trim()
+                );
 
                 if (idx > -1) {
                     const t = updatedTags[idx];
                     const currentTerbayar = (t.terbayar || 0) + nominalPerBulan;
-                    const statusTrx = currentTerbayar >= t.nominal ? 'Lunas' : 'Cicil';
-                    updatedTags[idx] = { ...t, terbayar: currentTerbayar, status: statusTrx };
+                    if (currentTerbayar >= t.nominal) {
+                        // Lunas: Hapus dari Tagihan
+                        updatedTags.splice(idx, 1);
+                    } else {
+                        // Cicil: Perbarui status & terbayar
+                        updatedTags[idx] = { ...t, terbayar: currentTerbayar, status: 'Cicil' };
+                    }
                 } else {
-                    updatedTags.unshift({
-                        id: generateInvoiceId(formData.tagihan, updatedTags),
-                        tanggal: new Date().toISOString().split('T')[0],
-                        nis: santriTerpilih.nis,
-                        nama: santriTerpilih.nama,
-                        tagihan: formData.tagihan,
-                        periode: pStr,
-                        nominalAwal: nominalPerBulan,
-                        diskon: 0,
-                        nominal: nominalPerBulan,
-                        terbayar: nominalPerBulan,
-                        status: 'Lunas'
-                    });
+                    // Jika cicil (nominal bayar < tagihan wajib): masukkan sisa kewajiban ke Tagihan
+                    if (nominalPerBulan < tagihanWajib) {
+                        updatedTags.unshift({
+                            id: generateInvoiceId(formData.tagihan, updatedTags),
+                            tanggal: new Date().toISOString().split('T')[0],
+                            nis: santriTerpilih.nis,
+                            nama: santriTerpilih.nama,
+                            tagihan: formData.tagihan,
+                            periode: pStr,
+                            nominalAwal: tarifNormal,
+                            diskon: diskonSantri,
+                            nominal: tagihanWajib,
+                            terbayar: nominalPerBulan,
+                            status: 'Cicil'
+                        });
+                    }
+                    // Jika LUNAS: JANGAN tambahkan ke Tagihan! Cukup tercatat di dataPembayaran!
                 }
             });
             return updatedTags;
         });
 
         const pInvoiceStr = itemsToPay.length > 1 ? `${selectedB[0]} - ${selectedB[selectedB.length - 1]} ${formData.tahun}` : `${selectedB[0]} ${formData.tahun}`;
-        
-        let trxStatus = 'Lunas';
-        let trxSisa = 0;
-        if (itemsToPay.length === 1) {
-            const tRef = dataTagihan.find(t => String(t.nis).replace(/^0+/, '') === String(formData.nis).replace(/^0+/, '') && String(t.tagihan).toLowerCase().trim() === String(formData.tagihan).toLowerCase().trim() && formatPeriodeStr(t.periode).toLowerCase().trim() === formatPeriodeStr(itemsToPay[0].periode).toLowerCase().trim());
-            if (tRef && tRef.nominal > (tRef.terbayar || 0) + itemsToPay[0].nominal) {
-                trxStatus = 'Cicilan';
-                trxSisa = tRef.nominal - ((tRef.terbayar || 0) + itemsToPay[0].nominal);
-            } else if (tRef && tRef.nominal > tRef.terbayar) {
-                // Already calculated in the loop, check the updated Tagihan state conceptually
-                trxSisa = tRef.nominal - tRef.terbayar;
-                if(trxSisa > 0) trxStatus = 'Cicilan';
-            }
-        }
-        
-        const newTrx = { id: `INV-${Math.floor(Math.random() * 10000) + '-' + Date.now()}`, tanggal: new Date().toISOString().split('T')[0], nis: formData.nis, nama: santriTerpilih.nama, tagihan: formData.tagihan, periode: pInvoiceStr, nominal: totalPayment, status: trxStatus, sisa: trxSisa, items: itemsToPay };
+        const trxStatus = anyCicilan ? 'Cicilan' : 'Lunas';
+        const newTrx = {
+            id: `INV-${Math.floor(Math.random() * 10000) + '-' + Date.now()}`,
+            tanggal: new Date().toISOString().split('T')[0],
+            nis: formData.nis,
+            nama: santriTerpilih.nama,
+            tagihan: formData.tagihan,
+            periode: pInvoiceStr,
+            nominal: totalPayment,
+            status: trxStatus,
+            sisa: totalSisa,
+            items: itemsToPay
+        };
         setDataPembayaran(prev => [newTrx, ...prev]);
         addLog('CREATE', 'PEMBAYARAN MANUAL', `Menerima pembayaran manual Rp ${totalPayment.toLocaleString('id-ID')} dari ${santriTerpilih.nama}`);
         showNotification(`Pembayaran Rp ${totalPayment.toLocaleString('id-ID')} dicatat!`);
@@ -1649,9 +1763,16 @@ function App() {
                 selectedTags.forEach(tagName => {
                     selectedB.forEach(bln => {
                         const periodeStr = `${bln} ${formData.tahun}`;
-                        const masterRef = masterTagihanList.find(m => String(tagName).toLowerCase().trim().startsWith(String(m.tagihan).toLowerCase().trim()));
-                        const awal = masterRef ? masterRef.nominal : 0;
-                        const disk = (santriTerpilih.beasiswa && santriTerpilih.beasiswa > 0) ? (awal * santriTerpilih.beasiswa) / 100 : 0;
+                        const masterRef = masterTagihanList.find(m => String(tagName).toLowerCase().trim() === String(m.tagihan).toLowerCase().trim()) || masterTagihanList.find(m => String(tagName).toLowerCase().trim().startsWith(String(m.tagihan).toLowerCase().trim()));
+                        const awal = masterRef ? Number(masterRef.nominal) || 0 : 0;
+                        
+                        // Cek potongan diskon khusus santri (diskonKhusus) lebih dulu!
+                        let disk = 0;
+                        if (santriTerpilih.diskonKhusus && santriTerpilih.diskonKhusus[tagName] !== undefined && santriTerpilih.diskonKhusus[tagName] !== '') {
+                            disk = Number(santriTerpilih.diskonKhusus[tagName]) || 0;
+                        } else if (santriTerpilih.beasiswa && santriTerpilih.beasiswa > 0) {
+                            disk = Math.round((awal * Number(santriTerpilih.beasiswa)) / 100);
+                        }
                         const finalNominal = Math.max(0, awal - disk);
 
                         const isDup = dataTagihan.some(t => String(t.nis).replace(/^0+/, '') === String(santriTerpilih.nis).replace(/^0+/, '') && String(t.tagihan).toLowerCase().trim() === String(tagName).toLowerCase().trim() && formatPeriodeStr(t.periode).toLowerCase().trim() === formatPeriodeStr(periodeStr).toLowerCase().trim());
@@ -1694,7 +1815,10 @@ function App() {
                     const periodeStr = `${bln} ${formData.tahun}`;
                     const detail = formData.tagihanDetails?.[tagName] || { nominalAwal: 0, diskon: 0 };
                     const awal = parseInt(String(detail.nominalAwal).replace(/\D/g, ''), 10) || 0;
-                    const disk = parseInt(String(detail.diskon).replace(/\D/g, ''), 10) || 0;
+                    let disk = detail.diskon !== undefined && detail.diskon !== '' ? parseInt(String(detail.diskon).replace(/\D/g, ''), 10) || 0 : 0;
+                    if (disk === 0 && santriTerpilih?.diskonKhusus?.[tagName]) {
+                        disk = Number(santriTerpilih.diskonKhusus[tagName]) || 0;
+                    }
                     const finalNominal = Math.max(0, awal - disk);
 
                     const isDup = dataTagihan.some(t => String(t.nis).replace(/^0+/, '') === String(formData.nis).replace(/^0+/, '') && String(t.tagihan).toLowerCase().trim() === String(tagName).toLowerCase().trim() && formatPeriodeStr(t.periode).toLowerCase().trim() === formatPeriodeStr(periodeStr).toLowerCase().trim());
@@ -4835,8 +4959,34 @@ function App() {
                     <div className="mt-4 pt-4 border-t border-whisper">
                         <h4 className="font-semibold text-ink mb-3 flex items-center gap-2 text-sm"><BadgePercent className="w-4 h-4 text-emerald-600" /> Setting Diskon / Beasiswa (Opsional)</h4>
                         <div className="grid grid-cols-1 gap-3">
-                            {masterTagihanList.filter(t => t.tipe === 'Rutin').map(tagihan => (
-                                <div key={tagihan.tagihan} className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-4"><label className="text-xs font-medium text-steel w-full sm:w-1/2">{tagihan.tagihan} (Normal: Rp {Number(tagihan.nominal || 0).toLocaleString('id-ID')})</label><div className="relative w-full sm:w-1/2"><span className="absolute left-3 top-2.5 text-steel text-xs">Rp</span><input type="number" value={formData.diskonKhusus?.[tagihan.tagihan] || ''} onChange={(e) => { const val = e.target.value === '' ? '' : parseInt(e.target.value, 10); setFormData(prev => ({ ...prev, diskonKhusus: { ...(prev.diskonKhusus || {}), [tagihan.tagihan]: val } })); }} className={`${inputBase} pl-8 text-xs py-2`} placeholder="Nominal Potongan" /></div></div>
+                            {masterTagihanList.map(tagihan => (
+                                <div key={tagihan.tagihan} className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-4">
+                                    <label className="text-xs font-medium text-steel w-full sm:w-1/2">
+                                        {tagihan.tagihan} (Normal: Rp {Number(tagihan.nominal || 0).toLocaleString('id-ID')})
+                                    </label>
+                                    <div className="relative w-full sm:w-1/2">
+                                        <span className="absolute left-3 top-2.5 text-steel text-xs">Rp</span>
+                                        <input 
+                                            type="number" 
+                                            value={formData.diskonKhusus?.[tagihan.tagihan] ?? ''} 
+                                            onChange={(e) => { 
+                                                const raw = e.target.value;
+                                                const val = raw === '' ? '' : parseInt(raw, 10); 
+                                                setFormData(prev => {
+                                                    const dk = { ...(prev.diskonKhusus || {}) };
+                                                    if (val === '' || isNaN(val) || val <= 0) {
+                                                        delete dk[tagihan.tagihan];
+                                                    } else {
+                                                        dk[tagihan.tagihan] = val;
+                                                    }
+                                                    return { ...prev, diskonKhusus: dk };
+                                                }); 
+                                            }} 
+                                            className={`${inputBase} pl-8 text-xs py-2`} 
+                                            placeholder="Nominal Potongan per bulan" 
+                                        />
+                                    </div>
+                                </div>
                             ))}
                         </div>
                     </div>
@@ -5117,7 +5267,37 @@ function App() {
                         <div className="animate-in fade-in slide-in-from-top-2">
                             {!hasSelectedUnpaid && unpaidBills.length > 0 && !formData.id && (<div className="flex items-center my-4"><div className="flex-1 border-t border-whisper"></div><span className="px-3 text-xs text-steel font-medium">ATAU CATAT MANUAL BEBAS</span><div className="flex-1 border-t border-whisper"></div></div>)}
                             {!hasSelectedUnpaid && (
-                                <><div><label className="block text-sm font-medium text-ink mb-1 mt-2">Jenis Pembayaran / Tagihan</label><select required name="tagihan" value={formData.tagihan || ''} onChange={(e) => { const val = e.target.value; const tRef = masterTagihanList.find(t => t.tagihan === val); setFormData(prev => ({ ...prev, tagihan: val, nominal: tRef ? tRef.nominal : prev.nominal })); }} className={inputBase}><option value="">-- Pilih --</option>{masterTagihanList.filter(t => !String(t.portalMenu || '').includes('Sembunyikan')).map(t => <option key={t.tagihan} value={t.tagihan}>{t.tagihan}</option>)}</select></div>
+                                <><div>
+                                        <label className="block text-sm font-medium text-ink mb-1 mt-2">Jenis Pembayaran / Tagihan</label>
+                                        <select required name="tagihan" value={formData.tagihan || ''} onChange={(e) => {
+                                            const val = e.target.value;
+                                            const tRef = masterTagihanList.find(t => t.tagihan === val);
+                                            const santriRef = dataSantri.find(s => String(s.nis).replace(/^0+/, '') === String(formData.nis || '').replace(/^0+/, ''));
+                                            const diskon = (santriRef?.diskonKhusus && santriRef.diskonKhusus[val] !== undefined && santriRef.diskonKhusus[val] !== '')
+                                                ? Number(santriRef.diskonKhusus[val]) || 0
+                                                : 0;
+                                            const awal = tRef ? Number(tRef.nominal) || 0 : 0;
+                                            const nominalBersih = Math.max(0, awal - diskon);
+                                            setFormData(prev => ({
+                                                ...prev,
+                                                tagihan: val,
+                                                nominal: nominalBersih,
+                                                diskonPotongan: diskon,
+                                                nominalAwal: awal
+                                            }));
+                                        }} className={inputBase}>
+                                            <option value="">-- Pilih --</option>
+                                            {masterTagihanList.filter(t => !String(t.portalMenu || '').includes('Sembunyikan')).map(t => (
+                                                <option key={t.tagihan} value={t.tagihan}>{t.tagihan}</option>
+                                            ))}
+                                        </select>
+                                        {formData.diskonPotongan > 0 && (
+                                            <div className="mt-2 p-2.5 bg-emerald-50 border border-emerald-200 rounded-lg flex items-center justify-between text-xs text-emerald-800 animate-in fade-in">
+                                                <span className="flex items-center gap-1.5 font-medium"><BadgePercent className="w-4 h-4 text-emerald-600" /> Potongan Santri Aktif:</span>
+                                                <span className="font-bold">-Rp {Number(formData.diskonPotongan).toLocaleString('id-ID')} (Tarif Normal: Rp {Number(formData.nominalAwal || 0).toLocaleString('id-ID')})</span>
+                                            </div>
+                                        )}
+                                    </div>
                                     {!formData.id ? (<div className="mt-3"><label className="block text-sm font-medium text-ink mb-2">Bulan Dibayar (Bisa pilih lebih dari 1)</label><div className="grid grid-cols-3 sm:grid-cols-4 gap-2">{listBulan.map(b => (<label key={b} className="flex items-center gap-1.5 text-xs bg-canvas border border-whisper px-2 py-1.5 rounded cursor-pointer hover:bg-whisper"><input type="checkbox" checked={(formData.selectedBulan || []).includes(b)} onChange={(e) => handleBulanChange(b, e)} className="rounded text-blue-600" /> {b.substring(0, 3)}</label>))}</div></div>) : (<div className="mt-2"><label className="block text-sm font-medium text-ink mb-1">Bulan</label><select required name="bulan" value={formData.bulan || ''} onChange={handleInputChange} className={inputBase}>{listBulan.map(b => <option key={b} value={b}>{b}</option>)}</select></div>)}
                                     <div className="mt-2"><label className="block text-sm font-medium text-ink mb-1">Tahun</label><input required name="tahun" value={formData.tahun || ''} onChange={handleInputChange} type="number" className={inputBase} /></div>
                                 </>
