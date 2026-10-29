@@ -77,7 +77,27 @@ async function supabaseSaveTableData(tableName, dataArr) {
         return { success: true };
     }
 
-    const fullReplaceTables = ['MasterPeriode', 'MasterJabatan', 'MasterKelas', 'KategoriKas', 'MasterConfig', 'MasterRoleAccess'];
+    if (tableName === 'MasterRoleAccess') {
+        if (!finalData || finalData.length === 0) return { success: true };
+        const { error } = await supabase.from('MasterRoleAccess').upsert(finalData, { onConflict: 'jabatan' });
+        if (error) {
+            console.error("Gagal upsert MasterRoleAccess:", error);
+            return { success: false, message: error.message };
+        }
+        return { success: true };
+    }
+
+    if (tableName === 'MasterConfig') {
+        if (!finalData || finalData.length === 0) return { success: true };
+        const { error } = await supabase.from('MasterConfig').upsert(finalData, { onConflict: 'kunci' });
+        if (error) {
+            console.error("Gagal upsert MasterConfig:", error);
+            return { success: false, message: error.message };
+        }
+        return { success: true };
+    }
+
+    const fullReplaceTables = ['MasterPeriode', 'MasterJabatan', 'MasterKelas', 'KategoriKas'];
     if (fullReplaceTables.includes(tableName)) {
         const dummyCol = Object.keys(finalData[0] || {})[0];
         if (dummyCol) {
@@ -714,6 +734,21 @@ function App() {
                                 } 
                             });
                             setAppConfig(prev => ({ ...prev, ...cfg }));
+                        } else {
+                            // Fallback direct query jika batch fetch kosong
+                            supabase.from('MasterConfig').select('*').then(({ data: cfgRows }) => {
+                                if (cfgRows && cfgRows.length > 0) {
+                                    const cfg = {};
+                                    cfgRows.forEach(item => {
+                                        if (item.kunci) {
+                                            try {
+                                                cfg[item.kunci] = (typeof item.nilai === 'string' && (item.nilai.startsWith('[') || item.nilai.startsWith('{'))) ? JSON.parse(item.nilai) : item.nilai;
+                                            } catch(e) { cfg[item.kunci] = item.nilai; }
+                                        }
+                                    });
+                                    setAppConfig(prev => ({ ...prev, ...cfg }));
+                                }
+                            });
                         }
                         // Muat Role Access
                         if (data.MasterRoleAccess && data.MasterRoleAccess.length > 0) {
@@ -721,6 +756,16 @@ function App() {
                                 ...r,
                                 aksesMenu: typeof r.aksesMenu === 'string' ? r.aksesMenu.split(',').filter(Boolean) : (r.aksesMenu || [])
                             })));
+                        } else {
+                            // Fallback direct query jika batch fetch kosong
+                            supabase.from('MasterRoleAccess').select('*').then(({ data: roleRows }) => {
+                                if (roleRows && roleRows.length > 0) {
+                                    setDataRoleAccess(roleRows.map(r => ({
+                                        ...r,
+                                        aksesMenu: typeof r.aksesMenu === 'string' ? r.aksesMenu.split(',').filter(Boolean) : (r.aksesMenu || [])
+                                    })));
+                                }
+                            });
                         }
                         window['lastSync_Santri'] = JSON.stringify(data.Santri || []);
                         window['lastSync_Pegawai'] = JSON.stringify(data.Pegawai || []);
@@ -755,7 +800,7 @@ function App() {
 
                 (async () => {
                     try {
-                        const tables = ['Santri', 'Pegawai', 'Admin', 'Tagihan', 'Pembayaran', 'Tabungan', 'Kas', 'Gaji', 'Logs', 'MasterPeriode', 'MasterJabatan', 'MasterKelas', 'MasterTagihan'];
+                        const tables = ['Santri', 'Pegawai', 'Admin', 'Tagihan', 'Pembayaran', 'Tabungan', 'Kas', 'Gaji', 'Logs', 'MasterPeriode', 'MasterJabatan', 'MasterKelas', 'MasterTagihan', 'MasterConfig', 'MasterRoleAccess'];
                         const result = {};
                         for (const t of tables) {
                             let actualT = t;
@@ -792,6 +837,27 @@ function App() {
                             updateIfChanged('Gaji', setDataGaji);
                             updateIfChanged('MasterTagihan', (val) => {
                                 if (Array.isArray(val) && val.length > 0) setMasterTagihanList(val);
+                            });
+                            updateIfChanged('MasterConfig', (val) => {
+                                if (Array.isArray(val) && val.length > 0) {
+                                    const cfg = {};
+                                    val.forEach(item => {
+                                        if (item.kunci) {
+                                            try {
+                                                cfg[item.kunci] = (typeof item.nilai === 'string' && (item.nilai.startsWith('[') || item.nilai.startsWith('{'))) ? JSON.parse(item.nilai) : item.nilai;
+                                            } catch (e) { cfg[item.kunci] = item.nilai; }
+                                        }
+                                    });
+                                    setAppConfig(prev => ({ ...prev, ...cfg }));
+                                }
+                            });
+                            updateIfChanged('MasterRoleAccess', (val) => {
+                                if (Array.isArray(val) && val.length > 0) {
+                                    setDataRoleAccess(val.map(r => ({
+                                        jabatan: r.jabatan,
+                                        aksesMenu: typeof r.aksesMenu === 'string' ? r.aksesMenu.split(',').filter(Boolean) : (r.aksesMenu || [])
+                                    })));
+                                }
                             });
                         } catch (e) { }
 
@@ -940,19 +1006,8 @@ function App() {
             debouncedSync('KategoriKas', flat);
         }
     }, [kategoriKas, isLoaded]);
-    // Sync Admin, Config, RoleAccess
+    // Sync Admin secara debounced
     useEffect(() => { if (isLoaded) debouncedSync('Admin', dataAdmin); }, [dataAdmin, isLoaded]);
-    useEffect(() => {
-        if (isLoaded) {
-            const flat = Object.entries(appConfig).map(([kunci, nilai]) => ({ kunci, nilai: typeof nilai === 'object' ? JSON.stringify(nilai) : (nilai || '') }));
-            debouncedSync('MasterConfig', flat);
-        }
-    }, [appConfig, isLoaded]);
-    useEffect(() => {
-        if (isLoaded) {
-            debouncedSync('MasterRoleAccess', dataRoleAccess.map(r => ({ jabatan: r.jabatan, aksesMenu: Array.isArray(r.aksesMenu) ? r.aksesMenu.join(',') : r.aksesMenu })));
-        }
-    }, [dataRoleAccess, isLoaded]);
 
     useEffect(() => { if (notification) { const timer = setTimeout(() => setNotification(null), 3000); return () => clearTimeout(timer); } }, [notification]);
 
@@ -5715,22 +5770,32 @@ function App() {
         const handleSaveBranding = async (e) => {
             e.preventDefault();
             
-            // Simpan ke MasterConfig
+            // Simpan ke MasterConfig secara atomic
             const configEntries = Object.entries(appConfig).map(([kunci, nilai]) => ({
                 kunci,
-                nilai: typeof nilai === 'object' ? JSON.stringify(nilai) : String(nilai)
+                nilai: typeof nilai === 'object' ? JSON.stringify(nilai) : (nilai === null || nilai === undefined ? '' : String(nilai))
             }));
-            await supabase.from('MasterConfig').upsert(configEntries, { onConflict: 'kunci' });
+            const { error: cErr } = await supabase.from('MasterConfig').upsert(configEntries, { onConflict: 'kunci' });
+            if (cErr) {
+                console.error("Gagal simpan branding ke MasterConfig:", cErr);
+                return showNotification(`Gagal menyimpan: ${cErr.message}`);
+            }
             
-            // Sinkronisasi ke tabel Pengaturan untuk Portal
+            // Sinkronisasi ke tabel Pengaturan untuk Portal & POS
             if (appConfig.pakasirSlug) {
                 await supabase.from('Pengaturan').upsert({ Kunci: 'PAKASIR_DOMAIN', Nilai: appConfig.pakasirSlug }, { onConflict: 'Kunci' });
             }
             if (appConfig.pakasirApiKey) {
                 await supabase.from('Pengaturan').upsert({ Kunci: 'PAKASIR_APIKEY', Nilai: appConfig.pakasirApiKey }, { onConflict: 'Kunci' });
             }
+            if (appConfig.appName) {
+                await supabase.from('Pengaturan').upsert({ Kunci: 'APP_NAME', Nilai: appConfig.appName }, { onConflict: 'Kunci' });
+            }
+            if (appConfig.appLogo) {
+                await supabase.from('Pengaturan').upsert({ Kunci: 'APP_LOGO', Nilai: appConfig.appLogo }, { onConflict: 'Kunci' });
+            }
             
-            showNotification('Pengaturan Branding berhasil disimpan!');
+            showNotification('Pengaturan Branding berhasil disimpan permanen!');
             addLog('UPDATE', 'PENGATURAN', `Branding diubah: "${appConfig.appName}"`);
         };
 
@@ -5751,16 +5816,49 @@ function App() {
             showNotification('Data admin berhasil disimpan!');
         };
 
-        const toggleMenuAccess = (jabatan, menuId) => {
+        const toggleMenuAccess = async (jabatan, menuId) => {
+            let updatedList = [];
             setDataRoleAccess(prev => {
                 const existing = prev.find(r => r.jabatan === jabatan);
                 if (existing) {
                     const menus = Array.isArray(existing.aksesMenu) ? existing.aksesMenu : [];
                     const updated = menus.includes(menuId) ? menus.filter(m => m !== menuId) : [...menus, menuId];
-                    return prev.map(r => r.jabatan === jabatan ? { ...r, aksesMenu: updated } : r);
+                    updatedList = prev.map(r => r.jabatan === jabatan ? { ...r, aksesMenu: updated } : r);
+                } else {
+                    updatedList = [...prev, { jabatan, aksesMenu: [menuId] }];
                 }
-                return [...prev, { jabatan, aksesMenu: [menuId] }];
+                return updatedList;
             });
+
+            // Cari data role yang baru saja diupdate
+            const roleItem = updatedList.find(r => r.jabatan === jabatan) || { jabatan, aksesMenu: [] };
+            const aksesStr = Array.isArray(roleItem.aksesMenu) ? roleItem.aksesMenu.join(',') : (roleItem.aksesMenu || '');
+
+            // Langsung simpan atomic upsert ke Supabase
+            const { error } = await supabase.from('MasterRoleAccess').upsert({
+                jabatan,
+                aksesMenu: aksesStr
+            }, { onConflict: 'jabatan' });
+
+            if (error) {
+                console.error("Gagal simpan hak akses ke Supabase:", error);
+                showNotification("Gagal menyimpan hak akses: " + error.message);
+            }
+        };
+
+        const handleSaveAllRoleAccess = async () => {
+            const payload = masterJabatanList.map(j => {
+                const r = dataRoleAccess.find(x => x.jabatan === j);
+                const menus = r ? (Array.isArray(r.aksesMenu) ? r.aksesMenu.join(',') : r.aksesMenu) : '';
+                return { jabatan: j, aksesMenu: menus };
+            });
+            const { error } = await supabase.from('MasterRoleAccess').upsert(payload, { onConflict: 'jabatan' });
+            if (error) {
+                showNotification("Gagal menyimpan hak akses: " + error.message);
+            } else {
+                showNotification("Seluruh hak akses berhasil disimpan permanen!");
+                addLog('UPDATE', 'HAK AKSES', 'Memperbarui seluruh hak akses jabatan');
+            }
         };
 
         const menuOptions = allMenuItems.filter(m => m.id !== 'pengaturan');
@@ -5941,6 +6039,15 @@ function App() {
 
                 {settingsTab === 'rbac' && (
                     <>
+                        <div className="flex justify-between items-center bg-blue-50/50 p-4 rounded-xl border border-blue-100 max-w-4xl mb-4">
+                            <div>
+                                <h3 className="text-sm font-bold text-blue-900">Hak Akses Jabatan (RBAC)</h3>
+                                <p className="text-xs text-blue-700">Centang menu yang dapat diakses oleh masing-masing jabatan. Setiap perubahan tersimpan otomatis ke database.</p>
+                            </div>
+                            <button type="button" onClick={handleSaveAllRoleAccess} className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg text-xs font-semibold shadow-sm flex items-center gap-1.5 shrink-0">
+                                <Check className="w-4 h-4" /> Simpan Semua Hak Akses
+                            </button>
+                        </div>
                         <div className="hidden md:block bg-surface border border-whisper rounded-card overflow-x-auto shadow-card max-w-4xl">
                             <table className="w-full text-sm text-left">
                                 <thead className="bg-canvas border-b border-whisper">
