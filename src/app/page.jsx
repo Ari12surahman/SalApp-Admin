@@ -66,7 +66,18 @@ async function supabaseSaveTableData(tableName, dataArr) {
         });
     }
 
-    const fullReplaceTables = ['MasterPeriode', 'MasterJabatan', 'MasterKelas', 'MasterTagihan', 'KategoriKas', 'MasterConfig', 'MasterRoleAccess'];
+    if (tableName === 'MasterTagihan') {
+        if (!finalData || finalData.length === 0) return { success: true };
+        // Upsert aman tanpa menghapus seluruh tabel
+        const { error } = await supabase.from('MasterTagihan').upsert(finalData, { onConflict: 'tagihan' });
+        if (error) {
+            console.error("Gagal upsert MasterTagihan:", error);
+            return { success: false, message: error.message };
+        }
+        return { success: true };
+    }
+
+    const fullReplaceTables = ['MasterPeriode', 'MasterJabatan', 'MasterKelas', 'KategoriKas', 'MasterConfig', 'MasterRoleAccess'];
     if (fullReplaceTables.includes(tableName)) {
         const dummyCol = Object.keys(finalData[0] || {})[0];
         if (dummyCol) {
@@ -394,10 +405,7 @@ function App() {
 
     const [masterPeriodeList, setMasterPeriodeList] = useState(['2022/2023', '2023/2024', '2024/2025']);
     const [masterKelasList, setMasterKelasList] = useState(['10A', '10B', '11A', '11B', '12A']);
-    const [masterTagihanList, setMasterTagihanList] = useState([
-        { tagihan: 'SPP Bulanan', nominal: 150000, tipe: 'Rutin', pakasirSlug: 'depodomain', pakasirApiKey: 'xxx123' },
-        { tagihan: 'Uang Pangkal', nominal: 500000, tipe: 'Insidental', pakasirSlug: '', pakasirApiKey: '' },
-    ]);
+    const [masterTagihanList, setMasterTagihanList] = useState([]);
     const [kategoriKas, setKategoriKas] = useState({ pemasukan: ['Dana BOS', 'Sumbangan', 'Lainnya'], pengeluaran: ['Operasional', 'Sarana Prasarana', 'Kesehatan', 'Lainnya'] });
     const [masterJabatanList, setMasterJabatanList] = useState(['Kepala Sekolah', 'Pengajar', 'Administrasi', 'Dapur', 'Kebersihan']);
     const listBulan = ['Januari', 'Februari', 'Maret', 'April', 'Mei', 'Juni', 'Juli', 'Agustus', 'September', 'Oktober', 'November', 'Desember'];
@@ -674,9 +682,16 @@ function App() {
                             });
                         }
                         setMasterKelasList(loadedKelas);
-                        // Muat Master Tagihan dari Spreadsheet
+                        // Muat Master Tagihan dari Database Supabase
                         if (data.MasterTagihan && data.MasterTagihan.length > 0) {
                             setMasterTagihanList(data.MasterTagihan);
+                        } else {
+                            // Fallback direct query jika batch fetch kosong
+                            supabase.from('MasterTagihan').select('*').then(({ data: mtRows, error: mtErr }) => {
+                                if (!mtErr && mtRows && mtRows.length > 0) {
+                                    setMasterTagihanList(mtRows);
+                                }
+                            });
                         }
                         // Muat Kategori Kas dari Spreadsheet
                         if (data.KategoriKas && data.KategoriKas.length > 0) {
@@ -775,6 +790,9 @@ function App() {
                             updateIfChanged('Tabungan', setDataTabungan);
                             updateIfChanged('Kas', setDataKas);
                             updateIfChanged('Gaji', setDataGaji);
+                            updateIfChanged('MasterTagihan', (val) => {
+                                if (Array.isArray(val) && val.length > 0) setMasterTagihanList(val);
+                            });
                         } catch (e) { }
 
                     } catch (err) {
@@ -910,7 +928,12 @@ function App() {
     useEffect(() => { if (isLoaded) debouncedSync('MasterPeriode', masterPeriodeList.map(p => ({ periode: p }))); }, [masterPeriodeList, isLoaded]);
     useEffect(() => { if (isLoaded) debouncedSync('MasterJabatan', masterJabatanList.map(j => ({ jabatan: j }))); }, [masterJabatanList, isLoaded]);
     useEffect(() => { if (isLoaded) debouncedSync('MasterKelas', masterKelasList.map(k => ({ kelas: k }))); }, [masterKelasList, isLoaded]);
-    useEffect(() => { if (isLoaded) debouncedSync('MasterTagihan', masterTagihanList); }, [masterTagihanList, isLoaded]);
+    // Hindari menimpa database dengan array kosong pada saat baru loading
+    useEffect(() => {
+        if (isLoaded && masterTagihanList.length > 0) {
+            debouncedSync('MasterTagihan', masterTagihanList);
+        }
+    }, [masterTagihanList]);
     useEffect(() => {
         if (isLoaded) {
             const flat = [...kategoriKas.pemasukan.map(k => ({ kategori: k, tipe: 'pemasukan' })), ...kategoriKas.pengeluaran.map(k => ({ kategori: k, tipe: 'pengeluaran' }))];
@@ -1243,7 +1266,12 @@ function App() {
         }
         if (confirmDialog.type === 'MASTER_PERIODE') setMasterPeriodeList(prev => prev.filter(p => p !== confirmDialog.id));
         if (confirmDialog.type === 'MASTER_KELAS') setMasterKelasList(prev => prev.filter(k => k !== confirmDialog.id));
-        if (confirmDialog.type === 'MASTER_TAGIHAN') setMasterTagihanList(prev => prev.filter(t => t.tagihan !== confirmDialog.id));
+        if (confirmDialog.type === 'MASTER_TAGIHAN') {
+            supabase.from('MasterTagihan').delete().eq('tagihan', confirmDialog.id).then(({ error }) => {
+                if (error) console.error("Gagal hapus master tagihan di Supabase:", error);
+            });
+            setMasterTagihanList(prev => prev.filter(t => t.tagihan !== confirmDialog.id));
+        }
         if (confirmDialog.type === 'MASTER_JABATAN') setMasterJabatanList(prev => prev.filter(j => j !== confirmDialog.id));
         if (confirmDialog.type === 'LOG') {
             supabase.from('Logs').delete().eq('id', confirmDialog.id).then(({ error }) => { if (error) console.error("Gagal hapus log:", error); });
@@ -5574,7 +5602,42 @@ function App() {
                         <div className="px-6 py-4 border-b border-whisper flex justify-between items-center bg-canvas/50 rounded-t-2xl pr-14 shrink-0"><h3 className="font-semibold text-ink">{isTagihan ? 'Master Tagihan & Pakasir' : simpleTitle}</h3></div>
                         <div className="p-6 overflow-y-auto space-y-6">
                             {isTagihan ? (
-                                <><form onSubmit={(e) => { e.preventDefault(); const nom = parseInt(formData.nominal?.toString().replace(/\D/g, '') || '0', 10); const biayaAp = parseInt(formData.biaya_aplikasi?.toString().replace(/\D/g, '') || '0', 10); setMasterTagihanList(prev => [...prev.filter(x => x.tagihan !== formData.tagihan), { tagihan: formData.tagihan, nominal: nom, tipe: formData.tipe || 'Rutin', pakasirSlug: formData.pakasirSlug, pakasirApiKey: formData.pakasirApiKey, portalMenu: formData.portalMenu || [], biaya_aplikasi: biayaAp }]); addLog(masterTagihanList.some(x => x.tagihan === formData.tagihan) ? 'UPDATE' : 'CREATE', 'MASTER TAGIHAN', `${masterTagihanList.some(x => x.tagihan === formData.tagihan) ? 'Edit' : 'Tambah'} master tagihan: ${formData.tagihan}`); setFormData({}); }} className="flex flex-col gap-4 border border-whisper p-4 rounded-xl">
+                                <><form onSubmit={async (e) => {
+                                    e.preventDefault();
+                                    const targetTagihan = String(formData.tagihan || '').trim();
+                                    if (!targetTagihan) return showNotification('Nama tagihan tidak boleh kosong!');
+                                    const nom = parseInt(formData.nominal?.toString().replace(/\D/g, '') || '0', 10);
+                                    const biayaAp = parseInt(formData.biaya_aplikasi?.toString().replace(/\D/g, '') || '0', 10);
+                                    const isEdit = masterTagihanList.some(x => x.tagihan.toLowerCase() === targetTagihan.toLowerCase());
+
+                                    const itemToSave = {
+                                        tagihan: targetTagihan,
+                                        nominal: nom,
+                                        tipe: formData.tipe || 'Rutin',
+                                        pakasirSlug: formData.pakasirSlug || null,
+                                        pakasirApiKey: formData.pakasirApiKey || null,
+                                        portalMenu: Array.isArray(formData.portalMenu) ? JSON.stringify(formData.portalMenu) : (formData.portalMenu || '[]'),
+                                        biaya_aplikasi: biayaAp
+                                    };
+
+                                    // Langsung simpan ke Supabase secara atomic (tidak menghapus kategori lain)
+                                    const { error } = await supabase.from('MasterTagihan').upsert(itemToSave, { onConflict: 'tagihan' });
+                                    if (error) {
+                                        console.error("Gagal menyimpan MasterTagihan ke Supabase:", error);
+                                        showNotification(`Gagal menyimpan: ${error.message}`);
+                                        return;
+                                    }
+
+                                    // Update state lokal
+                                    const localItem = {
+                                        ...itemToSave,
+                                        portalMenu: formData.portalMenu || []
+                                    };
+                                    setMasterTagihanList(prev => [...prev.filter(x => x.tagihan.toLowerCase() !== targetTagihan.toLowerCase()), localItem]);
+                                    addLog(isEdit ? 'UPDATE' : 'CREATE', 'MASTER TAGIHAN', `${isEdit ? 'Edit' : 'Tambah'} master tagihan: ${targetTagihan}`);
+                                    showNotification(`Kategori tagihan "${targetTagihan}" berhasil disimpan!`);
+                                    setFormData({});
+                                }} className="flex flex-col gap-4 border border-whisper p-4 rounded-xl">
                                     <div className="text-sm font-semibold text-steel">Tambah/Edit Tagihan</div>
                                     <div className="grid grid-cols-2 gap-4"><input required name="tagihan" value={formData.tagihan || ''} onChange={handleInputChange} type="text" className={inputBase} placeholder="Nama Tagihan" /><input required name="nominal" value={formData.nominal || ''} onChange={handleInputChange} type="text" className={inputBase} placeholder="Nominal Rp" /></div>
                                     <div className="bg-blue-50/50 p-3 rounded-lg border border-blue-100"><div className="text-xs font-semibold text-blue-700 mb-2">Integrasi Pakasir API & Portal</div>
@@ -5587,7 +5650,14 @@ function App() {
                                     <div className="hidden md:block border border-whisper rounded-card overflow-hidden">
                                         <table className="w-full text-sm text-left block">
                                             <thead className="bg-canvas"><tr className="flex w-full"><th className="px-4 py-2 flex-1">Jenis Tagihan</th><th className="px-4 py-2 w-32 text-right">Nominal</th><th className="px-4 py-2 w-20 text-center">Aksi</th></tr></thead>
-                                            <tbody className="divide-y divide-slate-100 flex flex-col w-full max-h-48 overflow-y-auto">{masterTagihanList.map(t => (<tr key={t.tagihan} className="flex w-full items-center"><td className="px-4 py-3 flex-1"><div>{t.tagihan}</div><div className="text-[10px] text-steel font-medium uppercase mt-0.5">{t.tipe} {t.pakasirSlug && <span className="ml-2 text-emerald-600">V Pakasir</span>} {t.biaya_aplikasi ? <span className="ml-2 text-blue-600 border border-blue-200 px-1 rounded bg-blue-50">App Fee: Rp {Number(t.biaya_aplikasi).toLocaleString('id-ID')}</span> : ''} {Array.isArray(t.portalMenu) && t.portalMenu.includes('Sembunyikan') && <span className="ml-2 text-rose-500 text-[9px] border border-rose-200 px-1 rounded bg-rose-50">Sembunyi</span>}</div></td><td className="px-4 py-3 w-32 text-right font-medium">Rp {Number(t.nominal || 0).toLocaleString('id-ID')}</td><td className="px-4 py-3 w-20 flex items-center justify-center gap-3"><button onClick={() => setFormData({ tagihan: t.tagihan, nominal: t.nominal.toString(), tipe: t.tipe, pakasirSlug: t.pakasirSlug || '', pakasirApiKey: t.pakasirApiKey || '', portalMenu: Array.isArray(t.portalMenu) ? t.portalMenu : [], biaya_aplikasi: t.biaya_aplikasi ? t.biaya_aplikasi.toString() : '' })} className="text-accent hover:text-accentDark"><Edit className="w-4 h-4" /></button><button onClick={() => confirmDelete('MASTER_TAGIHAN', t.tagihan, t.tagihan)} className="text-rose-600 hover:text-red-700"><Trash2 className="w-4 h-4" /></button></td></tr>))}</tbody>
+                                            <tbody className="divide-y divide-slate-100 flex flex-col w-full max-h-48 overflow-y-auto">{masterTagihanList.map(t => (<tr key={t.tagihan} className="flex w-full items-center"><td className="px-4 py-3 flex-1"><div>{t.tagihan}</div><div className="text-[10px] text-steel font-medium uppercase mt-0.5">{t.tipe} {t.pakasirSlug && <span className="ml-2 text-emerald-600">V Pakasir</span>} {t.biaya_aplikasi ? <span className="ml-2 text-blue-600 border border-blue-200 px-1 rounded bg-blue-50">App Fee: Rp {Number(t.biaya_aplikasi).toLocaleString('id-ID')}</span> : ''} {Array.isArray(t.portalMenu) && t.portalMenu.includes('Sembunyikan') && <span className="ml-2 text-rose-500 text-[9px] border border-rose-200 px-1 rounded bg-rose-50">Sembunyi</span>}</div></td><td className="px-4 py-3 w-32 text-right font-medium">Rp {Number(t.nominal || 0).toLocaleString('id-ID')}</td><td className="px-4 py-3 w-20 flex items-center justify-center gap-3"><button onClick={() => {
+    let pm = [];
+    if (Array.isArray(t.portalMenu)) pm = t.portalMenu;
+    else if (typeof t.portalMenu === 'string' && t.portalMenu.startsWith('[')) {
+        try { pm = JSON.parse(t.portalMenu); } catch(e){}
+    }
+    setFormData({ tagihan: t.tagihan, nominal: (t.nominal || 0).toString(), tipe: t.tipe, pakasirSlug: t.pakasirSlug || '', pakasirApiKey: t.pakasirApiKey || '', portalMenu: pm, biaya_aplikasi: t.biaya_aplikasi ? t.biaya_aplikasi.toString() : '' });
+}} className="text-accent hover:text-accentDark"><Edit className="w-4 h-4" /></button><button onClick={() => confirmDelete('MASTER_TAGIHAN', t.tagihan, t.tagihan)} className="text-rose-600 hover:text-red-700"><Trash2 className="w-4 h-4" /></button></td></tr>))}</tbody>
                                         </table>
                                     </div>
                                     <div className="md:hidden flex flex-col gap-2 max-h-64 overflow-y-auto pr-1">
