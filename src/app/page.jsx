@@ -503,6 +503,11 @@ function App() {
     const [namaKamarBaru, setNamaKamarBaru] = useState('');
     const [kelasKamarBaru, setKelasKamarBaru] = useState('');
     const [uidKamarBaru, setUidKamarBaru] = useState('');
+    const [pinKamarBaru, setPinKamarBaru] = useState('123456');
+    const [modalEditPinKamar, setModalEditPinKamar] = useState(null); // { nis, nama, pin }
+    const [inputPinEdit, setInputPinEdit] = useState('');
+    const [modalEditRfidKamar, setModalEditRfidKamar] = useState(null); // { nis, nama, uid }
+    const [inputRfidEdit, setInputRfidEdit] = useState('');
     const [inputRfidDirect, setInputRfidDirect] = useState('');
     const [tabunganKelasFilter, setTabunganKelasFilter] = useState('Semua');
     // --- DETAIL TABUNGAN POS ---
@@ -3677,39 +3682,201 @@ function App() {
         }
     };
 
-    const handleBuatAkunKamar = (e) => {
+    const handleBuatAkunKamar = async (e) => {
         e.preventDefault();
         const nm = (namaKamarBaru || '').trim();
         if (!nm) return showNotification('Nama kamar / kelompok tidak boleh kosong!', 'error');
+
+        const cleanUid = (uidKamarBaru || '').trim();
+        const cleanCode = cleanUid.replace(/^0+/, '').toLowerCase();
+        let targetConflict = null;
+
+        if (cleanUid) {
+            targetConflict = dataSantri.find(s => {
+                const exUid = String(s.uid || '').trim().replace(/^0+/, '').toLowerCase();
+                const exRfid = String(s.rfid || '').trim().replace(/^0+/, '').toLowerCase();
+                return cleanCode && (exUid === cleanCode || exRfid === cleanCode);
+            });
+
+            if (targetConflict) {
+                const confirmMove = window.confirm(
+                    `Kartu RFID (${cleanUid}) saat ini sudah terdaftar atas nama: ${targetConflict.nama} (NIS: ${targetConflict.nis}, Kelas: ${targetConflict.kelas || '-'}).\n\nSatu kartu fisik TIDAK BOLEH digunakan ganda agar tidak tertukar di kasir POS.\n\nApakah Anda ingin MENCABUT kartu ini dari ${targetConflict.nama} dan memasangkannya ke akun kamar baru ini?`
+                );
+                if (!confirmMove) return;
+
+                try {
+                    await supabase.from('Data Santri').update({ uid: null }).eq('nis', targetConflict.nis);
+                } catch (err) {
+                    console.error("Gagal cabut UID lama:", err);
+                }
+            }
+        }
+
         const nisKamar = `KAS-${nm.replace(/\s+/g, '-').toUpperCase()}-${Math.floor(100 + Math.random() * 900)}`;
+        const pinFinal = (pinKamarBaru || '123456').trim();
+
         const newSantri = {
             id: Math.floor(Math.random() * 8000000) + (Date.now() % 100000),
             nis: nisKamar,
             nama: `Kas ${nm}`,
             kelas: kelasKamarBaru || masterKelasList[0] || 'Asrama',
             periode: masterPeriodeList[0] || '2024/2025',
-            uid: '',
-            pin: '123456',
+            uid: cleanUid || null,
+            pin: pinFinal,
             password: 1234,
             status: 'Aktif'
         };
-        setDataSantri(prev => [newSantri, ...prev]);
-        setIuranTujuanAkunNis(nisKamar);
-        setShowModalBuatAkunKamar(false);
-        setNamaKamarBaru('');
-        setUidKamarBaru('');
-        showNotification(`Akun Dompet '${newSantri.nama}' (NIS: ${nisKamar}) berhasil dibuat!`);
+
+        try {
+            const { error: saveErr } = await supabase.from('Data Santri').upsert([newSantri], { onConflict: 'id' });
+            if (saveErr) throw saveErr;
+
+            setDataSantri(prev => {
+                let updated = prev;
+                if (targetConflict) {
+                    updated = updated.map(s => String(s.nis) === String(targetConflict.nis) ? { ...s, uid: null } : s);
+                }
+                return [newSantri, ...updated];
+            });
+
+            setIuranTujuanAkunNis(nisKamar);
+            setShowModalBuatAkunKamar(false);
+            setNamaKamarBaru('');
+            setUidKamarBaru('');
+            setPinKamarBaru('123456');
+            showNotification(`Akun Dompet '${newSantri.nama}' (NIS: ${nisKamar}) berhasil dibuat & disimpan permanen!`);
+        } catch (err) {
+            console.error("Gagal simpan akun kamar:", err);
+            showNotification(`Gagal simpan akun kamar: ${err.message || err}`, 'error');
+        }
     };
 
-    const handleSimpanRfidKamar = (e) => {
+    const handleSimpanRfidKamar = async (e) => {
         e.preventDefault();
         if (!modalEditRfidKamar) return;
         const targetNis = modalEditRfidKamar.nis;
-        const newUid = String(inputRfidEdit || '').trim();
-        setDataSantri(prev => prev.map(s => String(s.nis) === String(targetNis) ? { ...s, uid: newUid } : s));
-        showNotification(`Kartu RFID untuk ${modalEditRfidKamar.nama} berhasil diperbarui!`);
-        setModalEditRfidKamar(null);
-        setInputRfidEdit('');
+        const cleanUid = String(inputRfidEdit || '').trim();
+        const cleanCode = cleanUid.replace(/^0+/, '').toLowerCase();
+
+        let targetConflict = null;
+        if (cleanUid) {
+            targetConflict = dataSantri.find(s => {
+                if (String(s.nis) === String(targetNis)) return false;
+                const exUid = String(s.uid || '').trim().replace(/^0+/, '').toLowerCase();
+                const exRfid = String(s.rfid || '').trim().replace(/^0+/, '').toLowerCase();
+                return cleanCode && (exUid === cleanCode || exRfid === cleanCode);
+            });
+
+            if (targetConflict) {
+                const confirmMove = window.confirm(
+                    `Kartu RFID (${cleanUid}) saat ini terdaftar atas nama: ${targetConflict.nama} (NIS: ${targetConflict.nis}, Kelas: ${targetConflict.kelas || '-'}).\n\nSatu kartu fisik TIDAK BOLEH digunakan ganda!\n\nApakah Anda ingin MENCABUT kartu ini dari ${targetConflict.nama} dan memasangkannya ke ${modalEditRfidKamar.nama}?`
+                );
+                if (!confirmMove) return;
+
+                try {
+                    await supabase.from('Data Santri').update({ uid: null }).eq('nis', targetConflict.nis);
+                } catch (err) {
+                    console.error("Gagal cabut UID lama:", err);
+                }
+            }
+        }
+
+        try {
+            await supabase.from('Data Santri').update({ uid: cleanUid || null }).eq('nis', targetNis);
+            setDataSantri(prev => {
+                let updated = prev;
+                if (targetConflict) {
+                    updated = updated.map(s => String(s.nis) === String(targetConflict.nis) ? { ...s, uid: null } : s);
+                }
+                return updated.map(s => String(s.nis) === String(targetNis) ? { ...s, uid: cleanUid || null } : s);
+            });
+            showNotification(`Kartu RFID untuk ${modalEditRfidKamar.nama} berhasil diperbarui!`);
+            setModalEditRfidKamar(null);
+            setInputRfidEdit('');
+        } catch (err) {
+            showNotification(`Gagal update kartu RFID: ${err.message || err}`, 'error');
+        }
+    };
+
+    const handleSimpanPinKamar = async (e) => {
+        e.preventDefault();
+        if (!modalEditPinKamar) return;
+        const targetNis = modalEditPinKamar.nis;
+        const cleanPin = String(inputPinEdit || '').trim();
+        if (!cleanPin || cleanPin.length < 4) {
+            return showNotification('PIN minimal 4 - 6 digit angka!', 'error');
+        }
+
+        try {
+            await supabase.from('Data Santri').update({ pin: cleanPin }).eq('nis', targetNis);
+            setDataSantri(prev => prev.map(s => String(s.nis) === String(targetNis) ? { ...s, pin: cleanPin } : s));
+            showNotification(`PIN Kasir POS untuk ${modalEditPinKamar.nama} berhasil diubah!`);
+            setModalEditPinKamar(null);
+            setInputPinEdit('');
+        } catch (err) {
+            showNotification(`Gagal update PIN: ${err.message || err}`, 'error');
+        }
+    };
+
+    const handleHapusAkunKamar = async (kamar) => {
+        const saldo = getSantriSaldoTabungan(kamar.nis);
+        if (saldo > 0) {
+            if (!window.confirm(`Akun '${kamar.nama}' masih memiliki sisa saldo kas Rp ${saldo.toLocaleString('id-ID')}!\nYakin ingin tetap menghapus akun dompet kamar ini?`)) {
+                return;
+            }
+        } else {
+            if (!window.confirm(`Hapus akun dompet '${kamar.nama}'?`)) return;
+        }
+
+        try {
+            await supabase.from('Data Santri').delete().eq('nis', kamar.nis);
+            setDataSantri(prev => prev.filter(s => String(s.nis) !== String(kamar.nis)));
+            if (iuranTujuanAkunNis === kamar.nis) setIuranTujuanAkunNis('');
+            showNotification(`Akun ${kamar.nama} berhasil dihapus.`);
+        } catch (err) {
+            showNotification(`Gagal menghapus akun kamar: ${err.message || err}`, 'error');
+        }
+    };
+
+    const handleHubungkanRfidDirect = async (targetNis, targetNama) => {
+        const cleanUid = String(inputRfidDirect || '').trim();
+        if (!cleanUid) return showNotification('Tempelkan kartu ke reader atau masukkan nomor UID!', 'error');
+        const cleanCode = cleanUid.replace(/^0+/, '').toLowerCase();
+
+        const targetConflict = dataSantri.find(s => {
+            if (String(s.nis) === String(targetNis)) return false;
+            const exUid = String(s.uid || '').trim().replace(/^0+/, '').toLowerCase();
+            const exRfid = String(s.rfid || '').trim().replace(/^0+/, '').toLowerCase();
+            return cleanCode && (exUid === cleanCode || exRfid === cleanCode);
+        });
+
+        if (targetConflict) {
+            const confirmMove = window.confirm(
+                `Kartu RFID (${cleanUid}) saat ini terdaftar atas nama: ${targetConflict.nama} (NIS: ${targetConflict.nis}, Kelas: ${targetConflict.kelas || '-'}).\n\nSatu kartu fisik TIDAK BOLEH digunakan ganda!\n\nApakah Anda ingin MENCABUT kartu ini dari ${targetConflict.nama} dan memasangkannya ke ${targetNama}?`
+            );
+            if (!confirmMove) return;
+
+            try {
+                await supabase.from('Data Santri').update({ uid: null }).eq('nis', targetConflict.nis);
+            } catch (err) {
+                console.error("Gagal cabut UID lama:", err);
+            }
+        }
+
+        try {
+            await supabase.from('Data Santri').update({ uid: cleanUid }).eq('nis', targetNis);
+            setDataSantri(prev => {
+                let updated = prev;
+                if (targetConflict) {
+                    updated = updated.map(s => String(s.nis) === String(targetConflict.nis) ? { ...s, uid: null } : s);
+                }
+                return updated.map(s => String(s.nis) === String(targetNis) ? { ...s, uid: cleanUid } : s);
+            });
+            showNotification(`Kartu RFID (UID: ${cleanUid}) berhasil dihubungkan ke ${targetNama}!`);
+            setInputRfidDirect('');
+        } catch (err) {
+            showNotification(`Gagal hubungkan RFID: ${err.message || err}`, 'error');
+        }
     };
 
     // === RENDER SUB-TAB: IURAN & KAS INSIDENTAL (POTONG OTOMATIS) ===
@@ -4147,13 +4314,7 @@ function App() {
                                                                     />
                                                                     <button
                                                                         type="button"
-                                                                        onClick={() => {
-                                                                            const newUid = String(inputRfidDirect || '').trim();
-                                                                            if (!newUid) return showNotification('Tempelkan kartu ke reader atau masukkan nomor UID!', 'error');
-                                                                            setDataSantri(prev => prev.map(s => String(s.nis) === String(iuranTujuanAkunNis) ? { ...s, uid: newUid } : s));
-                                                                            showNotification(`Kartu RFID (UID: ${newUid}) berhasil dihubungkan ke ${selectedAkunObj.nama}!`);
-                                                                            setInputRfidDirect('');
-                                                                        }}
+                                                                        onClick={() => handleHubungkanRfidDirect(iuranTujuanAkunNis, selectedAkunObj.nama)}
                                                                         className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 active:scale-95 text-white rounded-xl text-xs font-bold shadow-sm shrink-0 transition-all"
                                                                     >
                                                                         Hubungkan RFID
@@ -4165,6 +4326,24 @@ function App() {
                                                                         : 'Tempelkan kartu RFID fisik kamar ke scanner sekarang lalu klik "Hubungkan RFID" agar kartu fisik tersebut bisa langsung dipakai tap di kasir POS.'
                                                                     }
                                                                 </p>
+                                                                <div className="flex items-center justify-between pt-2 border-t border-indigo-200/60 text-xs">
+                                                                    <div className="flex items-center gap-1.5 font-semibold text-indigo-950">
+                                                                        <Key className="w-3.5 h-3.5 text-amber-600" /> PIN Kasir POS:
+                                                                        <span className="font-mono bg-white border border-indigo-200 px-2 py-0.5 rounded text-xs font-bold text-indigo-900">
+                                                                            {selectedAkunObj.pin || '123456'}
+                                                                        </span>
+                                                                    </div>
+                                                                    <button
+                                                                        type="button"
+                                                                        onClick={() => {
+                                                                            setModalEditPinKamar(selectedAkunObj);
+                                                                            setInputPinEdit(selectedAkunObj.pin || '123456');
+                                                                        }}
+                                                                        className="px-3 py-1 bg-white hover:bg-slate-50 text-amber-700 border border-amber-300 rounded-lg text-xs font-bold shadow-xs"
+                                                                    >
+                                                                        Ubah PIN
+                                                                    </button>
+                                                                </div>
                                                             </div>
                                                         );
                                                     })()}
@@ -4312,6 +4491,119 @@ function App() {
                     </div>
                 </div>
 
+                {/* DAFTAR AKUN DOMPET KAMAR / ASRAMA */}
+                <div className="bg-surface border border-whisper shadow-sm rounded-card overflow-hidden mt-8">
+                    <div className="p-4 border-b border-whisper/50 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 bg-canvas/40">
+                        <div>
+                            <h4 className="font-bold text-ink text-sm flex items-center gap-2">
+                                <Building2 className="w-4 h-4 text-indigo-600" /> Daftar Akun Dompet Kamar & Asrama
+                            </h4>
+                            <p className="text-xs text-steel">Rekening bersama per kamar untuk menampung kas dan belanja di kasir POS.</p>
+                        </div>
+                        <button
+                            type="button"
+                            onClick={() => setShowModalBuatAkunKamar(true)}
+                            className="px-3.5 py-1.5 bg-indigo-600 hover:bg-indigo-700 active:scale-95 text-white rounded-xl text-xs font-bold shadow-sm flex items-center gap-1.5 transition-all"
+                        >
+                            <Plus className="w-4 h-4" /> Tambah Akun Kamar
+                        </button>
+                    </div>
+                    <div className="overflow-x-auto">
+                        <table className="w-full text-sm text-left">
+                            <thead className="bg-canvas/60 text-steel border-b border-whisper/50 text-xs">
+                                <tr>
+                                    <th className="px-6 py-3">Nama Kamar / Akun</th>
+                                    <th className="px-6 py-3">Asrama / Kelas</th>
+                                    <th className="px-6 py-3 text-right">Saldo Kas</th>
+                                    <th className="px-6 py-3 text-center">Kartu RFID (UID)</th>
+                                    <th className="px-6 py-3 text-center">PIN Kasir POS</th>
+                                    <th className="px-6 py-3 text-right">Aksi</th>
+                                </tr>
+                            </thead>
+                            <tbody className="divide-y divide-slate-100 text-xs">
+                                {akunKamarTersedia.length === 0 ? (
+                                    <tr>
+                                        <td colSpan={6} className="px-6 py-8 text-center text-steel">
+                                            Belum ada akun dompet kamar. Klik "Tambah Akun Kamar" untuk membuatnya.
+                                        </td>
+                                    </tr>
+                                ) : (
+                                    akunKamarTersedia.map(k => {
+                                        const saldo = getSantriSaldoTabungan(k.nis);
+                                        return (
+                                            <tr key={k.nis} className="hover:bg-canvas/50 transition-colors">
+                                                <td className="px-6 py-3 font-semibold text-ink">
+                                                    <div className="flex items-center gap-2">
+                                                        <Building2 className="w-4 h-4 text-indigo-500 shrink-0" />
+                                                        <div>
+                                                            <div>{k.nama}</div>
+                                                            <div className="text-[10px] text-steel font-mono">{k.nis}</div>
+                                                        </div>
+                                                    </div>
+                                                </td>
+                                                <td className="px-6 py-3 text-steel">
+                                                    {k.kelas || 'Asrama'}
+                                                </td>
+                                                <td className="px-6 py-3 text-right font-bold font-mono text-emerald-700 text-sm">
+                                                    Rp {saldo.toLocaleString('id-ID')}
+                                                </td>
+                                                <td className="px-6 py-3 text-center">
+                                                    {k.uid ? (
+                                                        <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-mono font-bold bg-emerald-50 text-emerald-800 border border-emerald-200">
+                                                            <Scan className="w-3 h-3 text-emerald-600" /> {k.uid}
+                                                        </span>
+                                                    ) : (
+                                                        <span className="inline-block px-2 py-0.5 rounded text-[10px] bg-amber-50 text-amber-700 border border-amber-200 font-semibold">
+                                                            Belum Ada Kartu
+                                                        </span>
+                                                    )}
+                                                </td>
+                                                <td className="px-6 py-3 text-center font-mono">
+                                                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs bg-slate-100 text-slate-800 border border-slate-200 font-bold">
+                                                        <Key className="w-3 h-3 text-slate-500" /> {k.pin || '123456'}
+                                                    </span>
+                                                </td>
+                                                <td className="px-6 py-3 text-right space-x-2">
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => {
+                                                            setModalEditRfidKamar(k);
+                                                            setInputRfidEdit(k.uid || '');
+                                                        }}
+                                                        className="px-2.5 py-1 bg-white hover:bg-slate-50 text-indigo-700 border border-indigo-200 rounded-lg text-xs font-semibold shadow-xs"
+                                                        title="Ganti / Hubungkan Kartu RFID"
+                                                    >
+                                                        <Scan className="w-3 h-3 inline mr-1" /> Kartu
+                                                    </button>
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => {
+                                                            setModalEditPinKamar(k);
+                                                            setInputPinEdit(k.pin || '123456');
+                                                        }}
+                                                        className="px-2.5 py-1 bg-white hover:bg-slate-50 text-amber-700 border border-amber-200 rounded-lg text-xs font-semibold shadow-xs"
+                                                        title="Ubah PIN Kasir POS"
+                                                    >
+                                                        <Key className="w-3 h-3 inline mr-1" /> PIN
+                                                    </button>
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => handleHapusAkunKamar(k)}
+                                                        className="px-2 py-1 bg-white hover:bg-rose-50 text-rose-600 border border-rose-200 rounded-lg text-xs font-semibold shadow-xs"
+                                                        title="Hapus Akun Kamar"
+                                                    >
+                                                        <Trash2 className="w-3 h-3 inline" />
+                                                    </button>
+                                                </td>
+                                            </tr>
+                                        );
+                                    })
+                                )}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
                 {/* Tabel Riwayat Penarikan Iuran / Kas Insidental */}
                 <div className="bg-surface border border-whisper shadow-sm rounded-card overflow-hidden mt-8">
                     <div className="p-4 border-b border-whisper/50 flex flex-col sm:flex-row justify-between items-center gap-3 bg-canvas/40">
@@ -4456,12 +4748,50 @@ function App() {
                                         onChange={(e) => setUidKamarBaru(e.target.value)}
                                         className={`${inputBase} font-mono`}
                                     />
+                                    {uidKamarBaru.trim() && (() => {
+                                        const cleanCode = uidKamarBaru.trim().replace(/^0+/, '').toLowerCase();
+                                        const conflict = dataSantri.find(s => {
+                                            const exUid = String(s.uid || '').trim().replace(/^0+/, '').toLowerCase();
+                                            const exRfid = String(s.rfid || '').trim().replace(/^0+/, '').toLowerCase();
+                                            return cleanCode && (exUid === cleanCode || exRfid === cleanCode);
+                                        });
+                                        if (conflict) {
+                                            return (
+                                                <div className="p-2.5 rounded-xl bg-amber-50 border border-amber-300 text-amber-900 text-[11px] mt-1.5 space-y-1">
+                                                    <div className="font-bold flex items-center gap-1 text-amber-800">
+                                                        <AlertCircle className="w-3.5 h-3.5 text-amber-600" /> Kartu RFID ini sudah terdaftar:
+                                                    </div>
+                                                    <div>Milik: <strong>{conflict.nama}</strong> (NIS: {conflict.nis}, Kelas: {conflict.kelas || '-'}).</div>
+                                                    <div className="text-[10px] text-amber-700">Saat disimpan, sistem akan meminta konfirmasi pemindahan kartu dari {conflict.nama}.</div>
+                                                </div>
+                                            );
+                                        }
+                                        return null;
+                                    })()}
                                     <p className="text-[10px] text-steel mt-1">
                                         Kartu fisik ini yang nantinya dipegang ketua kamar untuk ditap saat belanja di kasir POS. (Bisa diisi nanti).
                                     </p>
                                 </div>
+                                <div>
+                                    <label className="block font-semibold text-ink mb-1 flex justify-between items-center">
+                                        <span>PIN Transaksi Kasir POS (6 Digit):</span>
+                                        <span className="text-[10px] text-indigo-600 font-bold">Wajib di Kasir POS</span>
+                                    </label>
+                                    <input
+                                        type="password"
+                                        maxLength={6}
+                                        required
+                                        placeholder="6 Digit angka, misal: 123456"
+                                        value={pinKamarBaru}
+                                        onChange={(e) => setPinKamarBaru(e.target.value.replace(/\D/g, ''))}
+                                        className={`${inputBase} font-mono text-center tracking-widest font-bold text-sm`}
+                                    />
+                                    <p className="text-[10px] text-steel mt-1">
+                                        PIN keamanan 6 digit yang wajib dimasukkan bendahara/ketua kamar saat belanja di kasir POS. Default: 123456.
+                                    </p>
+                                </div>
                                 <p className="text-[11px] text-steel">
-                                    Akun ini akan didaftarkan sebagai dompet bersama. Saat bendahara kamar belanja di POS koperasi, kasir tinggal memilih/tap kartu kamar ini.
+                                    Akun ini didaftarkan sebagai dompet bersama. Saat bendahara kamar belanja di POS koperasi, kasir tinggal tap kartu dan memasukkan PIN ini.
                                 </p>
                                 <div className="flex justify-end gap-2 pt-3 border-t border-whisper">
                                     <button 
@@ -4473,6 +4803,157 @@ function App() {
                                     </button>
                                     <button type="submit" className={btnPrimary}>
                                         Simpan Akun Kamar
+                                    </button>
+                                </div>
+                            </form>
+                        </div>
+                    </div>
+                )}
+
+                {/* Modal Edit Kartu RFID Kamar */}
+                {modalEditRfidKamar && (
+                    <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-ink/20 backdrop-blur-[3px]">
+                        <div className="bg-surface rounded-2xl border border-whisper w-full max-w-md p-6 shadow-diffused space-y-4">
+                            <div className="flex justify-between items-center pb-3 border-b border-whisper">
+                                <h3 className="font-bold text-ink text-base flex items-center gap-2">
+                                    <Scan className="w-5 h-5 text-indigo-600" /> Hubungkan Kartu RFID Kamar
+                                </h3>
+                                <button 
+                                    type="button" 
+                                    onClick={() => { setModalEditRfidKamar(null); setInputRfidEdit(''); }}
+                                    className="text-steel hover:text-ink"
+                                >
+                                    <X className="w-5 h-5" />
+                                </button>
+                            </div>
+                            <form onSubmit={handleSimpanRfidKamar} className="space-y-4 text-xs">
+                                <div>
+                                    <label className="block font-semibold text-ink mb-1">Akun Kamar:</label>
+                                    <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl font-bold text-ink">
+                                        {modalEditRfidKamar.nama} ({modalEditRfidKamar.nis})
+                                    </div>
+                                </div>
+                                <div>
+                                    <label className="block font-semibold text-ink mb-1 flex justify-between items-center">
+                                        <span>Nomor UID Kartu RFID:</span>
+                                        <span className="text-[10px] text-steel font-normal">Tap kartu ke reader</span>
+                                    </label>
+                                    <input
+                                        type="text"
+                                        autoFocus
+                                        placeholder="Tempelkan kartu RFID atau ketik UID..."
+                                        value={inputRfidEdit}
+                                        onChange={(e) => setInputRfidEdit(e.target.value)}
+                                        className={`${inputBase} font-mono`}
+                                    />
+                                    {inputRfidEdit.trim() && (() => {
+                                        const cleanCode = inputRfidEdit.trim().replace(/^0+/, '').toLowerCase();
+                                        const conflict = dataSantri.find(s => {
+                                            if (String(s.nis) === String(modalEditRfidKamar.nis)) return false;
+                                            const exUid = String(s.uid || '').trim().replace(/^0+/, '').toLowerCase();
+                                            const exRfid = String(s.rfid || '').trim().replace(/^0+/, '').toLowerCase();
+                                            return cleanCode && (exUid === cleanCode || exRfid === cleanCode);
+                                        });
+                                        if (conflict) {
+                                            return (
+                                                <div className="p-2.5 rounded-xl bg-amber-50 border border-amber-300 text-amber-900 text-[11px] mt-2 space-y-1">
+                                                    <div className="font-bold flex items-center gap-1 text-amber-800">
+                                                        <AlertCircle className="w-3.5 h-3.5 text-amber-600" /> Kartu RFID ini sudah terdaftar:
+                                                    </div>
+                                                    <div>Milik: <strong>{conflict.nama}</strong> (NIS: {conflict.nis}, Kelas: {conflict.kelas || '-'}).</div>
+                                                    <div className="text-[10px] text-amber-700">Menyimpan akan otomatis memindahkan kartu dari {conflict.nama} ke {modalEditRfidKamar.nama}.</div>
+                                                </div>
+                                            );
+                                        }
+                                        return null;
+                                    })()}
+                                </div>
+                                <div className="flex justify-end gap-2 pt-3 border-t border-whisper">
+                                    <button 
+                                        type="button" 
+                                        onClick={() => { setModalEditRfidKamar(null); setInputRfidEdit(''); }}
+                                        className={btnOutline}
+                                    >
+                                        Batal
+                                    </button>
+                                    {modalEditRfidKamar.uid && (
+                                        <button
+                                            type="button"
+                                            onClick={async () => {
+                                                if (!window.confirm(`Lepas kartu RFID dari ${modalEditRfidKamar.nama}?`)) return;
+                                                try {
+                                                    await supabase.from('Data Santri').update({ uid: null }).eq('nis', modalEditRfidKamar.nis);
+                                                    setDataSantri(prev => prev.map(s => String(s.nis) === String(modalEditRfidKamar.nis) ? { ...s, uid: null } : s));
+                                                    showNotification(`Kartu RFID berhasil dilepas dari ${modalEditRfidKamar.nama}.`);
+                                                    setModalEditRfidKamar(null);
+                                                    setInputRfidEdit('');
+                                                } catch (err) {
+                                                    showNotification('Gagal melepas kartu: ' + err.message, 'error');
+                                                }
+                                            }}
+                                            className="px-3 py-1.5 bg-rose-50 hover:bg-rose-100 text-rose-600 border border-rose-200 rounded-xl text-xs font-semibold"
+                                        >
+                                            Lepas Kartu
+                                        </button>
+                                    )}
+                                    <button type="submit" className={btnPrimary}>
+                                        Simpan Kartu
+                                    </button>
+                                </div>
+                            </form>
+                        </div>
+                    </div>
+                )}
+
+                {/* Modal Edit PIN Kamar */}
+                {modalEditPinKamar && (
+                    <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-ink/20 backdrop-blur-[3px]">
+                        <div className="bg-surface rounded-2xl border border-whisper w-full max-w-md p-6 shadow-diffused space-y-4">
+                            <div className="flex justify-between items-center pb-3 border-b border-whisper">
+                                <h3 className="font-bold text-ink text-base flex items-center gap-2">
+                                    <Key className="w-5 h-5 text-amber-600" /> Atur PIN Kasir POS Kamar
+                                </h3>
+                                <button 
+                                    type="button" 
+                                    onClick={() => { setModalEditPinKamar(null); setInputPinEdit(''); }}
+                                    className="text-steel hover:text-ink"
+                                >
+                                    <X className="w-5 h-5" />
+                                </button>
+                            </div>
+                            <form onSubmit={handleSimpanPinKamar} className="space-y-4 text-xs">
+                                <div>
+                                    <label className="block font-semibold text-ink mb-1">Akun Kamar:</label>
+                                    <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl font-bold text-ink">
+                                        {modalEditPinKamar.nama} ({modalEditPinKamar.nis})
+                                    </div>
+                                </div>
+                                <div>
+                                    <label className="block font-semibold text-ink mb-1">PIN Baru (4 - 6 Digit Angka):</label>
+                                    <input
+                                        type="password"
+                                        autoFocus
+                                        maxLength={6}
+                                        required
+                                        placeholder="Misal: 123456"
+                                        value={inputPinEdit}
+                                        onChange={(e) => setInputPinEdit(e.target.value.replace(/\D/g, ''))}
+                                        className={`${inputBase} font-mono text-center tracking-widest font-bold text-base`}
+                                    />
+                                    <p className="text-[10px] text-steel mt-1">
+                                        PIN ini harus dimasukkan ketua/bendahara kamar saat membayar belanja di kasir POS.
+                                    </p>
+                                </div>
+                                <div className="flex justify-end gap-2 pt-3 border-t border-whisper">
+                                    <button 
+                                        type="button" 
+                                        onClick={() => { setModalEditPinKamar(null); setInputPinEdit(''); }}
+                                        className={btnOutline}
+                                    >
+                                        Batal
+                                    </button>
+                                    <button type="submit" className={btnPrimary}>
+                                        Simpan PIN
                                     </button>
                                 </div>
                             </form>
@@ -7058,21 +7539,53 @@ Terima kasih atas kerja samanya.`;
                                         </div>
                                     ) : (
                                         <div>
-                                            <div className="mb-6">
-                                                <h3 className="text-3xl font-black text-ink tracking-tight">{scanResult.santri.nama}</h3>
-                                                <p className="text-steel font-medium mt-1">Kelas {scanResult.santri.kelas} • NIS: {scanResult.santri.nis}</p>
-                                            </div>
+                                            {(() => {
+                                                const isKamar = String(scanResult.santri.nis || '').startsWith('KAS-') || (scanResult.santri.nama || '').toLowerCase().startsWith('kas ');
+                                                if (isKamar) {
+                                                    return (
+                                                        <div>
+                                                            <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-indigo-600 text-white font-mono text-xs font-bold uppercase tracking-wider mb-3 shadow-sm">
+                                                                <Building2 className="w-3.5 h-3.5" /> KARTU KAS KAMAR / ASRAMA
+                                                            </div>
+                                                            <h3 className="text-3xl font-black text-indigo-950 tracking-tight">{scanResult.santri.nama}</h3>
+                                                            <p className="text-steel font-medium mt-1">
+                                                                Asrama: {scanResult.santri.kelas || 'Asrama'} • Rekening: {scanResult.santri.nis}
+                                                            </p>
+                                                            <div className="mt-4 p-5 rounded-2xl bg-gradient-to-br from-indigo-50 to-indigo-100/60 border border-indigo-200">
+                                                                <div className="text-xs uppercase font-bold text-indigo-700 tracking-wider mb-1">
+                                                                    Sisa Saldo Kas Bersama
+                                                                </div>
+                                                                <div className="text-4xl font-black font-mono text-indigo-900">
+                                                                    Rp {scanResult.saldoTabungan.toLocaleString('id-ID')}
+                                                                </div>
+                                                            </div>
+                                                            <div className="mt-4 p-2.5 rounded-xl bg-slate-50 border border-slate-200 text-xs text-steel flex items-center justify-center gap-2">
+                                                                <ShieldCheck className="w-4 h-4 text-emerald-600" />
+                                                                <span>Dilindungi PIN 6 Digit: <strong>{scanResult.santri.pin ? '••••••' : 'Default 123456'}</strong> (Wajib saat belanja di Kasir POS)</span>
+                                                            </div>
+                                                        </div>
+                                                    );
+                                                }
+                                                return (
+                                                    <div>
+                                                        <div className="mb-6">
+                                                            <h3 className="text-3xl font-black text-ink tracking-tight">{scanResult.santri.nama}</h3>
+                                                            <p className="text-steel font-medium mt-1">Kelas {scanResult.santri.kelas} • NIS: {scanResult.santri.nis}</p>
+                                                        </div>
 
-                                            <div className="grid grid-cols-2 gap-4">
-                                                <div className="bg-emerald-50 border border-emerald-100 p-4 rounded-xl">
-                                                    <div className="text-emerald-700 font-semibold text-sm mb-1 uppercase tracking-wide">Saldo Tabungan</div>
-                                                    <div className="text-2xl font-bold text-emerald-600">Rp {scanResult.saldoTabungan.toLocaleString('id-ID')}</div>
-                                                </div>
-                                                <div className={`border p-4 rounded-xl ${scanResult.totalTunggakan > 0 ? 'bg-rose-50 border-rose-100' : 'bg-slate-50 border-whisper'}`}>
-                                                    <div className={`${scanResult.totalTunggakan > 0 ? 'text-rose-700' : 'text-slate'} font-semibold text-sm mb-1 uppercase tracking-wide`}>Total Tunggakan</div>
-                                                    <div className={`text-2xl font-bold ${scanResult.totalTunggakan > 0 ? 'text-rose-600' : 'text-slate'}`}>Rp {scanResult.totalTunggakan.toLocaleString('id-ID')}</div>
-                                                </div>
-                                            </div>
+                                                        <div className="grid grid-cols-2 gap-4">
+                                                            <div className="bg-emerald-50 border border-emerald-100 p-4 rounded-xl">
+                                                                <div className="text-emerald-700 font-semibold text-sm mb-1 uppercase tracking-wide">Saldo Tabungan</div>
+                                                                <div className="text-2xl font-bold text-emerald-600">Rp {scanResult.saldoTabungan.toLocaleString('id-ID')}</div>
+                                                            </div>
+                                                            <div className={`border p-4 rounded-xl ${scanResult.totalTunggakan > 0 ? 'bg-rose-50 border-rose-100' : 'bg-slate-50 border-whisper'}`}>
+                                                                <div className={`${scanResult.totalTunggakan > 0 ? 'text-rose-700' : 'text-slate'} font-semibold text-sm mb-1 uppercase tracking-wide`}>Total Tunggakan</div>
+                                                                <div className={`text-2xl font-bold ${scanResult.totalTunggakan > 0 ? 'text-rose-600' : 'text-slate'}`}>Rp {scanResult.totalTunggakan.toLocaleString('id-ID')}</div>
+                                                            </div>
+                                                        </div>
+                                                    </div>
+                                                );
+                                            })()}
                                         </div>
                                     )}
                                 </div>
