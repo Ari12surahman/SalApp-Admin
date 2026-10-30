@@ -6238,9 +6238,9 @@ Periode Bulan: *${hist.periodeBulan}*
 *RINCIAN DANA:*
 • Total Penjualan Non-Tunai: *Rp ${Number(hist.totalKotor || 0).toLocaleString('id-ID')}*
 
-*POTONGAN KEWAJIBAN (MOU):*
-• Biaya Aplikasi: -Rp ${Number(hist.potonganAplikasi || 0).toLocaleString('id-ID')}
-• Iuran Kader: -Rp ${Number(hist.potonganKader || 0).toLocaleString('id-ID')}
+*POTONGAN TAGIHAN:*
+• Tagihan Kader: -Rp ${Number(hist.potonganKader || 0).toLocaleString('id-ID')}
+• Tagihan Aplikasi: -Rp ${Number(hist.potonganAplikasi || 0).toLocaleString('id-ID')}
 • Total Terpotong: *-Rp ${Number(hist.totalPotongan || 0).toLocaleString('id-ID')}*
 
 ---------------------------------------
@@ -6248,10 +6248,10 @@ Periode Bulan: *${hist.periodeBulan}*
 *Rp ${Number(hist.totalBersih || 0).toLocaleString('id-ID')}*
 ---------------------------------------
 
-*SISA KEWAJIBAN BULAN INI:*
-• Biaya Aplikasi: Rp ${Number(hist.sisaAplikasiSetelah || 0).toLocaleString('id-ID')}
-• Iuran Kader: Rp ${Number(hist.sisaKaderSetelah || 0).toLocaleString('id-ID')}
-${(hist.sisaAplikasiSetelah === 0 && hist.sisaKaderSetelah === 0) ? '✅ *Alhamdulillah, kewajiban bulan ini sudah LUNAS.*' : 'ℹ️ *Sisa akan dipotong bertahap pada pencairan berikutnya.*'}
+*SISA TAGIHAN BULAN INI:*
+• Tagihan Kader: Rp ${Number(hist.sisaKaderSetelah || 0).toLocaleString('id-ID')}
+• Tagihan Aplikasi: Rp ${Number(hist.sisaAplikasiSetelah || 0).toLocaleString('id-ID')}
+${(hist.sisaAplikasiSetelah === 0 && hist.sisaKaderSetelah === 0) ? '✅ *Alhamdulillah, tagihan bulan ini sudah LUNAS.*' : 'ℹ️ *Sisa akan dipotong bertahap pada pencairan berikutnya.*'}
 
 Terima kasih atas kerja samanya.`;
 
@@ -6814,12 +6814,12 @@ Terima kasih atas kerja samanya.`;
                                                 <span className="font-bold text-ink">Rp {Number(hist.totalKotor || 0).toLocaleString('id-ID')}</span>
                                             </div>
                                             <div className="bg-white p-2.5 rounded-lg border border-emerald-100">
-                                                <span className="text-steel block">Potongan Aplikasi:</span>
-                                                <span className="font-bold text-rose-600">-Rp {Number(hist.potonganAplikasi || 0).toLocaleString('id-ID')}</span>
+                                                <span className="text-steel block">Tagihan Kader:</span>
+                                                <span className="font-bold text-rose-600">-Rp {Number(hist.potonganKader || 0).toLocaleString('id-ID')}</span>
                                             </div>
                                             <div className="bg-white p-2.5 rounded-lg border border-emerald-100">
-                                                <span className="text-steel block">Potongan Kader:</span>
-                                                <span className="font-bold text-rose-600">-Rp {Number(hist.potonganKader || 0).toLocaleString('id-ID')}</span>
+                                                <span className="text-steel block">Tagihan Aplikasi:</span>
+                                                <span className="font-bold text-rose-600">-Rp {Number(hist.potonganAplikasi || 0).toLocaleString('id-ID')}</span>
                                             </div>
                                             <div className="bg-emerald-600 text-white p-2.5 rounded-lg shadow-2xs">
                                                 <span className="text-emerald-100 text-[10px] block font-medium">Bersih Ditransfer:</span>
@@ -6827,8 +6827,8 @@ Terima kasih atas kerja samanya.`;
                                             </div>
                                         </div>
                                         <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-1 text-[11px] text-emerald-800 pt-1 border-t border-emerald-200/60 font-medium">
-                                            <span>Sisa Tanggungan Bulan Ini: Aplikasi Rp {Number(hist.sisaAplikasiSetelah || 0).toLocaleString('id-ID')} • Kader Rp {Number(hist.sisaKaderSetelah || 0).toLocaleString('id-ID')}</span>
-                                            <span>{(hist.sisaAplikasiSetelah === 0 && hist.sisaKaderSetelah === 0) ? '✅ Kewajiban Bulan Ini Lunas' : 'ℹ️ Sisa dipotong bertahap di pencairan berikutnya'}</span>
+                                            <span>Sisa Tagihan Bulan Ini: Kader Rp {Number(hist.sisaKaderSetelah || 0).toLocaleString('id-ID')} • Aplikasi Rp {Number(hist.sisaAplikasiSetelah || 0).toLocaleString('id-ID')}</span>
+                                            <span>{(hist.sisaAplikasiSetelah === 0 && hist.sisaKaderSetelah === 0) ? '✅ Tagihan Bulan Ini Lunas' : 'ℹ️ Sisa dipotong bertahap di pencairan berikutnya'}</span>
                                         </div>
                                     </div>
                                 )}
@@ -6949,7 +6949,7 @@ Terima kasih atas kerja samanya.`;
                     </FormWrapper>
                 )}
 
-                {/* MODAL PROSES PENCAIRAN & POTONGAN MOU */}
+                {/* MODAL PROSES PENCAIRAN & POTONGAN TAGIHAN */}
                 {modalProsesPencairan && (() => {
                     const { item, warungName, periodeBulan, monthlyStatus, safeCalc, potongAplikasi, potongKader, catatBukuKas, catatan } = modalProsesPencairan;
                     const numPotAplikasi = Math.max(0, parseInt(String(potongAplikasi || 0).replace(/\D/g, ''), 10) || 0);
@@ -6962,7 +6962,7 @@ Terima kasih atas kerja samanya.`;
 
                     return (
                         <FormWrapper 
-                            title={`Proses Pencairan & Pemotongan MOU - ${item.IDPencairan}`} 
+                            title={`Proses Pencairan & Pemotongan Tagihan - ${item.IDPencairan}`} 
                             onClose={() => setModalProsesPencairan(null)}
                             onSubmit={handleKonfirmasiProsesPencairan}
                             customFooter={
@@ -6998,12 +6998,12 @@ Terima kasih atas kerja samanya.`;
                                     </div>
                                     <div className="grid grid-cols-2 gap-2 text-xs">
                                         <div className="bg-white p-2.5 rounded-lg border border-blue-100">
-                                            <span className="text-steel block">Sewa Aplikasi:</span>
+                                            <span className="text-steel block">Tagihan Aplikasi:</span>
                                             <span className="font-semibold text-ink">Rp {monthlyStatus.terbayarAplikasi.toLocaleString('id-ID')} / Rp {monthlyStatus.targetAplikasi.toLocaleString('id-ID')}</span>
                                             <span className="block text-[10px] text-amber-700 mt-0.5">Sisa: Rp {monthlyStatus.sisaAplikasi.toLocaleString('id-ID')}</span>
                                         </div>
                                         <div className="bg-white p-2.5 rounded-lg border border-blue-100">
-                                            <span className="text-steel block">Iuran Kader:</span>
+                                            <span className="text-steel block">Tagihan Kader:</span>
                                             <span className="font-semibold text-ink">Rp {monthlyStatus.terbayarKader.toLocaleString('id-ID')} / Rp {monthlyStatus.targetKader.toLocaleString('id-ID')}</span>
                                             <span className="block text-[10px] text-amber-700 mt-0.5">Sisa: Rp {monthlyStatus.sisaKader.toLocaleString('id-ID')}</span>
                                         </div>
@@ -7060,7 +7060,7 @@ Terima kasih atas kerja samanya.`;
                                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
                                         <div>
                                             <label className="block text-xs font-semibold text-slate-700 mb-1">
-                                                Potongan Sewa Aplikasi (Rp)
+                                                Potongan Tagihan Aplikasi (Rp)
                                             </label>
                                             <input 
                                                 type="number"
@@ -7074,7 +7074,7 @@ Terima kasih atas kerja samanya.`;
                                         </div>
                                         <div>
                                             <label className="block text-xs font-semibold text-slate-700 mb-1">
-                                                Potongan Iuran Kader (Rp)
+                                                Potongan Tagihan Kader (Rp)
                                             </label>
                                             <input 
                                                 type="number"
@@ -7187,19 +7187,19 @@ Terima kasih atas kerja samanya.`;
                                         <span className="font-bold text-ink">Rp {Number(history.totalKotor || 0).toLocaleString('id-ID')}</span>
                                     </div>
                                     <div className="flex justify-between text-rose-600">
-                                        <span>Potongan Aplikasi:</span>
-                                        <span>-Rp {Number(history.potonganAplikasi || 0).toLocaleString('id-ID')}</span>
+                                        <span>Tagihan Kader:</span>
+                                        <span>-Rp {Number(history.potonganKader || 0).toLocaleString('id-ID')}</span>
                                     </div>
                                     <div className="flex justify-between text-rose-600">
-                                        <span>Potongan Kader:</span>
-                                        <span>-Rp {Number(history.potonganKader || 0).toLocaleString('id-ID')}</span>
+                                        <span>Tagihan Aplikasi:</span>
+                                        <span>-Rp {Number(history.potonganAplikasi || 0).toLocaleString('id-ID')}</span>
                                     </div>
                                     <div className="flex justify-between text-sm font-bold border-t border-whisper pt-2 text-emerald-700">
                                         <span>DANA BERSIH TRANSFER:</span>
                                         <span>Rp {Number(history.totalBersih || 0).toLocaleString('id-ID')}</span>
                                     </div>
                                     <div className="flex justify-between text-[11px] text-steel border-t border-dashed border-whisper pt-2">
-                                        <span>Sisa Tanggungan Bulan Ini:</span>
+                                        <span>Sisa Tagihan Bulan Ini:</span>
                                         <span>Rp {(Number(history.sisaAplikasiSetelah || 0) + Number(history.sisaKaderSetelah || 0)).toLocaleString('id-ID')}</span>
                                     </div>
                                 </div>
@@ -7211,16 +7211,16 @@ Terima kasih atas kerja samanya.`;
                 {/* MODAL CONFIG MOU */}
                 {modalConfigMOU && (
                     <FormWrapper 
-                        title="Pengaturan Biaya Kewajiban Warung (MOU)" 
+                        title="Pengaturan Tagihan Warung (Kader & Aplikasi)" 
                         onClose={() => setModalConfigMOU(null)}
                         onSubmit={handleSaveConfigMOU}
                     >
                         <div className="space-y-4">
                             <p className="text-xs text-steel">
-                                Tentukan nilai standar kewajiban bulanan dan batas aman pemotongan per pencairan untuk seluruh warung.
+                                Tentukan nilai standar tagihan bulanan dan batas aman pemotongan per pencairan untuk seluruh warung.
                             </p>
                             <div>
-                                <label className="block text-sm font-medium text-ink mb-1">Biaya Sewa Aplikasi (Rp / Bulan)</label>
+                                <label className="block text-sm font-medium text-ink mb-1">Tagihan Aplikasi (Rp / Bulan)</label>
                                 <input 
                                     type="number"
                                     min="0"
@@ -7229,10 +7229,10 @@ Terima kasih atas kerja samanya.`;
                                     onChange={(e) => setModalConfigMOU(prev => ({ ...prev, biayaAplikasi: Number(e.target.value) }))}
                                     className={inputBase}
                                 />
-                                <span className="text-[11px] text-steel mt-0.5 block">Standar MOU: Rp 30.000 / bulan.</span>
+                                <span className="text-[11px] text-steel mt-0.5 block">Standar: Rp 30.000 / bulan.</span>
                             </div>
                             <div>
-                                <label className="block text-sm font-medium text-ink mb-1">Biaya Kader / Pendamping (Rp / Bulan)</label>
+                                <label className="block text-sm font-medium text-ink mb-1">Tagihan Kader (Rp / Bulan)</label>
                                 <input 
                                     type="number"
                                     min="0"
