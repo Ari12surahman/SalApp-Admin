@@ -346,7 +346,7 @@ import {
     ArrowUpCircle, Edit, Printer, CheckCircle2, BarChart3, History, Activity, QrCode, Link as LinkIcon,
     Copy, ExternalLink, RefreshCw, Check, Briefcase, BookOpen, DownloadCloud, TrendingDown, Menu, ArrowRight, ArrowLeft, Eye, EyeOff, ChevronRight, Scan, Download,
     SlidersHorizontal, ShieldAlert, ShieldCheck, ShoppingBag, Store, CalendarDays, Package,
-    Coins, Scissors, HandHeart, Building2
+    Coins, Scissors, HandHeart, Building2, Key
 } from "lucide-react";
 
 // Import Recharts dengan parameter bundle untuk mencegah error lodash missing modules
@@ -485,13 +485,23 @@ function App() {
     const [currentPage, setCurrentPage] = useState(1);
     const [tabunganSubTab, setTabunganSubTab] = useState('transaksi'); // 'transaksi' | 'limit' | 'iuran'
     // --- IURAN & KAS INSIDENTAL (POTONG OTOMATIS) ---
-    const [iuranKategori, setIuranKategori] = useState('Kas Kamar'); // 'Kas Kamar' | 'Kas Kelas' | 'Infaq / Sedekah' | 'Cukur' | 'Lainnya'
-    const [iuranTargetType, setIuranTargetType] = useState('Kelas'); // 'Kelas' | 'PilihSantri' | 'Semua'
+    const defaultMasterInsidental = [
+        { id: 'Kas Kamar', label: 'Kas Kamar', icon: 'Building2', defaultNom: 10000, desc: 'Iuran kas kamar asrama', alokasiDefault: 'KasKamar', targetDefault: 'Kamar' },
+        { id: 'Kas Kelas', label: 'Kas Kelas', icon: 'Users', defaultNom: 5000, desc: 'Uang kas kelas santri', alokasiDefault: 'BukuKas', targetDefault: 'Kelas' },
+        { id: 'Infaq / Sedekah', label: 'Infaq', icon: 'HandHeart', defaultNom: 2000, desc: 'Jumat berkah / amal santri', alokasiDefault: 'BukuKas', targetDefault: 'Semua' },
+        { id: 'Cukur', label: 'Cukur Santri', icon: 'Scissors', defaultNom: 15000, desc: 'Jasa tukang cukur', alokasiDefault: 'BukuKas', targetDefault: 'Kelas' },
+        { id: 'Kegiatan', label: 'Kegiatan / Ekstra', icon: 'Zap', defaultNom: 20000, desc: 'Iuran lomba / kegiatan', alokasiDefault: 'BukuKas', targetDefault: 'Kelas' }
+    ];
+    const [showModalMasterInsidental, setShowModalMasterInsidental] = useState(false);
+    const [formMasterKat, setFormMasterKat] = useState({ id: '', label: '', defaultNom: 10000, desc: '', alokasiDefault: 'BukuKas', targetDefault: 'Kelas' });
+    const [iuranSelectedKamarNis, setIuranSelectedKamarNis] = useState('');
+    const [iuranKategori, setIuranKategori] = useState('Kas Kamar');
+    const [iuranTargetType, setIuranTargetType] = useState('Kamar'); // 'Kamar' | 'Kelas' | 'PilihSantri' | 'Semua'
     const [iuranSelectedKelas, setIuranSelectedKelas] = useState('');
     const [iuranSelectedNisList, setIuranSelectedNisList] = useState([]);
     const [iuranNominal, setIuranNominal] = useState(10000);
     const [iuranKeterangan, setIuranKeterangan] = useState('Kas Kamar');
-    const [iuranAlokasi, setIuranAlokasi] = useState('BukuKas'); // 'BukuKas' | 'KasKamar' | 'None'
+    const [iuranAlokasi, setIuranAlokasi] = useState('KasKamar'); // 'BukuKas' | 'KasKamar' | 'None'
     const [iuranTujuanAkunNis, setIuranTujuanAkunNis] = useState('');
     const [iuranSkipInsufficient, setIuranSkipInsufficient] = useState(true);
     const [iuranSearchSantri, setIuranSearchSantri] = useState('');
@@ -3574,14 +3584,34 @@ function App() {
     const handleEksekusiPotongIuran = async () => {
         const currentKelas = iuranSelectedKelas || masterKelasList[0] || '';
         let targetSantri = [];
-        if (iuranTargetType === 'Kelas') {
+        if (iuranTargetType === 'Kamar') {
+            const selectedKamarObj = dataSantri.find(s => String(s.nis) === String(iuranSelectedKamarNis));
+            if (!selectedKamarObj) return showNotification('Pilih kamar / asrama target terlebih dahulu!', 'error');
+            const kamarKelas = String(selectedKamarObj.kelas || '').trim().toLowerCase();
+            targetSantri = dataSantri.filter(s => 
+                !String(s.nis || '').startsWith('KAS-') &&
+                (!s.status || s.status.toLowerCase() !== 'keluar') &&
+                String(s.kelas || '').trim().toLowerCase() === kamarKelas
+            );
+        } else if (iuranTargetType === 'Kelas') {
             if (!currentKelas) return showNotification('Pilih kelas target terlebih dahulu!', 'error');
-            targetSantri = dataSantri.filter(s => String(s.kelas).trim().toLowerCase() === String(currentKelas).trim().toLowerCase());
+            targetSantri = dataSantri.filter(s => 
+                !String(s.nis || '').startsWith('KAS-') &&
+                (!s.status || s.status.toLowerCase() !== 'keluar') &&
+                String(s.kelas || '').trim().toLowerCase() === String(currentKelas).trim().toLowerCase()
+            );
         } else if (iuranTargetType === 'PilihSantri') {
             if (iuranSelectedNisList.length === 0) return showNotification('Pilih minimal 1 santri!', 'error');
-            targetSantri = dataSantri.filter(s => iuranSelectedNisList.includes(String(s.nis)));
+            targetSantri = dataSantri.filter(s => 
+                !String(s.nis || '').startsWith('KAS-') &&
+                (!s.status || s.status.toLowerCase() !== 'keluar') &&
+                iuranSelectedNisList.includes(String(s.nis))
+            );
         } else if (iuranTargetType === 'Semua') {
-            targetSantri = dataSantri.filter(s => !s.status || s.status.toLowerCase() !== 'keluar');
+            targetSantri = dataSantri.filter(s => 
+                !String(s.nis || '').startsWith('KAS-') &&
+                (!s.status || s.status.toLowerCase() !== 'keluar')
+            );
         }
 
         if (targetSantri.length === 0) return showNotification('Tidak ada santri yang ditargetkan!', 'error');
@@ -3883,13 +3913,36 @@ function App() {
     const renderTabunganIuran = () => {
         const currentKelas = iuranSelectedKelas || masterKelasList[0] || '';
         
+        const currentKategoriList = appConfig?.masterKategoriInsidental || defaultMasterInsidental;
+
         let targetSantri = [];
-        if (iuranTargetType === 'Kelas') {
-            targetSantri = dataSantri.filter(s => String(s.kelas).trim().toLowerCase() === String(currentKelas).trim().toLowerCase());
+        if (iuranTargetType === 'Kamar') {
+            const selectedKamarObj = dataSantri.find(s => String(s.nis) === String(iuranSelectedKamarNis));
+            if (selectedKamarObj) {
+                const kamarKelas = String(selectedKamarObj.kelas || '').trim().toLowerCase();
+                targetSantri = dataSantri.filter(s => 
+                    !String(s.nis || '').startsWith('KAS-') &&
+                    (!s.status || s.status.toLowerCase() !== 'keluar') &&
+                    String(s.kelas || '').trim().toLowerCase() === kamarKelas
+                );
+            }
+        } else if (iuranTargetType === 'Kelas') {
+            targetSantri = dataSantri.filter(s => 
+                !String(s.nis || '').startsWith('KAS-') &&
+                (!s.status || s.status.toLowerCase() !== 'keluar') &&
+                String(s.kelas || '').trim().toLowerCase() === String(currentKelas).trim().toLowerCase()
+            );
         } else if (iuranTargetType === 'PilihSantri') {
-            targetSantri = dataSantri.filter(s => iuranSelectedNisList.includes(String(s.nis)));
+            targetSantri = dataSantri.filter(s => 
+                !String(s.nis || '').startsWith('KAS-') &&
+                (!s.status || s.status.toLowerCase() !== 'keluar') &&
+                iuranSelectedNisList.includes(String(s.nis))
+            );
         } else if (iuranTargetType === 'Semua') {
-            targetSantri = dataSantri.filter(s => !s.status || s.status.toLowerCase() !== 'keluar');
+            targetSantri = dataSantri.filter(s => 
+                !String(s.nis || '').startsWith('KAS-') &&
+                (!s.status || s.status.toLowerCase() !== 'keluar')
+            );
         }
 
         const nom = Number(iuranNominal || 0);
@@ -4017,27 +4070,52 @@ function App() {
                     {/* Kolom Kiri: Formulir Pengaturan */}
                     <div className="lg:col-span-7 space-y-6">
                         <div className="bg-surface border border-whisper rounded-2xl p-6 shadow-sm space-y-5">
-                            {/* 1. Pilih Kategori Pembayaran */}
+                            {/* 1. Pilih Kategori Pembayaran (Dinamis dari Master Insidental) */}
                             <div>
-                                <label className="block text-xs font-bold text-steel uppercase tracking-wider mb-2.5">
-                                    1. Jenis Pembayaran Insidental
-                                </label>
-                                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
-                                    {[
-                                        { id: 'Kas Kamar', label: 'Kas Kamar', icon: Building2, desc: 'Iuran kamar asrama', defaultNom: 10000 },
-                                        { id: 'Infaq / Sedekah', label: 'Infaq', icon: HandHeart, desc: 'Jumat berkah / amal', defaultNom: 2000 },
-                                        { id: 'Cukur', label: 'Cukur Santri', icon: Scissors, desc: 'Jasa tukang cukur', defaultNom: 15000 },
-                                        { id: 'Kas Kelas', label: 'Kas Kelas', icon: Users, desc: 'Uang kas kelas', defaultNom: 5000 },
-                                    ].map(item => {
+                                <div className="flex justify-between items-center mb-2.5">
+                                    <label className="block text-xs font-bold text-steel uppercase tracking-wider">
+                                        1. Jenis Pembayaran Insidental
+                                    </label>
+                                    <button
+                                        type="button"
+                                        onClick={() => setShowModalMasterInsidental(true)}
+                                        className="px-2.5 py-1 text-xs font-semibold text-indigo-700 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 rounded-lg flex items-center gap-1 transition-all"
+                                    >
+                                        <Settings className="w-3.5 h-3.5" /> Kelola Master Insidental
+                                    </button>
+                                </div>
+                                <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2.5">
+                                    {currentKategoriList.map(item => {
                                         const isSelected = iuranKategori === item.id;
+                                        const IconComp = item.icon === 'Building2' ? Building2 :
+                                                         item.icon === 'Users' ? Users :
+                                                         item.icon === 'HandHeart' ? HandHeart :
+                                                         item.icon === 'Scissors' ? Scissors :
+                                                         item.icon === 'Zap' ? Zap : Coins;
                                         return (
                                             <button
                                                 key={item.id}
                                                 type="button"
                                                 onClick={() => {
                                                     setIuranKategori(item.id);
-                                                    setIuranNominal(item.defaultNom);
-                                                    setIuranKeterangan(item.id === 'Kas Kamar' ? `Kas Kamar ${currentKelas || 'Asrama'}` : item.id === 'Infaq / Sedekah' ? 'Infaq Jumat Berkah' : item.id === 'Cukur' ? 'Jasa Cukur Santri' : `Kas Kelas ${currentKelas || ''}`);
+                                                    setIuranNominal(item.defaultNom || 10000);
+                                                    if (item.alokasiDefault) setIuranAlokasi(item.alokasiDefault);
+                                                    if (item.targetDefault) setIuranTargetType(item.targetDefault);
+                                                    
+                                                    if (item.id === 'Kas Kamar' || item.targetDefault === 'Kamar') {
+                                                        setIuranTargetType('Kamar');
+                                                        setIuranAlokasi('KasKamar');
+                                                        const firstKamar = akunKamarTersedia[0];
+                                                        if (firstKamar) {
+                                                            setIuranSelectedKamarNis(firstKamar.nis);
+                                                            setIuranTujuanAkunNis(firstKamar.nis);
+                                                            setIuranKeterangan(`Kas ${firstKamar.nama}`);
+                                                        }
+                                                    } else if (item.id === 'Kas Kelas' || item.targetDefault === 'Kelas') {
+                                                        setIuranKeterangan(`Kas Kelas ${currentKelas || ''}`);
+                                                    } else {
+                                                        setIuranKeterangan(item.desc || item.label);
+                                                    }
                                                 }}
                                                 className={`p-3 rounded-xl border text-left transition-all flex flex-col justify-between gap-2 ${
                                                     isSelected 
@@ -4046,12 +4124,13 @@ function App() {
                                                 }`}
                                             >
                                                 <div className="flex items-center justify-between">
-                                                    <item.icon className={`w-5 h-5 ${isSelected ? 'text-indigo-600' : 'text-steel'}`} />
+                                                    <IconComp className={`w-5 h-5 ${isSelected ? 'text-indigo-600' : 'text-steel'}`} />
                                                     {isSelected && <span className="w-2 h-2 rounded-full bg-indigo-600"></span>}
                                                 </div>
                                                 <div>
                                                     <div className="font-bold text-xs">{item.label}</div>
                                                     <div className="text-[10px] text-steel leading-tight mt-0.5">{item.desc}</div>
+                                                    <div className="text-[10px] font-mono font-bold text-indigo-600 mt-1">Rp {(item.defaultNom || 0).toLocaleString('id-ID')}</div>
                                                 </div>
                                             </button>
                                         );
@@ -4066,6 +4145,7 @@ function App() {
                                 </label>
                                 <div className="flex border border-whisper rounded-xl p-1 bg-canvas/40 mb-3 gap-1 text-xs font-semibold">
                                     {[
+                                        { id: 'Kamar', label: 'Per Kamar' },
                                         { id: 'Kelas', label: 'Per Kelas' },
                                         { id: 'PilihSantri', label: `Pilih Manual (${iuranSelectedNisList.length})` },
                                         { id: 'Semua', label: 'Semua Santri' },
@@ -4084,6 +4164,59 @@ function App() {
                                         </button>
                                     ))}
                                 </div>
+
+                                {iuranTargetType === 'Kamar' && (
+                                    <div className="p-3.5 bg-indigo-50/70 border border-indigo-200 rounded-xl space-y-2">
+                                        <div className="flex justify-between items-center">
+                                            <label className="text-xs font-semibold text-indigo-950 flex items-center gap-1.5">
+                                                <Building2 className="w-4 h-4 text-indigo-600" /> Pilih Kamar / Asrama Target:
+                                            </label>
+                                            <button 
+                                                type="button" 
+                                                onClick={() => setShowModalBuatAkunKamar(true)}
+                                                className="text-[11px] font-bold text-indigo-700 hover:underline"
+                                            >
+                                                + Buat Kamar Baru
+                                            </button>
+                                        </div>
+                                        <select
+                                            value={iuranSelectedKamarNis}
+                                            onChange={(e) => {
+                                                const val = e.target.value;
+                                                setIuranSelectedKamarNis(val);
+                                                setIuranTujuanAkunNis(val);
+                                                const km = akunKamarTersedia.find(k => String(k.nis) === String(val));
+                                                if (km) {
+                                                    setIuranKeterangan(`Kas ${km.nama}`);
+                                                }
+                                            }}
+                                            className={`${inputBase} text-xs py-2 bg-white`}
+                                        >
+                                            <option value="">Pilih Kamar / Asrama...</option>
+                                            {akunKamarTersedia.map(k => {
+                                                const count = dataSantri.filter(s => 
+                                                    !String(s.nis || '').startsWith('KAS-') &&
+                                                    (!s.status || s.status.toLowerCase() !== 'keluar') &&
+                                                    String(s.kelas || '').trim().toLowerCase() === String(k.kelas || '').trim().toLowerCase()
+                                                ).length;
+                                                return (
+                                                    <option key={k.nis} value={k.nis}>
+                                                        {k.nama} ({k.kelas || 'Asrama'}) — {count} santri
+                                                    </option>
+                                                );
+                                            })}
+                                        </select>
+                                        {(() => {
+                                            const km = akunKamarTersedia.find(k => String(k.nis) === String(iuranSelectedKamarNis));
+                                            if (!km) return null;
+                                            return (
+                                                <p className="text-[11px] text-indigo-800 bg-white/80 p-2 rounded-lg border border-indigo-200">
+                                                    ✅ <strong>{km.nama}</strong>: Hanya akan memotong <strong>{targetSantri.length} santri</strong> di kelas/asrama {km.kelas || '-'}. Dana otomatis masuk ke kas kamar ini.
+                                                </p>
+                                            );
+                                        })()}
+                                    </div>
+                                )}
 
                                 {iuranTargetType === 'Kelas' && (
                                     <div className="p-3.5 bg-slate-50 border border-slate-200 rounded-xl space-y-2">
@@ -4289,43 +4422,59 @@ function App() {
                                                         const selectedAkunObj = dataSantri.find(a => String(a.nis) === String(iuranTujuanAkunNis));
                                                         if (!selectedAkunObj) return null;
                                                         return (
-                                                            <div className="p-3 bg-indigo-50/80 border border-indigo-200 rounded-xl space-y-2 mt-2">
-                                                                <div className="flex justify-between items-center">
-                                                                    <span className="font-bold text-xs text-indigo-950 flex items-center gap-1.5">
-                                                                        <Scan className="w-3.5 h-3.5 text-indigo-600" /> Kartu RFID untuk {selectedAkunObj.nama}:
-                                                                    </span>
-                                                                    {selectedAkunObj.uid ? (
-                                                                        <span className="font-mono font-bold text-emerald-800 bg-emerald-100 border border-emerald-300 px-2 py-0.5 rounded text-xs flex items-center gap-1">
-                                                                            ✓ UID: {selectedAkunObj.uid}
-                                                                        </span>
-                                                                    ) : (
-                                                                        <span className="text-amber-800 bg-amber-100 border border-amber-300 px-2 py-0.5 rounded text-[11px] font-semibold">
-                                                                            ⚠️ Belum Terhubung Kartu RFID
-                                                                        </span>
-                                                                    )}
-                                                                </div>
-                                                                <div className="flex items-center gap-2 pt-1">
-                                                                    <input
-                                                                        type="text"
-                                                                        placeholder="Tempelkan kartu RFID ke reader atau ketik UID..."
-                                                                        value={inputRfidDirect}
-                                                                        onChange={(e) => setInputRfidDirect(e.target.value)}
-                                                                        className={`${inputBase} text-xs py-2 font-mono bg-white flex-1 font-bold text-indigo-900 border-indigo-300`}
-                                                                    />
-                                                                    <button
-                                                                        type="button"
-                                                                        onClick={() => handleHubungkanRfidDirect(iuranTujuanAkunNis, selectedAkunObj.nama)}
-                                                                        className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 active:scale-95 text-white rounded-xl text-xs font-bold shadow-sm shrink-0 transition-all"
-                                                                    >
-                                                                        Hubungkan RFID
-                                                                    </button>
-                                                                </div>
-                                                                <p className="text-[11px] text-steel">
-                                                                    {selectedAkunObj.uid 
-                                                                        ? 'Kartu RFID ini yang dibawa anak kamar saat belanja di kasir POS. Tempelkan kartu baru lalu klik "Hubungkan RFID" jika ingin mengganti.' 
-                                                                        : 'Tempelkan kartu RFID fisik kamar ke scanner sekarang lalu klik "Hubungkan RFID" agar kartu fisik tersebut bisa langsung dipakai tap di kasir POS.'
-                                                                    }
-                                                                </p>
+                                                            <div className="p-3 bg-indigo-50/80 border border-indigo-200 rounded-xl space-y-2.5 mt-2">
+                                                                {selectedAkunObj.uid ? (
+                                                                    <div className="flex items-center justify-between p-2.5 bg-white border border-emerald-300 rounded-xl shadow-xs">
+                                                                        <div className="flex items-center gap-2">
+                                                                            <div className="w-7 h-7 rounded-lg bg-emerald-600 text-white flex items-center justify-center font-bold">
+                                                                                <Scan className="w-3.5 h-3.5" />
+                                                                            </div>
+                                                                            <div>
+                                                                                <div className="text-xs font-bold text-emerald-950 flex items-center gap-1.5">
+                                                                                    Kartu RFID Aktif: <span className="font-mono bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200 text-emerald-800">{selectedAkunObj.uid}</span>
+                                                                                </div>
+                                                                                <div className="text-[10px] text-emerald-700">Kartu fisik ini yang dibawa saat belanja di kasir POS.</div>
+                                                                            </div>
+                                                                        </div>
+                                                                        <button
+                                                                            type="button"
+                                                                            onClick={() => {
+                                                                                setModalEditRfidKamar(selectedAkunObj);
+                                                                                setInputRfidEdit(selectedAkunObj.uid || '');
+                                                                            }}
+                                                                            className="px-2.5 py-1 bg-white hover:bg-slate-50 text-indigo-700 border border-indigo-200 rounded-lg text-xs font-semibold shadow-xs"
+                                                                        >
+                                                                            Ganti Kartu
+                                                                        </button>
+                                                                    </div>
+                                                                ) : (
+                                                                    <div>
+                                                                        <div className="flex justify-between items-center mb-1">
+                                                                            <span className="font-bold text-xs text-indigo-950 flex items-center gap-1.5">
+                                                                                <Scan className="w-3.5 h-3.5 text-indigo-600" /> Hubungkan Kartu RFID:
+                                                                            </span>
+                                                                            <span className="text-amber-800 bg-amber-100 border border-amber-300 px-2 py-0.5 rounded text-[10px] font-semibold">
+                                                                                ⚠️ Belum Terhubung Kartu RFID
+                                                                            </span>
+                                                                        </div>
+                                                                        <div className="flex items-center gap-2 pt-1">
+                                                                            <input
+                                                                                type="text"
+                                                                                placeholder="Tempelkan kartu RFID ke reader atau ketik UID..."
+                                                                                value={inputRfidDirect}
+                                                                                onChange={(e) => setInputRfidDirect(e.target.value)}
+                                                                                className={`${inputBase} text-xs py-2 font-mono bg-white flex-1 font-bold text-indigo-900 border-indigo-300`}
+                                                                            />
+                                                                            <button
+                                                                                type="button"
+                                                                                onClick={() => handleHubungkanRfidDirect(iuranTujuanAkunNis, selectedAkunObj.nama)}
+                                                                                className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 active:scale-95 text-white rounded-xl text-xs font-bold shadow-sm shrink-0 transition-all"
+                                                                            >
+                                                                                Hubungkan RFID
+                                                                            </button>
+                                                                        </div>
+                                                                    </div>
+                                                                )}
                                                                 <div className="flex items-center justify-between pt-2 border-t border-indigo-200/60 text-xs">
                                                                     <div className="flex items-center gap-1.5 font-semibold text-indigo-950">
                                                                         <Key className="w-3.5 h-3.5 text-amber-600" /> PIN Kasir POS:
@@ -4901,6 +5050,206 @@ function App() {
                                     </button>
                                 </div>
                             </form>
+                        </div>
+                    </div>
+                )}
+
+                {/* Modal Master Kategori Insidental */}
+                {showModalMasterInsidental && (
+                    <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-ink/20 backdrop-blur-[3px]">
+                        <div className="bg-surface rounded-2xl border border-whisper w-full max-w-2xl p-6 shadow-diffused space-y-4 max-h-[90vh] overflow-y-auto">
+                            <div className="flex justify-between items-center pb-3 border-b border-whisper">
+                                <h3 className="font-bold text-ink text-base flex items-center gap-2">
+                                    <Settings className="w-5 h-5 text-indigo-600" /> Master Kategori Iuran & Kas Insidental
+                                </h3>
+                                <button 
+                                    type="button" 
+                                    onClick={() => setShowModalMasterInsidental(false)}
+                                    className="text-steel hover:text-ink"
+                                >
+                                    <X className="w-5 h-5" />
+                                </button>
+                            </div>
+                            
+                            <p className="text-xs text-steel">
+                                Atur jenis-jenis iuran insidental yang bisa ditarik dari saldo santri (Kas Kamar, Infaq, Cukur, Tabungan Qurban, dll).
+                            </p>
+
+                            {/* Daftar Kategori Saat Ini */}
+                            <div className="space-y-2">
+                                <h4 className="text-xs font-bold uppercase tracking-wider text-ink">Daftar Kategori Aktif</h4>
+                                <div className="border border-whisper rounded-xl overflow-hidden">
+                                    <table className="w-full text-xs text-left">
+                                        <thead className="bg-canvas text-steel border-b border-whisper">
+                                            <tr>
+                                                <th className="p-2.5">Kategori</th>
+                                                <th className="p-2.5">Nominal Default</th>
+                                                <th className="p-2.5">Alokasi Dana</th>
+                                                <th className="p-2.5">Target Santri</th>
+                                                <th className="p-2.5 text-right">Aksi</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody className="divide-y divide-whisper">
+                                            {(appConfig?.masterKategoriInsidental || defaultMasterInsidental).map((k, idx) => (
+                                                <tr key={k.id || idx} className="hover:bg-canvas/50">
+                                                    <td className="p-2.5 font-bold text-ink">
+                                                        <div>{k.label}</div>
+                                                        <div className="text-[10px] text-steel font-normal">{k.desc}</div>
+                                                    </td>
+                                                    <td className="p-2.5 font-mono font-bold text-emerald-700">
+                                                        Rp {(k.defaultNom || 0).toLocaleString('id-ID')}
+                                                    </td>
+                                                    <td className="p-2.5">
+                                                        <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-slate-100 text-slate-800">
+                                                            {k.alokasiDefault === 'KasKamar' ? 'Dompet Kamar' : k.alokasiDefault === 'BukuKas' ? 'Buku Kas Pondok' : 'Potong Saldo Saja'}
+                                                        </span>
+                                                    </td>
+                                                    <td className="p-2.5">
+                                                        <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-indigo-50 text-indigo-700">
+                                                            {k.targetDefault === 'Kamar' ? 'Per Kamar' : k.targetDefault === 'Kelas' ? 'Per Kelas' : 'Semua Santri'}
+                                                        </span>
+                                                    </td>
+                                                    <td className="p-2.5 text-right">
+                                                        <button
+                                                            type="button"
+                                                            onClick={async () => {
+                                                                if (!window.confirm(`Hapus kategori '${k.label}'?`)) return;
+                                                                const cur = appConfig?.masterKategoriInsidental || defaultMasterInsidental;
+                                                                const updated = cur.filter(x => x.id !== k.id);
+                                                                try {
+                                                                    await supabase.from('MasterConfig').upsert({
+                                                                        kunci: 'masterKategoriInsidental',
+                                                                        nilai: JSON.stringify(updated)
+                                                                    }, { onConflict: 'kunci' });
+                                                                    setAppConfig(prev => ({ ...prev, masterKategoriInsidental: updated }));
+                                                                    showNotification(`Kategori '${k.label}' dihapus!`);
+                                                                } catch (err) {
+                                                                    showNotification('Gagal hapus kategori: ' + err.message, 'error');
+                                                                }
+                                                            }}
+                                                            className="text-rose-600 hover:text-rose-800 p-1 rounded"
+                                                            title="Hapus Kategori"
+                                                        >
+                                                            <Trash2 className="w-3.5 h-3.5" />
+                                                        </button>
+                                                    </td>
+                                                </tr>
+                                            ))}
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
+
+                            {/* Form Tambah Kategori Baru */}
+                            <form onSubmit={async (e) => {
+                                e.preventDefault();
+                                const nm = (formMasterKat.label || '').trim();
+                                if (!nm) return showNotification('Nama kategori tidak boleh kosong!', 'error');
+                                const cur = appConfig?.masterKategoriInsidental || defaultMasterInsidental;
+                                const newId = nm;
+                                if (cur.some(x => x.id.toLowerCase() === newId.toLowerCase())) {
+                                    return showNotification('Kategori dengan nama ini sudah ada!', 'error');
+                                }
+                                const newCat = {
+                                    id: newId,
+                                    label: nm,
+                                    icon: formMasterKat.targetDefault === 'Kamar' ? 'Building2' : 'Coins',
+                                    defaultNom: Number(formMasterKat.defaultNom || 10000),
+                                    desc: formMasterKat.desc || nm,
+                                    alokasiDefault: formMasterKat.alokasiDefault || 'BukuKas',
+                                    targetDefault: formMasterKat.targetDefault || 'Kelas'
+                                };
+                                const updated = [...cur, newCat];
+                                try {
+                                    await supabase.from('MasterConfig').upsert({
+                                        kunci: 'masterKategoriInsidental',
+                                        nilai: JSON.stringify(updated)
+                                    }, { onConflict: 'kunci' });
+                                    setAppConfig(prev => ({ ...prev, masterKategoriInsidental: updated }));
+                                    setFormMasterKat({ id: '', label: '', defaultNom: 10000, desc: '', alokasiDefault: 'BukuKas', targetDefault: 'Kelas' });
+                                    showNotification(`Kategori baru '${nm}' berhasil ditambahkan!`);
+                                } catch (err) {
+                                    showNotification('Gagal simpan kategori: ' + err.message, 'error');
+                                }
+                            }} className="p-4 bg-slate-50 border border-slate-200 rounded-xl space-y-3 text-xs">
+                                <h4 className="font-bold text-ink text-xs uppercase tracking-wider flex items-center gap-1.5">
+                                    <Plus className="w-3.5 h-3.5 text-indigo-600" /> Tambah Kategori Baru
+                                </h4>
+                                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                                    <div>
+                                        <label className="block font-semibold text-ink mb-1">Nama Kategori:</label>
+                                        <input
+                                            type="text"
+                                            required
+                                            placeholder="Misal: Buka Bersama, Ujian, dll"
+                                            value={formMasterKat.label}
+                                            onChange={(e) => setFormMasterKat(prev => ({ ...prev, label: e.target.value }))}
+                                            className={inputBase}
+                                        />
+                                    </div>
+                                    <div>
+                                        <label className="block font-semibold text-ink mb-1">Nominal Default (Rp):</label>
+                                        <input
+                                            type="number"
+                                            required
+                                            min="0"
+                                            placeholder="10000"
+                                            value={formMasterKat.defaultNom}
+                                            onChange={(e) => setFormMasterKat(prev => ({ ...prev, defaultNom: Number(e.target.value) }))}
+                                            className={inputBase}
+                                        />
+                                    </div>
+                                    <div>
+                                        <label className="block font-semibold text-ink mb-1">Alokasi Penerima Default:</label>
+                                        <select
+                                            value={formMasterKat.alokasiDefault}
+                                            onChange={(e) => setFormMasterKat(prev => ({ ...prev, alokasiDefault: e.target.value }))}
+                                            className={inputBase}
+                                        >
+                                            <option value="BukuKas">Buku Kas Pondok (Pemasukan)</option>
+                                            <option value="KasKamar">Akun Dompet Kamar</option>
+                                            <option value="None">Hanya Potong Saldo Santri</option>
+                                        </select>
+                                    </div>
+                                    <div>
+                                        <label className="block font-semibold text-ink mb-1">Target Santri Default:</label>
+                                        <select
+                                            value={formMasterKat.targetDefault}
+                                            onChange={(e) => setFormMasterKat(prev => ({ ...prev, targetDefault: e.target.value }))}
+                                            className={inputBase}
+                                        >
+                                            <option value="Kamar">Per Kamar / Asrama</option>
+                                            <option value="Kelas">Per Kelas</option>
+                                            <option value="Semua">Semua Santri</option>
+                                        </select>
+                                    </div>
+                                    <div className="sm:col-span-2">
+                                        <label className="block font-semibold text-ink mb-1">Keterangan Singkat:</label>
+                                        <input
+                                            type="text"
+                                            placeholder="Contoh: Iuran buka puasa bersama santri"
+                                            value={formMasterKat.desc}
+                                            onChange={(e) => setFormMasterKat(prev => ({ ...prev, desc: e.target.value }))}
+                                            className={inputBase}
+                                        />
+                                    </div>
+                                </div>
+                                <div className="flex justify-end pt-2">
+                                    <button type="submit" className={btnPrimary}>
+                                        <Plus className="w-3.5 h-3.5 mr-1" /> Simpan Kategori Baru
+                                    </button>
+                                </div>
+                            </form>
+                            
+                            <div className="flex justify-end pt-3 border-t border-whisper">
+                                <button
+                                    type="button"
+                                    onClick={() => setShowModalMasterInsidental(false)}
+                                    className={btnOutline}
+                                >
+                                    Selesai & Tutup
+                                </button>
+                            </div>
                         </div>
                     </div>
                 )}
