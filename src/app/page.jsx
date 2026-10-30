@@ -520,6 +520,17 @@ function App() {
     const [inputRfidEdit, setInputRfidEdit] = useState('');
     const [inputRfidDirect, setInputRfidDirect] = useState('');
     const [tabunganKelasFilter, setTabunganKelasFilter] = useState('Semua');
+    // --- EDIT RIWAYAT PEMOTONGAN KAS & INFAQ ---
+    const [modalEditRiwayatInsidental, setModalEditRiwayatInsidental] = useState(false);
+    const [formEditRiwayatInsidental, setFormEditRiwayatInsidental] = useState({
+        id: '',
+        nama: '',
+        nis: '',
+        tanggal: '',
+        jenis: '',
+        nominal: 0,
+        keterangan: ''
+    });
     // --- DETAIL TABUNGAN POS ---
     const [detailTabunganModal, setDetailTabunganModal] = useState(null); // { trx, detailItems, warungName, loading }
     // --- REKAP PENCAIRAN PER WARUNG ---
@@ -3909,6 +3920,84 @@ function App() {
         }
     };
 
+    const handleBukaEditRiwayatInsidental = (item) => {
+        setFormEditRiwayatInsidental({
+            id: item.id,
+            nama: item.nama || '',
+            nis: item.nis || '',
+            tanggal: item.tanggal || new Date().toISOString().split('T')[0],
+            jenis: item.jenis || 'Tarik',
+            nominal: Number(item.nominal || 0),
+            keterangan: item.keterangan || ''
+        });
+        setModalEditRiwayatInsidental(true);
+    };
+
+    const handleSimpanEditRiwayatInsidental = async (e) => {
+        e.preventDefault();
+        const nom = Number(formEditRiwayatInsidental.nominal || 0);
+        if (nom <= 0) return showNotification('Nominal transaksi harus lebih dari Rp 0!', 'error');
+
+        try {
+            const { error } = await supabase.from('Tabungan').update({
+                tanggal: formEditRiwayatInsidental.tanggal,
+                nominal: nom,
+                keterangan: formEditRiwayatInsidental.keterangan
+            }).eq('id', formEditRiwayatInsidental.id);
+
+            if (error) {
+                console.error("Gagal update transaksi di Supabase:", error);
+                showNotification(`Gagal update transaksi: ${error.message}`, 'error');
+                return;
+            }
+
+            setDataTabungan(prev => prev.map(t => {
+                if (t.id === formEditRiwayatInsidental.id) {
+                    return {
+                        ...t,
+                        tanggal: formEditRiwayatInsidental.tanggal,
+                        nominal: nom,
+                        keterangan: formEditRiwayatInsidental.keterangan
+                    };
+                }
+                return t;
+            }));
+
+            setModalEditRiwayatInsidental(false);
+            showNotification('Riwayat transaksi insidental berhasil diubah!', 'success');
+            addLog('UPDATE', 'TABUNGAN_INSIDENTAL', `Edit transaksi ${formEditRiwayatInsidental.nama} menjadi Rp ${nom.toLocaleString('id-ID')}`);
+        } catch (err) {
+            console.error("Error simpan edit riwayat:", err);
+            showNotification('Terjadi kesalahan saat menyimpan perubahan.', 'error');
+        }
+    };
+
+    const handleHapusRiwayatInsidental = async (item) => {
+        const isTarik = String(item.jenis).toLowerCase() === 'tarik';
+        const nominalStr = Number(item.nominal || 0).toLocaleString('id-ID');
+        const confirmText = isTarik
+            ? `Hapus & batalkan pemotongan kas/iuran ini?\n\n• Santri: ${item.nama} (${item.nis})\n• Nominal: Rp ${nominalStr}\n• Keterangan: ${item.keterangan}\n\nSaldo tabungan santri sebesar Rp ${nominalStr} akan OTOMATIS DIPULIHKAN kembali.`
+            : `Hapus transaksi penerimaan kas ini?\n\n• Akun: ${item.nama} (${item.nis})\n• Nominal: Rp ${nominalStr}\n• Keterangan: ${item.keterangan}\n\nSaldo kas akun akan berkurang sebesar Rp ${nominalStr}.`;
+
+        if (!window.confirm(confirmText)) return;
+
+        try {
+            const { error } = await supabase.from('Tabungan').delete().eq('id', item.id);
+            if (error) {
+                console.error("Gagal hapus transaksi di Supabase:", error);
+                showNotification(`Gagal menghapus: ${error.message}`, 'error');
+                return;
+            }
+
+            setDataTabungan(prev => prev.filter(t => t.id !== item.id));
+            showNotification(`Transaksi berhasil dihapus & saldo berhasil diperbarui!`, 'success');
+            addLog('DELETE', 'TABUNGAN_INSIDENTAL', `Hapus ${item.jenis} Rp ${nominalStr} - ${item.nama} (${item.keterangan})`);
+        } catch (err) {
+            console.error("Error hapus riwayat:", err);
+            showNotification('Terjadi kesalahan saat menghapus data.', 'error');
+        }
+    };
+
     // === RENDER SUB-TAB: IURAN & KAS INSIDENTAL (POTONG OTOMATIS) ===
     const renderTabunganIuran = () => {
         const currentKelas = iuranSelectedKelas || masterKelasList[0] || '';
@@ -4804,16 +4893,17 @@ function App() {
                             <thead className="bg-canvas/60 text-steel border-b border-whisper/50 text-xs">
                                 <tr>
                                     <th className="px-6 py-3">Tanggal</th>
-                                    <th className="px-6 py-3">Santri</th>
+                                    <th className="px-6 py-3">Santri / Akun</th>
                                     <th className="px-6 py-3">Keterangan</th>
                                     <th className="px-6 py-3 text-center">Jenis</th>
                                     <th className="px-6 py-3 text-right">Nominal</th>
+                                    <th className="px-6 py-3 text-center">Aksi</th>
                                 </tr>
                             </thead>
                             <tbody className="divide-y divide-slate-100 text-xs">
                                 {riwayatInsidental.length === 0 ? (
                                     <tr>
-                                        <td colSpan={5} className="px-6 py-10 text-center text-steel">
+                                        <td colSpan={6} className="px-6 py-10 text-center text-steel">
                                             Belum ada riwayat transaksi penarikan kas atau iuran insidental.
                                         </td>
                                     </tr>
@@ -4837,6 +4927,26 @@ function App() {
                                             </td>
                                             <td className="px-6 py-3 text-right font-bold font-mono text-ink">
                                                 Rp {Number(t.nominal || 0).toLocaleString('id-ID')}
+                                            </td>
+                                            <td className="px-6 py-3 text-center">
+                                                <div className="flex items-center justify-center gap-1.5">
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => handleBukaEditRiwayatInsidental(t)}
+                                                        title="Edit Riwayat"
+                                                        className="p-1.5 text-indigo-600 hover:bg-indigo-50 rounded-lg border border-indigo-200 transition-colors"
+                                                    >
+                                                        <Edit className="w-3.5 h-3.5" />
+                                                    </button>
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => handleHapusRiwayatInsidental(t)}
+                                                        title="Hapus Transaksi (Pulihkan Saldo)"
+                                                        className="p-1.5 text-rose-600 hover:bg-rose-50 rounded-lg border border-rose-200 transition-colors"
+                                                    >
+                                                        <Trash2 className="w-3.5 h-3.5" />
+                                                    </button>
+                                                </div>
                                             </td>
                                         </tr>
                                     ))
@@ -5303,6 +5413,98 @@ function App() {
                                     </button>
                                     <button type="submit" className={btnPrimary}>
                                         Simpan PIN
+                                    </button>
+                                </div>
+                            </form>
+                        </div>
+                    </div>
+                )}
+
+                {/* Modal Edit Riwayat Pemotongan Kas & Infaq */}
+                {modalEditRiwayatInsidental && (
+                    <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-ink/20 backdrop-blur-[3px] animate-in fade-in">
+                        <div className="bg-surface rounded-2xl border border-whisper w-full max-w-md p-6 shadow-diffused space-y-4">
+                            <div className="flex items-center justify-between pb-3 border-b border-whisper">
+                                <h3 className="font-bold text-ink text-base flex items-center gap-2">
+                                    <Edit className="w-5 h-5 text-indigo-600" /> Edit Riwayat Pemotongan Kas / Infaq
+                                </h3>
+                                <button
+                                    type="button"
+                                    onClick={() => setModalEditRiwayatInsidental(false)}
+                                    className="text-steel hover:text-ink"
+                                >
+                                    <X className="w-5 h-5" />
+                                </button>
+                            </div>
+                            <form onSubmit={handleSimpanEditRiwayatInsidental} className="space-y-4 text-xs">
+                                <div>
+                                    <label className="block font-semibold text-ink mb-1">Santri / Akun:</label>
+                                    <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl font-bold text-ink flex items-center justify-between">
+                                        <span>{formEditRiwayatInsidental.nama}</span>
+                                        <span className="font-mono text-steel text-[11px]">{formEditRiwayatInsidental.nis}</span>
+                                    </div>
+                                </div>
+
+                                <div className="grid grid-cols-2 gap-3">
+                                    <div>
+                                        <label className="block font-semibold text-ink mb-1">Tanggal Transaksi:</label>
+                                        <input
+                                            type="date"
+                                            required
+                                            value={formEditRiwayatInsidental.tanggal}
+                                            onChange={(e) => setFormEditRiwayatInsidental(prev => ({ ...prev, tanggal: e.target.value }))}
+                                            className={inputBase}
+                                        />
+                                    </div>
+                                    <div>
+                                        <label className="block font-semibold text-ink mb-1">Jenis Transaksi:</label>
+                                        <div className="p-2.5 bg-slate-50 border border-slate-200 rounded-xl font-bold text-center">
+                                            <span className={`px-2 py-0.5 rounded-full text-xs font-bold ${
+                                                String(formEditRiwayatInsidental.jenis).toLowerCase() === 'setor'
+                                                    ? 'bg-emerald-100 text-emerald-700'
+                                                    : 'bg-rose-100 text-rose-700'
+                                            }`}>
+                                                {formEditRiwayatInsidental.jenis}
+                                            </span>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div>
+                                    <label className="block font-semibold text-ink mb-1">Nominal (Rp):</label>
+                                    <input
+                                        type="number"
+                                        required
+                                        min="1"
+                                        placeholder="10000"
+                                        value={formEditRiwayatInsidental.nominal}
+                                        onChange={(e) => setFormEditRiwayatInsidental(prev => ({ ...prev, nominal: e.target.value }))}
+                                        className={`${inputBase} font-mono font-bold text-base text-indigo-700`}
+                                    />
+                                </div>
+
+                                <div>
+                                    <label className="block font-semibold text-ink mb-1">Keterangan:</label>
+                                    <input
+                                        type="text"
+                                        required
+                                        placeholder="Keterangan iuran..."
+                                        value={formEditRiwayatInsidental.keterangan}
+                                        onChange={(e) => setFormEditRiwayatInsidental(prev => ({ ...prev, keterangan: e.target.value }))}
+                                        className={inputBase}
+                                    />
+                                </div>
+
+                                <div className="flex justify-end gap-2 pt-3 border-t border-whisper">
+                                    <button
+                                        type="button"
+                                        onClick={() => setModalEditRiwayatInsidental(false)}
+                                        className={btnOutline}
+                                    >
+                                        Batal
+                                    </button>
+                                    <button type="submit" className={btnPrimary}>
+                                        Simpan Perubahan
                                     </button>
                                 </div>
                             </form>
