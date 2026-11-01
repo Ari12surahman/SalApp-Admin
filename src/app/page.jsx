@@ -270,7 +270,7 @@ function getPeriodeBulanKey(dateStr) {
     return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
 }
 
-function getWarungMonthlyFeeStatus(warungId, periodeBulan, feeHistory = {}, feeConfig = {}) {
+function getWarungMonthlyFeeStatus(warungId, periodeBulan, feeHistory = {}, feeConfig = {}, excludeIdPencairan = null) {
     const mulaiPeriode = (feeConfig && feeConfig.mulaiPeriode) ? feeConfig.mulaiPeriode : '2026-11';
     
     // Jika periode bulan pengajuan sebelum kebijakan potongan mulai berlaku (misal bulan kemarin atau sebelumnya)
@@ -304,6 +304,9 @@ function getWarungMonthlyFeeStatus(warungId, periodeBulan, feeHistory = {}, feeC
 
     Object.values(feeHistory || {}).forEach(h => {
         if (h && String(h.warungId) === String(warungId) && h.periodeBulan === periodeBulan) {
+            if (excludeIdPencairan && (h.idPencairan === excludeIdPencairan || h.idpencairan === excludeIdPencairan)) {
+                return;
+            }
             terbayarAplikasi += Number(h.potonganAplikasi || 0);
             terbayarKader += Number(h.potonganKader || 0);
         }
@@ -6267,8 +6270,14 @@ function App() {
         const feeConfig = appConfig.pencairanFeeConfig || { biayaAplikasi: 30000, biayaKader: 200000, maxPotongPersen: 50, mulaiPeriode: '2026-11' };
         const feeHistory = appConfig.pencairanFeeHistory || {};
         
-        const monthlyStatus = getWarungMonthlyFeeStatus(item.WarungID, periodeBulan, feeHistory, feeConfig);
+        // Exclude item.IDPencairan when calculating monthly status so pending items aren't double counted
+        const monthlyStatus = getWarungMonthlyFeeStatus(item.WarungID, periodeBulan, feeHistory, feeConfig, item.IDPencairan);
         const safeCalc = calculateSafeDeduction(item.TotalDana, monthlyStatus.sisaAplikasi, monthlyStatus.sisaKader, feeConfig.maxPotongPersen || 50);
+
+        // Pre-populate with upfront deduction submitted by POS if available, else use safeCalc
+        const existingRecord = feeHistory[item.IDPencairan];
+        const initialPotongAplikasi = existingRecord?.potonganAplikasi !== undefined ? Number(existingRecord.potonganAplikasi) : safeCalc.potongAplikasi;
+        const initialPotongKader = existingRecord?.potonganKader !== undefined ? Number(existingRecord.potonganKader) : safeCalc.potongKader;
 
         setModalProsesPencairan({
             item,
@@ -6276,8 +6285,8 @@ function App() {
             periodeBulan,
             monthlyStatus,
             safeCalc,
-            potongAplikasi: safeCalc.potongAplikasi,
-            potongKader: safeCalc.potongKader,
+            potongAplikasi: initialPotongAplikasi,
+            potongKader: initialPotongKader,
             catatBukuKas: true,
             catatan: ''
         });
@@ -6318,7 +6327,8 @@ function App() {
                 catatBukuKas: !!catatBukuKas,
                 catatan: catatan || '',
                 waktuPengajuan: item.WaktuPengajuan,
-                waktuSelesai: waktuSelesai
+                waktuSelesai: waktuSelesai,
+                status: 'Selesai'
             };
 
             const updatedHistory = {
