@@ -1597,15 +1597,14 @@ function App() {
                 const apiKey = masterRef?.pakasirApiKey || masterRef?.pakasir_apikey || masterRef?.PAKASIR_APIKEY || appConfig.pakasirApiKey || appConfig.pakasir_apikey || appConfig.PAKASIR_APIKEY || 'xxx123';
 
                 let data;
-                const res = await fetch('/api/pakasir', {
+                const res = await fetch('/api/doku', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ action: 'pollPakasirStatus', data: { slug, txnId: pakasirData.txnId, apiKey } })
+                    body: JSON.stringify({ action: 'checkDokuStatus', data: { orderId: pakasirData.txnId || formData.id } })
                 });
                 data = await res.json();
 
-                const status = (data?.transaction?.status || data?.payment?.status || data?.status || '').toLowerCase();
-                if (['completed', 'success', 'settlement', 'paid'].includes(status)) {
+                if (data?.isPaid || data?.status === 'SUCCESS') {
                     setPakasirData(prev => ({ ...prev, isPaid: true }));
                     showNotification("Pembayaran berhasil dikonfirmasi!");
                     setTimeout(() => {
@@ -1620,8 +1619,6 @@ function App() {
 
 
     const handleGeneratePakasirQR = async (method) => {
-        showNotification("Metode pembayaran online (QRIS & Virtual Account) sedang dinonaktifkan sementara.", "warning");
-        return;
         const tRef = dataTagihan.find(t => t.id === formData.id);
         const targetTagihanName = (tRef ? tRef.tagihan : formData.tagihan) || '';
         const masterRef = masterTagihanList.find(m => String(targetTagihanName).toLowerCase().includes(String(m.tagihan).toLowerCase()));
@@ -1662,10 +1659,10 @@ function App() {
             }]);
 
             let data;
-            const res = await fetch('/api/pakasir', {
+            const res = await fetch('/api/doku', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ action: 'requestPakasirPayment', data: { slug, method, amount: amountToPay, orderId: uniqueOrderId, apiKey } })
+                body: JSON.stringify({ action: 'requestDokuPayment', data: { method, amount: amountToPay, orderId: uniqueOrderId, customerName: formData.nama || 'Santri', tipe: 'TAGIHAN_ADMIN', tagihanData: tRef || formData } })
             });
             
             let rawData = await res.json();
@@ -1840,8 +1837,6 @@ function App() {
     };
 
     const handleOpenPakasir = (isTabungan = false) => {
-        showNotification("Metode pembayaran online (QRIS & Virtual Account) sedang dinonaktifkan sementara.", "warning");
-        return;
         const santriTerpilih = dataSantri.find(s => String(s.nis || '').replace(/^0+/, '') === String(formData.nis || '').replace(/^0+/, ''));
         if (!santriTerpilih) return showNotification("Pilih santri terlebih dahulu!");
 
@@ -3181,7 +3176,12 @@ function App() {
                                                         setFormData({ nis: trx.nis, selectedTagihanBayar: [trx.id], bulan: bln, tahun: thn, nominal: sisa <= 0 ? 0 : sisa });
                                                         setModalType('FORM_PEMBAYARAN');
                                                     }} className="text-emerald-600 hover:text-emerald-800 font-medium text-xs bg-emerald-50 px-2 py-1 rounded border border-emerald-200">Bayar</button>
-                                                    {/* Tombol QRIS/VA sementara dinonaktifkan */}
+                                                    <button onClick={() => {
+      const sisa = trx.nominal - (trx.terbayar || 0);
+      setFormData({ id: trx.id, nama: trx.nama, tagihan: trx.tagihan, sisa: sisa });
+      setPakasirData({ step: 'CHOOSE_METHOD', qrString: null, loading: false, url: '' });
+      setModalType('FORM_PAKASIR');
+  }} className="text-blue-600 hover:text-blue-800 font-medium text-xs bg-blue-50 px-2 py-1 rounded border border-blue-200 flex items-center gap-1" title="Bayar via QRIS / VA"><QrCode className="w-3 h-3" /> QRIS/VA</button>
                                                 </>
                                             )}
                                             <button onClick={() => {
@@ -3296,7 +3296,13 @@ function App() {
                                                 const htmlContent = `<html><head><title>Invoice - ${trx.id}</title><style>body { font-family: 'Courier New', Courier, monospace; padding: 20px; color: #000; } .invoice-box { max-width: 450px; margin: auto; border: 1px solid #ddd; padding: 20px; border-radius: 8px; } .header { text-align: center; margin-bottom: 20px; border-bottom: 2px dashed #000; padding-bottom: 10px; } .header h2 { margin: 0; font-size: 24px; } .row { display: flex; justify-content: space-between; margin-bottom: 5px; font-size: 14px; } table { margin-top: 15px; border-collapse: collapse; width: 100%; } th, td { padding: 8px 0; border-bottom: 1px solid #ddd; text-align: left; font-size: 14px; } .total { font-weight: bold; font-size: 16px; margin-top: 15px; text-align: right; border-top: 2px dashed #000; padding-top: 10px; } .footer { text-align: center; margin-top: 20px; font-size: 12px; color: #555; }</style></head><body><div class="invoice-box"><div class="header"><h2>BUKTI PEMBAYARAN</h2><div>Pesantren Tech</div></div><div class="row"><span>No. Inv</span><span>${trx.id}</span></div><div class="row"><span>Tanggal</span><span>${trx.tanggal}</span></div><div class="row"><span>NIS / Nama</span><span>${trx.nis} / ${trx.nama}</span></div><table><thead><tr><th>Deskripsi Tagihan</th><th>Periode</th><th style="text-align: right;">Nominal</th></tr></thead><tbody>${itemsHtml}</tbody></table><div class="total">DIBAYAR: Rp ${Number(trx.nominal || 0).toLocaleString('id-ID')}</div><div class="footer">Status: <strong>${trx.status ? trx.status.toUpperCase() : 'LUNAS'}</strong><br>${trx.sisa > 0 ? `<em>Sisa Tagihan: Rp ${Number(trx.sisa || 0).toLocaleString('id-ID')}</em><br>` : ''}<br>Terima kasih atas pembayaran Anda.</div></div></body></html>`;
                                                 executePrint(htmlContent);
                                             }} className="text-steel hover:text-ink" title="Print"><Printer className="w-4 h-4" /></button>
-                                            {/* Tombol QRIS/VA dinonaktifkan sementara */}
+                                            {(trx.status === 'Cicilan' || trx.status === 'Pending') && (
+      <button onClick={() => {
+          setFormData({ id: trx.id, nama: trx.nama, tagihan: trx.tagihan, sisa: trx.sisa || trx.nominal });
+          setPakasirData({ step: 'CHOOSE_METHOD', qrString: null, loading: false, url: '' });
+          setModalType('FORM_PAKASIR');
+      }} className="text-blue-600 hover:text-blue-800" title="Bayar via QRIS / VA"><QrCode className="w-4 h-4" /></button>
+  )}
                                             <button onClick={() => { const [b, t] = (trx.periode || ' ').split(' '); setFormData({ ...trx, bulan: b, tahun: t }); setModalType('FORM_PEMBAYARAN'); }} className="text-blue-600 hover:text-blue-800"><Edit className="w-4 h-4" /></button>
                                             <button onClick={() => confirmDelete('PEMBAYARAN', trx.id, trx.id)} className="text-rose-600 hover:text-rose-800"><Trash2 className="w-4 h-4" /></button>
                                         </td>
@@ -8162,13 +8168,16 @@ Terima kasih atas kerja samanya.`;
                             <div className="bg-blue-50 border border-blue-100 rounded-lg p-4 text-center"><p className="text-sm text-steel mb-1">{formData.nama} - {formData.tagihan}</p><h2 className="text-2xl font-bold text-blue-700">Rp {Number(formData.sisa).toLocaleString('id-ID')}</h2><p className="text-xs text-steel mt-2 font-mono">Order ID: {formData.id}</p></div>
 
                             {pakasirData.step === 'CHOOSE_METHOD' && (
-                                <div className="animate-fade-in-up py-4">
-                                    <div className="p-4 bg-amber-50 border border-amber-200 rounded-xl text-center space-y-2">
-                                        <div className="w-10 h-10 rounded-full bg-amber-100 text-amber-700 flex items-center justify-center mx-auto">
-                                            <AlertCircle className="w-5 h-5" />
-                                        </div>
-                                        <h4 className="font-bold text-amber-900 text-sm">Pembayaran Online Dinonaktifkan</h4>
-                                        <p className="text-xs text-amber-700">Metode pembayaran online (QRIS dan Virtual Account) saat ini belum dapat digunakan / sedang dinonaktifkan. Silakan gunakan metode Simpan Tunai.</p>
+                                <div className="animate-fade-in-up">
+                                    <h3 className="text-lg font-bold text-ink mb-3">Pilih Metode Pembayaran (DOKU)</h3>
+                                    <div className="space-y-3 mb-2 max-h-80 overflow-y-auto pr-2">
+                                        <button onClick={() => handleGeneratePakasirQR('qris')} className="w-full flex items-center justify-between p-4 border border-whisper rounded-xl hover:bg-canvas transition-colors"><div className="flex items-center gap-3"><QrCode className="w-6 h-6 text-accent" /><span className="font-semibold text-ink">QRIS (Gopay, OVO, Dana, ShopeePay)</span></div><ArrowRight className="w-4 h-4 text-steel" /></button>
+                                        <button onClick={() => handleGeneratePakasirQR('bri_va')} className="w-full flex items-center justify-between p-4 border border-whisper rounded-xl hover:bg-canvas transition-colors"><div className="flex items-center gap-3"><CreditCard className="w-6 h-6 text-blue-700" /><span className="font-semibold text-ink">BRI Virtual Account</span></div><ArrowRight className="w-4 h-4 text-steel" /></button>
+                                        <button onClick={() => handleGeneratePakasirQR('bni_va')} className="w-full flex items-center justify-between p-4 border border-whisper rounded-xl hover:bg-canvas transition-colors"><div className="flex items-center gap-3"><CreditCard className="w-6 h-6 text-orange-600" /><span className="font-semibold text-ink">BNI Virtual Account</span></div><ArrowRight className="w-4 h-4 text-steel" /></button>
+                                        <button onClick={() => handleGeneratePakasirQR('bsi_va')} className="w-full flex items-center justify-between p-4 border border-whisper rounded-xl hover:bg-canvas transition-colors"><div className="flex items-center gap-3"><CreditCard className="w-6 h-6 text-emerald-600" /><span className="font-semibold text-ink">BSI Virtual Account</span></div><ArrowRight className="w-4 h-4 text-steel" /></button>
+                                        <button onClick={() => handleGeneratePakasirQR('cimb_niaga_va')} className="w-full flex items-center justify-between p-4 border border-whisper rounded-xl hover:bg-canvas transition-colors"><div className="flex items-center gap-3"><CreditCard className="w-6 h-6 text-red-600" /><span className="font-semibold text-ink">CIMB Niaga VA</span></div><ArrowRight className="w-4 h-4 text-steel" /></button>
+                                        <button onClick={() => handleGeneratePakasirQR('danamon_va')} className="w-full flex items-center justify-between p-4 border border-whisper rounded-xl hover:bg-canvas transition-colors"><div className="flex items-center gap-3"><CreditCard className="w-6 h-6 text-amber-600" /><span className="font-semibold text-ink">Danamon VA</span></div><ArrowRight className="w-4 h-4 text-steel" /></button>
+                                        <button onClick={() => handleGeneratePakasirQR('doku_va')} className="w-full flex items-center justify-between p-4 border border-whisper rounded-xl hover:bg-canvas transition-colors"><div className="flex items-center gap-3"><CreditCard className="w-6 h-6 text-purple-600" /><span className="font-semibold text-ink">DOKU Virtual Account</span></div><ArrowRight className="w-4 h-4 text-steel" /></button>
                                     </div>
                                 </div>
                             )}
@@ -8445,7 +8454,7 @@ Terima kasih atas kerja samanya.`;
             const customFooterTabungan = (
                 <div className="px-6 py-4 bg-canvas border-t border-whisper flex justify-end gap-2 shrink-0 rounded-b-2xl">
                     <button type="button" onClick={closeModal} className={btnOutline}>Batal</button>
-                    {/* Pembayaran Online QRIS/VA sementara dinonaktifkan */}
+                    {isSetor && (!formData.id) && (<button type="button" onClick={() => handleOpenPakasir(true)} className="bg-blue-500 hover:bg-blue-600 text-white rounded-lg px-4 py-2 font-medium flex items-center justify-center gap-2 shadow-sm shrink-0 text-sm"><QrCode className="w-4 h-4" /> Pembayaran Online (DOKU)</button>)}
                     <button type="submit" className={btnPrimary}>Simpan Tunai</button>
                 </div>
             );
@@ -8703,7 +8712,7 @@ Terima kasih atas kerja samanya.`;
             const customFooter = (
                 <div className="px-6 py-4 bg-canvas border-t border-whisper flex justify-end gap-2 shrink-0 rounded-b-2xl">
                     <button type="button" onClick={closeModal} className={btnOutline}>Batal</button>
-                    {/* Pembayaran Online QRIS/VA sementara dinonaktifkan */}
+                    {!formData.id && (<button type="button" onClick={() => handleOpenPakasir(false)} className="bg-blue-500 hover:bg-blue-600 text-white rounded-lg px-4 py-2 font-medium flex items-center justify-center gap-2 shadow-sm shrink-0 text-sm"><QrCode className="w-4 h-4" /> Pembayaran Online (DOKU)</button>)}
                     <button type="submit" className={btnPrimary}>Simpan Tunai</button>
                 </div>
             );
