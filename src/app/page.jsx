@@ -8169,24 +8169,39 @@ Terima kasih atas kerja samanya.`;
 
                             {pakasirData.step === 'CHOOSE_METHOD' && (
                                 <div className="animate-fade-in-up">
-                                    <h3 className="text-lg font-bold text-ink mb-3">Pilih Metode Pembayaran (DOKU)</h3>
+                                    <h3 className="text-lg font-bold text-ink mb-3">Pilih Metode Pembayaran</h3>
                                     <div className="space-y-3 mb-2 max-h-80 overflow-y-auto pr-2">
-                                        <div className="w-full flex items-center justify-between p-4 border border-slate-200 rounded-xl bg-slate-50 opacity-60 cursor-not-allowed">
-                                            <div className="flex items-center gap-3">
-                                                <QrCode className="w-6 h-6 text-slate-400" />
+                                        <div className="w-full flex items-center justify-between p-3.5 border border-slate-200 rounded-xl bg-slate-50 opacity-60 cursor-not-allowed">
+                                            <div className="flex items-center gap-3.5">
+                                                <div className="w-10 h-10 rounded-lg bg-white border border-slate-200 p-1.5 flex items-center justify-center shrink-0">
+                                                    <img src="/banks/qris.svg" alt="QRIS" className="w-full h-full object-contain opacity-50" />
+                                                </div>
                                                 <div className="text-left">
-                                                    <span className="font-semibold text-slate-500 block">QRIS (Gopay, OVO, Dana, ShopeePay)</span>
-                                                    <span className="text-[10px] text-amber-700 font-semibold bg-amber-100/70 px-1.5 py-0.5 rounded">Dalam Proses Verifikasi DOKU</span>
+                                                    <span className="font-semibold text-slate-600 block text-sm">QRIS (Gopay, OVO, Dana, ShopeePay)</span>
+                                                    <span className="text-[10px] text-slate-500 font-semibold bg-slate-200/80 px-1.5 py-0.5 rounded">Segera Hadir</span>
                                                 </div>
                                             </div>
-                                            <span className="text-xs text-slate-400 font-medium">Segera Hadir</span>
+                                            <span className="text-xs text-slate-400 font-medium">Dalam Pemeliharaan</span>
                                         </div>
-                                        <button onClick={() => handleGeneratePakasirQR('bri_va')} className="w-full flex items-center justify-between p-4 border border-whisper rounded-xl hover:bg-canvas transition-colors"><div className="flex items-center gap-3"><CreditCard className="w-6 h-6 text-blue-700" /><span className="font-semibold text-ink">BRI Virtual Account</span></div><ArrowRight className="w-4 h-4 text-steel" /></button>
-                                        <button onClick={() => handleGeneratePakasirQR('bni_va')} className="w-full flex items-center justify-between p-4 border border-whisper rounded-xl hover:bg-canvas transition-colors"><div className="flex items-center gap-3"><CreditCard className="w-6 h-6 text-orange-600" /><span className="font-semibold text-ink">BNI Virtual Account</span></div><ArrowRight className="w-4 h-4 text-steel" /></button>
-                                        <button onClick={() => handleGeneratePakasirQR('bsi_va')} className="w-full flex items-center justify-between p-4 border border-whisper rounded-xl hover:bg-canvas transition-colors"><div className="flex items-center gap-3"><CreditCard className="w-6 h-6 text-emerald-600" /><span className="font-semibold text-ink">BSI Virtual Account</span></div><ArrowRight className="w-4 h-4 text-steel" /></button>
-                                        <button onClick={() => handleGeneratePakasirQR('cimb_niaga_va')} className="w-full flex items-center justify-between p-4 border border-whisper rounded-xl hover:bg-canvas transition-colors"><div className="flex items-center gap-3"><CreditCard className="w-6 h-6 text-red-600" /><span className="font-semibold text-ink">CIMB Niaga VA</span></div><ArrowRight className="w-4 h-4 text-steel" /></button>
-                                        <button onClick={() => handleGeneratePakasirQR('danamon_va')} className="w-full flex items-center justify-between p-4 border border-whisper rounded-xl hover:bg-canvas transition-colors"><div className="flex items-center gap-3"><CreditCard className="w-6 h-6 text-amber-600" /><span className="font-semibold text-ink">Danamon VA</span></div><ArrowRight className="w-4 h-4 text-steel" /></button>
-                                        <button onClick={() => handleGeneratePakasirQR('doku_va')} className="w-full flex items-center justify-between p-4 border border-whisper rounded-xl hover:bg-canvas transition-colors"><div className="flex items-center gap-3"><CreditCard className="w-6 h-6 text-purple-600" /><span className="font-semibold text-ink">DOKU Virtual Account</span></div><ArrowRight className="w-4 h-4 text-steel" /></button>
+
+                                        {[
+                                            { id: 'bri_va', name: 'Bank BRI', logo: '/banks/bri.svg' },
+                                            { id: 'bni_va', name: 'Bank BNI', logo: '/banks/bni.svg' },
+                                            { id: 'bsi_va', name: 'Bank Syariah Indonesia (BSI)', logo: '/banks/bsi.svg' },
+                                            { id: 'cimb_niaga_va', name: 'Bank CIMB Niaga', logo: '/banks/cimb.svg' },
+                                            { id: 'danamon_va', name: 'Bank Danamon', logo: '/banks/danamon.svg' },
+                                            { id: 'permata_va', name: 'Bank Permata', logo: '/banks/permata.svg' }
+                                        ].map(bank => (
+                                            <button key={bank.id} onClick={() => handleGeneratePakasirQR(bank.id)} className="w-full flex items-center justify-between p-3.5 border border-whisper rounded-xl hover:bg-canvas hover:border-blue-400 transition-all">
+                                                <div className="flex items-center gap-3.5">
+                                                    <div className="w-10 h-10 rounded-lg bg-white border border-slate-200 p-1 flex items-center justify-center shrink-0 shadow-xs">
+                                                        <img src={bank.logo} alt={bank.name} className="w-full h-full object-contain" />
+                                                    </div>
+                                                    <span className="font-semibold text-ink text-left">{bank.name}</span>
+                                                </div>
+                                                <ArrowRight className="w-4 h-4 text-steel" />
+                                            </button>
+                                        ))}
                                     </div>
                                 </div>
                             )}
@@ -8226,6 +8241,9 @@ Terima kasih atas kerja samanya.`;
 
                                             {pakasirData.step === 'SHOW_VA' && (
                                                 <div className="bg-canvas border border-whisper rounded-xl p-6 mb-4">
+                                                    <div className="w-14 h-14 rounded-xl bg-white border border-slate-200 p-2 flex items-center justify-center mx-auto mb-2 shadow-xs">
+                                                        <img src={`/banks/${(pakasirData.method || 'bri').replace('_va','').replace('cimb_niaga','cimb')}.svg`} alt="Bank" className="w-full h-full object-contain" />
+                                                    </div>
                                                     <p className="text-xs font-semibold text-steel uppercase mb-1">{getBankDisplayName(pakasirData.method)}</p>
                                                     <div className="text-3xl font-mono font-bold text-ink tracking-wider break-all">{pakasirData.qrString}</div>
                                                 </div>
@@ -8923,7 +8941,7 @@ Terima kasih atas kerja samanya.`;
                                         <div className="flex items-center justify-between mb-2">
                                             <span className="text-xs font-semibold text-emerald-800 flex items-center gap-1.5">
                                                 <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
-                                                DOKU Payment Gateway Terpusat (Aktif)
+                                                Pembayaran Online Otomatis (Aktif)
                                             </span>
                                             <span className="text-[10px] text-emerald-600 bg-emerald-100/60 px-1.5 py-0.5 rounded font-mono">Auto-Connect</span>
                                         </div>

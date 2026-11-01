@@ -87,7 +87,7 @@ export async function POST(request) {
           SantriID: orderPayload.santriId || null,
           TotalHarga: amount || orderPayload.total || 0,
           WaktuTransaksi: new Date().toISOString(),
-          Metode: `DOKU (${channelName})`,
+          Metode: `Transfer Virtual Account (${channelName})`,
           StatusAmbil: 'Selesai',
           WarungID: orderPayload.warungId || 'WRG-KANTIN'
         };
