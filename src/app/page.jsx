@@ -1687,20 +1687,21 @@ function App() {
                 const txnId = paymentData.txn_id || data.txn_id || '';
                 setPakasirTimeLeft(900);
                 setPakasirData(prev => ({ ...prev, loading: false, step: isQris ? 'SHOW_QR' : 'SHOW_VA', qrString: qrStr, checkoutUrl: checkoutUrl, isSandbox: false, txnId: txnId, uniqueOrderId: uniqueOrderId }));
-                addLog('INTEGRATION', 'PAKASIR API', `Berhasil request ${method} untuk ${uniqueOrderId}${isSandboxApi ? ' (Sandbox)' : ''}`);
+                const bankName = getBankDisplayName(method) || method;
+                addLog('INTEGRATION', 'PEMBAYARAN ONLINE', `Membuat pembayaran ${bankName} untuk ${uniqueOrderId}${isSandboxApi ? ' (Sandbox)' : ''}`);
             } else {
-                console.error('Pakasir API Response Gagal:', JSON.stringify(data, null, 2));
+                console.error('Payment API Response Gagal:', JSON.stringify(data, null, 2));
                 const errMsg = data?.message || data?.error || paymentData?.message || paymentData?.error || (typeof data === 'object' ? JSON.stringify(data) : String(data));
-                throw new Error(errMsg || "Invalid response dari Pakasir (mungkin project belum diset / parameter salah)");
+                throw new Error(errMsg || "Gagal membuat pembayaran perbankan");
             }
         } catch (error) {
-            console.error('Pakasir Catch Error:', error);
+            console.error('Payment Catch Error:', error);
             const isQris = method === 'QRIS' || method === 'qris';
             const mockString = isQris ? "00020101021226610016ID.CO.SHOPEE.WWW01189360091800216005230208216005230303UME51440014ID.CO.QRIS.WWW0215ID10243228429300303UME5204792953033605409100003.005802ID5907Pakasir6012KAB.KEBUMEN61055439262230519SP25RZRATEQI2HQ65Q46304A079" : "8023123456789012";
             setPakasirTimeLeft(900);
             setPakasirData({ step: isQris ? 'SHOW_QR' : 'SHOW_VA', method: method, loading: false, qrString: mockString, url: '', isSandbox: true });
-            addLog('INTEGRATION', 'PAKASIR DEMO', `Fallback ke Mock ${isQris ? 'QRIS' : 'VA'} untuk ${formData.id}`);
-            showNotification(`GAGAL: ${error.message || error}. Menggunakan Mock ${isQris ? 'QRIS' : 'VA'} (cek console).`);
+            addLog('INTEGRATION', 'PEMBAYARAN ONLINE', `Simulasi pembayaran ${isQris ? 'QRIS' : 'Virtual Account'} untuk ${formData.id}`);
+            showNotification(`Info: ${error.message || error}.`);
         }
     };
 
@@ -1798,8 +1799,8 @@ function App() {
                 }
             }
         }
-        addLog('CREATE', 'PAKASIR AUTO', `Konfirmasi otomatis QRIS Lunas`);
-        showNotification("Sistem: Pembayaran Pakasir Terkonfirmasi LUNAS!");
+        addLog('CREATE', 'PEMBAYARAN ONLINE', `Konfirmasi pembayaran otomatis lunas`);
+        showNotification("Sistem: Pembayaran Terkonfirmasi LUNAS!");
         closeModal();
     };
 
@@ -8052,6 +8053,28 @@ Terima kasih atas kerja samanya.`;
         );
     };
 
+    const formatLogModul = (modul) => {
+        if (!modul) return '-';
+        const m = String(modul).toUpperCase();
+        if (m.includes('PAKASIR') || m.includes('DOKU') || m.includes('GATEWAY')) {
+            return 'PEMBAYARAN ONLINE';
+        }
+        return modul;
+    };
+
+    const formatLogDetail = (detail) => {
+        if (!detail) return '-';
+        let d = String(detail);
+        d = d.replace(/Berhasil request\s+([a-zA-Z0-9_]+)\s+untuk/i, (match, method) => {
+            const bankName = getBankDisplayName(method) || method.toUpperCase();
+            return `Membuat pembayaran ${bankName} untuk`;
+        });
+        d = d.replace(/Fallback ke Mock\s+([a-zA-Z0-9_]+)\s+untuk/i, 'Simulasi pembayaran $1 untuk');
+        d = d.replace(/Konfirmasi otomatis QRIS Lunas/i, 'Konfirmasi pembayaran QRIS lunas');
+        d = d.replace(/PKS-/g, '');
+        return d;
+    };
+
     const renderLogAktivitas = () => {
         const itemsPerPage = 10;
         const totalPages = Math.ceil(dataLog.length / itemsPerPage);
@@ -8061,7 +8084,7 @@ Terima kasih atas kerja samanya.`;
             <div className="space-y-6 animate-in fade-in duration-500">
                 <div className="flex flex-col xl:flex-row justify-between items-start xl:items-center gap-4 mb-6 w-full">
                     <div className="flex-1 min-w-0 pr-4"><h2 className="text-2xl font-semibold tracking-tight text-ink">Audit & Log Aktivitas</h2><p className="text-sm text-steel">Rekam jejak tindakan pengguna pada sistem (Anti-Fraud).</p></div>
-                    <button onClick={() => downloadStyledExcel('Log Aktivitas', ['ID', 'Waktu', 'Pengguna', 'Aksi', 'Modul', 'Detail Aktivitas'], dataLog.map(l => [l.id, l.waktu, l.user, l.aksi, l.modul, l.detail]), 'Log_Aktivitas')} className={btnOutline}><FileSpreadsheet className="w-4 h-4 text-accent" /> Unduh</button>
+                    <button onClick={() => downloadStyledExcel('Log Aktivitas', ['ID', 'Waktu', 'Pengguna', 'Aksi', 'Modul', 'Detail Aktivitas'], dataLog.map(l => [l.id, l.waktu, l.user, l.aksi, formatLogModul(l.modul), formatLogDetail(l.detail)]), 'Log_Aktivitas')} className={btnOutline}><FileSpreadsheet className="w-4 h-4 text-accent" /> Unduh</button>
                 </div>
                 <div className="bg-surface border border-whisper shadow-sm rounded-card overflow-hidden">
                     <div className="overflow-x-auto hidden md:block">
@@ -8073,8 +8096,8 @@ Terima kasih atas kerja samanya.`;
                                         <td className="px-6 py-3 whitespace-nowrap text-steel">{log.waktu}</td>
                                         <td className="px-6 py-3 font-medium text-ink">{log.user}</td>
                                         <td className="px-6 py-3 text-center"><span className={`inline-flex px-2 py-0.5 text-[10px] font-bold rounded uppercase ${log.aksi === 'CREATE' ? 'bg-pale-green text-pale-greenText' : log.aksi === 'UPDATE' ? 'bg-blue-100 text-blue-700' : log.aksi === 'DELETE' ? 'bg-pale-red text-pale-redText' : log.aksi === 'INTEGRATION' ? 'bg-purple-100 text-purple-700' : 'bg-canvas text-steel'}`}>{log.aksi}</span></td>
-                                        <td className="px-6 py-3 font-semibold text-steel">{log.modul}</td>
-                                        <td className="px-6 py-3 text-steel">{log.detail}</td>
+                                        <td className="px-6 py-3 font-semibold text-steel">{formatLogModul(log.modul)}</td>
+                                        <td className="px-6 py-3 text-steel">{formatLogDetail(log.detail)}</td>
                                         {currentUser?.role === 'superadmin' && (
                                             <td className="px-6 py-3 text-center">
                                                 <div className="flex items-center justify-center gap-2">
@@ -8101,8 +8124,8 @@ Terima kasih atas kerja samanya.`;
                                     <span className={`inline-flex px-1.5 py-0.5 text-[10px] font-bold rounded uppercase shrink-0 ${log.aksi === 'CREATE' ? 'bg-pale-green text-pale-greenText' : log.aksi === 'UPDATE' ? 'bg-blue-100 text-blue-700' : log.aksi === 'DELETE' ? 'bg-pale-red text-pale-redText' : log.aksi === 'INTEGRATION' ? 'bg-purple-100 text-purple-700' : 'bg-canvas text-steel'}`}>{log.aksi}</span>
                                 </div>
                                 <div>
-                                    <div className="text-[10px] font-bold text-steel uppercase tracking-wider mb-0.5">{log.modul}</div>
-                                    <div className="text-sm text-ink leading-snug">{log.detail}</div>
+                                    <div className="text-[10px] font-bold text-steel uppercase tracking-wider mb-0.5">{formatLogModul(log.modul)}</div>
+                                    <div className="text-sm text-ink leading-snug">{formatLogDetail(log.detail)}</div>
                                 </div>
                                 {currentUser?.role === 'superadmin' && (
                                     <div className="flex justify-end gap-2 mt-2 pt-2 border-t border-whisper/50">
