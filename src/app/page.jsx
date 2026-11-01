@@ -1683,7 +1683,7 @@ function App() {
                 console.log("IS SANDBOX:", isSandboxApi, "qrString:", qrStr, "checkout_url:", checkoutUrl);
                 const txnId = paymentData.txn_id || data.txn_id || '';
                 setPakasirTimeLeft(900);
-                setPakasirData(prev => ({ ...prev, loading: false, step: isQris ? 'SHOW_QR' : 'SHOW_VA', qrString: qrStr, checkoutUrl: checkoutUrl, isSandbox: isSandboxApi, txnId: txnId }));
+                setPakasirData(prev => ({ ...prev, loading: false, step: isQris ? 'SHOW_QR' : 'SHOW_VA', qrString: qrStr, checkoutUrl: checkoutUrl, isSandbox: true, txnId: txnId, uniqueOrderId: uniqueOrderId }));
                 addLog('INTEGRATION', 'PAKASIR API', `Berhasil request ${method} untuk ${uniqueOrderId}${isSandboxApi ? ' (Sandbox)' : ''}`);
             } else {
                 console.error('Pakasir API Response Gagal:', JSON.stringify(data, null, 2));
@@ -1713,7 +1713,7 @@ function App() {
                     const sisaTagihan = Math.max(0, tRef.nominal - totalTerbayarBaru);
                     updated[idx] = { ...tRef, status: statusTrx, terbayar: totalTerbayarBaru };
 
-                    const newTrx = { id: `INV-PKS-${Math.floor(Math.random() * 10000) + '-' + Date.now()}`, tanggal: tanggalWaktu.split('T')[0], nis: tRef.nis, nama: tRef.nama, tagihan: tRef.tagihan + ' (Via QRIS)', periode: tRef.periode, nominal: formData.sisa, status: statusTrx === 'Cicil' ? 'Cicilan' : 'Lunas', sisa: sisaTagihan, items: [{ tagihan: tRef.tagihan, periode: tRef.periode, nominal: formData.sisa }] };
+                    const newTrx = { id: `INV-${Math.floor(Math.random() * 10000) + '-' + Date.now()}`, tanggal: tanggalWaktu.split('T')[0], nis: tRef.nis, nama: tRef.nama, tagihan: tRef.tagihan + ' (Via QRIS)', periode: tRef.periode, nominal: formData.sisa, status: statusTrx === 'Cicil' ? 'Cicilan' : 'Lunas', sisa: sisaTagihan, items: [{ tagihan: tRef.tagihan, periode: tRef.periode, nominal: formData.sisa }] };
                     setDataPembayaran(p => [newTrx, ...p]);
                 }
                 return updated;
@@ -1870,7 +1870,7 @@ function App() {
         if (isTabungan) {
             const nominalAngka = parseInt(String(formData.nominal || '').replace(/\D/g, ''), 10) || 0;
             if (!nominalAngka || nominalAngka <= 0) return showNotification("Nominal tidak valid!");
-            const tempId = `TB-PKS-${Date.now()}`;
+            const tempId = `TB-${Date.now()}`;
             setFormData({ ...formData, id: tempId, nama: santriTerpilih.nama, tagihan: 'Tabungan', sisa: nominalAngka });
             setPakasirData({ step: 'CHOOSE_METHOD', method: '', qrString: null, loading: false, url: '', isPaid: false, checkoutUrl: '' });
             setModalType('FORM_PAKASIR');
@@ -1878,7 +1878,7 @@ function App() {
         }
 
         let pInvoiceStr = formData.bulan && formData.tahun ? `${formData.bulan} ${formData.tahun}` : 'Juni 2026';
-        const tempId = `INV-PKS-${Math.floor(Math.random() * 100000) + '-' + Date.now()}`;
+        const tempId = `INV-${Math.floor(Math.random() * 100000) + '-' + Date.now()}`;
 
         let nominalAngka = 0; let tagihanNames = ''; let linkedIds = [];
         let itemsToPay = [];
@@ -8251,9 +8251,30 @@ Terima kasih atas kerja samanya.`;
                                                 )}
                                             </div>
 
-                                            {pakasirData.isSandbox && (
-                                                <button onClick={() => { setPakasirData(prev => ({ ...prev, isPaid: true })); setTimeout(() => { processPelunasanOtomatis(new Date().toISOString()); }, 1000); }} className="w-full py-3 mb-2 bg-amber-100 hover:bg-amber-200 text-amber-800 rounded-xl font-semibold transition-colors border border-amber-300">Simulasi Berhasil (Sandbox)</button>
-                                            )}
+                                            <button 
+    onClick={async () => {
+        try {
+            await fetch('/api/doku/webhook', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    order: {
+                        invoice_number: pakasirData.uniqueOrderId || formData.id,
+                        amount: formData.sisa || formData.nominal || 0
+                    },
+                    transaction: { status: 'SUCCESS' },
+                    channel: { id: (pakasirData.method || 'VIRTUAL_ACCOUNT').toUpperCase() }
+                })
+            });
+        } catch (e) {}
+        setPakasirData(prev => ({ ...prev, isPaid: true }));
+        showNotification("Simulasi pembayaran berhasil! Memproses pelunasan...");
+        setTimeout(() => { processPelunasanOtomatis(new Date().toISOString()); }, 1000);
+    }} 
+    className="w-full py-3 mb-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-semibold transition-colors flex items-center justify-center gap-2 shadow-sm"
+>
+    <Check className="w-4 h-4" /> Simulasi Sukses (Test Callback Webhook)
+</button>
 
                                             <button onClick={() => setPakasirData({ step: 'CHOOSE_METHOD', method: '', loading: false, qrString: '', url: '', checkoutUrl: '', isSandbox: false })} className="w-full py-3 mt-2 bg-transparent hover:bg-slate-50 text-steel rounded-xl font-semibold transition-colors">Pilih Pembayaran Lain</button>
                                         </>
