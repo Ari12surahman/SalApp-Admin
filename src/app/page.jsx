@@ -1683,7 +1683,7 @@ function App() {
                 console.log("IS SANDBOX:", isSandboxApi, "qrString:", qrStr, "checkout_url:", checkoutUrl);
                 const txnId = paymentData.txn_id || data.txn_id || '';
                 setPakasirTimeLeft(900);
-                setPakasirData(prev => ({ ...prev, loading: false, step: isQris ? 'SHOW_QR' : 'SHOW_VA', qrString: qrStr, checkoutUrl: checkoutUrl, isSandbox: true, txnId: txnId, uniqueOrderId: uniqueOrderId }));
+                setPakasirData(prev => ({ ...prev, loading: false, step: isQris ? 'SHOW_QR' : 'SHOW_VA', qrString: qrStr, checkoutUrl: checkoutUrl, isSandbox: false, txnId: txnId, uniqueOrderId: uniqueOrderId }));
                 addLog('INTEGRATION', 'PAKASIR API', `Berhasil request ${method} untuk ${uniqueOrderId}${isSandboxApi ? ' (Sandbox)' : ''}`);
             } else {
                 console.error('Pakasir API Response Gagal:', JSON.stringify(data, null, 2));
@@ -8171,7 +8171,16 @@ Terima kasih atas kerja samanya.`;
                                 <div className="animate-fade-in-up">
                                     <h3 className="text-lg font-bold text-ink mb-3">Pilih Metode Pembayaran (DOKU)</h3>
                                     <div className="space-y-3 mb-2 max-h-80 overflow-y-auto pr-2">
-                                        <button onClick={() => handleGeneratePakasirQR('qris')} className="w-full flex items-center justify-between p-4 border border-whisper rounded-xl hover:bg-canvas transition-colors"><div className="flex items-center gap-3"><QrCode className="w-6 h-6 text-accent" /><span className="font-semibold text-ink">QRIS (Gopay, OVO, Dana, ShopeePay)</span></div><ArrowRight className="w-4 h-4 text-steel" /></button>
+                                        <div className="w-full flex items-center justify-between p-4 border border-slate-200 rounded-xl bg-slate-50 opacity-60 cursor-not-allowed">
+                                            <div className="flex items-center gap-3">
+                                                <QrCode className="w-6 h-6 text-slate-400" />
+                                                <div className="text-left">
+                                                    <span className="font-semibold text-slate-500 block">QRIS (Gopay, OVO, Dana, ShopeePay)</span>
+                                                    <span className="text-[10px] text-amber-700 font-semibold bg-amber-100/70 px-1.5 py-0.5 rounded">Dalam Proses Verifikasi DOKU</span>
+                                                </div>
+                                            </div>
+                                            <span className="text-xs text-slate-400 font-medium">Segera Hadir</span>
+                                        </div>
                                         <button onClick={() => handleGeneratePakasirQR('bri_va')} className="w-full flex items-center justify-between p-4 border border-whisper rounded-xl hover:bg-canvas transition-colors"><div className="flex items-center gap-3"><CreditCard className="w-6 h-6 text-blue-700" /><span className="font-semibold text-ink">BRI Virtual Account</span></div><ArrowRight className="w-4 h-4 text-steel" /></button>
                                         <button onClick={() => handleGeneratePakasirQR('bni_va')} className="w-full flex items-center justify-between p-4 border border-whisper rounded-xl hover:bg-canvas transition-colors"><div className="flex items-center gap-3"><CreditCard className="w-6 h-6 text-orange-600" /><span className="font-semibold text-ink">BNI Virtual Account</span></div><ArrowRight className="w-4 h-4 text-steel" /></button>
                                         <button onClick={() => handleGeneratePakasirQR('bsi_va')} className="w-full flex items-center justify-between p-4 border border-whisper rounded-xl hover:bg-canvas transition-colors"><div className="flex items-center gap-3"><CreditCard className="w-6 h-6 text-emerald-600" /><span className="font-semibold text-ink">BSI Virtual Account</span></div><ArrowRight className="w-4 h-4 text-steel" /></button>
