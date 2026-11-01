@@ -1625,7 +1625,7 @@ function App() {
         const slug = masterRef?.pakasirSlug || masterRef?.pakasir_slug || masterRef?.PAKASIR_SLUG || appConfig.pakasirSlug || appConfig.pakasir_slug || appConfig.PAKASIR_SLUG || 'depodomain';
         const apiKey = masterRef?.pakasirApiKey || masterRef?.pakasir_apikey || masterRef?.PAKASIR_APIKEY || appConfig.pakasirApiKey || appConfig.pakasir_apikey || appConfig.PAKASIR_APIKEY || 'xxx123';
 
-        if (!slug) return showNotification("Project Slug Pakasir belum diatur di Master Tagihan!");
+        // DOKU Gateway is centrally configured, slug not required
 
         setPakasirData(prev => ({ ...prev, loading: true, step: 'LOADING', method }));
         try {
@@ -8910,9 +8910,17 @@ Terima kasih atas kerja samanya.`;
                                 }} className="flex flex-col gap-4 border border-whisper p-4 rounded-xl">
                                     <div className="text-sm font-semibold text-steel">Tambah/Edit Tagihan</div>
                                     <div className="grid grid-cols-2 gap-4"><input required name="tagihan" value={formData.tagihan || ''} onChange={handleInputChange} type="text" className={inputBase} placeholder="Nama Tagihan" /><input required name="nominal" value={formData.nominal || ''} onChange={handleInputChange} type="text" className={inputBase} placeholder="Nominal Rp" /></div>
-                                    <div className="bg-blue-50/50 p-3 rounded-lg border border-blue-100"><div className="text-xs font-semibold text-blue-700 mb-2">Integrasi Pakasir API & Portal</div>
-                                        <div className="grid grid-cols-2 gap-4 mb-3"><input name="pakasirSlug" value={formData.pakasirSlug || ''} onChange={handleInputChange} type="text" className={`${inputBase} text-xs py-1.5 bg-white border-blue-200`} placeholder="Project Slug Pakasir" /><input name="pakasirApiKey" value={formData.pakasirApiKey || ''} onChange={handleInputChange} type="text" className={`${inputBase} text-xs py-1.5 bg-white border-blue-200`} placeholder="API Key Pakasir" /></div>
-                                        <div className="mb-3"><input name="biaya_aplikasi" value={formData.biaya_aplikasi || ''} onChange={handleInputChange} type="text" className={`${inputBase} text-xs py-1.5 bg-white border-blue-200`} placeholder="Biaya Aplikasi (Otomatis ditambahkan saat bayar online)" /></div>
+                                    <div className="bg-emerald-50/60 p-3 rounded-lg border border-emerald-100">
+                                        <div className="flex items-center justify-between mb-2">
+                                            <span className="text-xs font-semibold text-emerald-800 flex items-center gap-1.5">
+                                                <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+                                                DOKU Payment Gateway Terpusat (Aktif)
+                                            </span>
+                                            <span className="text-[10px] text-emerald-600 bg-emerald-100/60 px-1.5 py-0.5 rounded font-mono">Auto-Connect</span>
+                                        </div>
+                                        <div className="mb-2.5">
+                                            <input name="biaya_aplikasi" value={formData.biaya_aplikasi || ''} onChange={handleInputChange} type="text" className={`${inputBase} text-xs py-1.5 bg-white border-emerald-200`} placeholder="Biaya Aplikasi Tambahan (Opsional, misal: 2000)" />
+                                        </div>
                                         <div><div className="text-[10px] font-semibold text-blue-800 mb-1.5 uppercase tracking-wider">Tampilkan di Portal Wali</div><div className="flex gap-4"><label className="flex items-center gap-1.5 text-xs text-blue-900 cursor-pointer"><input type="checkbox" checked={(formData.portalMenu || []).includes('Bayar Tagihan Lain')} onChange={(e) => { const pm = formData.portalMenu || []; setFormData(p => ({ ...p, portalMenu: e.target.checked ? [...pm, 'Bayar Tagihan Lain'].filter(x => x !== 'Sembunyikan') : pm.filter(x => x !== 'Bayar Tagihan Lain') })) }} className="rounded text-blue-600 w-3.5 h-3.5" /> Bayar Tagihan Lain</label><label className="flex items-center gap-1.5 text-xs text-rose-700 cursor-pointer"><input type="checkbox" checked={(formData.portalMenu || []).includes('Sembunyikan')} onChange={(e) => setFormData(p => ({ ...p, portalMenu: e.target.checked ? ['Sembunyikan'] : [] }))} className="rounded text-rose-600 w-3.5 h-3.5" /> Sembunyikan Saja</label></div></div>
                                     </div>
                                     <div className="flex gap-2 items-center"><select name="tipe" value={formData.tipe || 'Rutin'} onChange={handleInputChange} className={`${inputBase} w-1/3`}><option value="Rutin">Rutin (Bulanan)</option><option value="Insidental">Insidental (1x)</option></select><button type="submit" className={`${btnPrimary} flex-1`}><Plus className="w-4 h-4" /> Simpan Tagihan</button></div>
@@ -8920,7 +8928,7 @@ Terima kasih atas kerja samanya.`;
                                     <div className="hidden md:block border border-whisper rounded-card overflow-hidden">
                                         <table className="w-full text-sm text-left block">
                                             <thead className="bg-canvas"><tr className="flex w-full"><th className="px-4 py-2 flex-1">Jenis Tagihan</th><th className="px-4 py-2 w-32 text-right">Nominal</th><th className="px-4 py-2 w-20 text-center">Aksi</th></tr></thead>
-                                            <tbody className="divide-y divide-slate-100 flex flex-col w-full max-h-48 overflow-y-auto">{masterTagihanList.map(t => (<tr key={t.tagihan} className="flex w-full items-center"><td className="px-4 py-3 flex-1"><div>{t.tagihan}</div><div className="text-[10px] text-steel font-medium uppercase mt-0.5">{t.tipe} {t.pakasirSlug && <span className="ml-2 text-emerald-600">V Pakasir</span>} {t.biaya_aplikasi ? <span className="ml-2 text-blue-600 border border-blue-200 px-1 rounded bg-blue-50">App Fee: Rp {Number(t.biaya_aplikasi).toLocaleString('id-ID')}</span> : ''} {Array.isArray(t.portalMenu) && t.portalMenu.includes('Sembunyikan') && <span className="ml-2 text-rose-500 text-[9px] border border-rose-200 px-1 rounded bg-rose-50">Sembunyi</span>}</div></td><td className="px-4 py-3 w-32 text-right font-medium">Rp {Number(t.nominal || 0).toLocaleString('id-ID')}</td><td className="px-4 py-3 w-20 flex items-center justify-center gap-3"><button onClick={() => {
+                                            <tbody className="divide-y divide-slate-100 flex flex-col w-full max-h-48 overflow-y-auto">{masterTagihanList.map(t => (<tr key={t.tagihan} className="flex w-full items-center"><td className="px-4 py-3 flex-1"><div>{t.tagihan}</div><div className="text-[10px] text-steel font-medium uppercase mt-0.5">{t.tipe}  {t.biaya_aplikasi ? <span className="ml-2 text-blue-600 border border-blue-200 px-1 rounded bg-blue-50">App Fee: Rp {Number(t.biaya_aplikasi).toLocaleString('id-ID')}</span> : ''} {Array.isArray(t.portalMenu) && t.portalMenu.includes('Sembunyikan') && <span className="ml-2 text-rose-500 text-[9px] border border-rose-200 px-1 rounded bg-rose-50">Sembunyi</span>}</div></td><td className="px-4 py-3 w-32 text-right font-medium">Rp {Number(t.nominal || 0).toLocaleString('id-ID')}</td><td className="px-4 py-3 w-20 flex items-center justify-center gap-3"><button onClick={() => {
     let pm = [];
     if (Array.isArray(t.portalMenu)) pm = t.portalMenu;
     else if (typeof t.portalMenu === 'string' && t.portalMenu.startsWith('[')) {
@@ -8935,7 +8943,7 @@ Terima kasih atas kerja samanya.`;
                                             <div key={t.tagihan} className="border border-whisper rounded-lg p-3 bg-surface flex justify-between items-center">
                                                 <div className="min-w-0 flex-1">
                                                     <div className="font-bold text-sm text-ink truncate">{t.tagihan}</div>
-                                                    <div className="text-[10px] text-steel font-medium uppercase mt-1">{t.tipe} {t.pakasirSlug && <span className="ml-2 text-emerald-600">✓ Pakasir</span>} {Array.isArray(t.portalMenu) && t.portalMenu.includes('Sembunyikan') && <span className="ml-2 text-rose-500 text-[9px] border border-rose-200 px-1 rounded bg-rose-50">Sembunyi</span>}</div>
+                                                    <div className="text-[10px] text-steel font-medium uppercase mt-1">{t.tipe}  {Array.isArray(t.portalMenu) && t.portalMenu.includes('Sembunyikan') && <span className="ml-2 text-rose-500 text-[9px] border border-rose-200 px-1 rounded bg-rose-50">Sembunyi</span>}</div>
                                                 </div>
                                                 <div className="flex flex-col items-end gap-2 shrink-0">
                                                     <div className="font-bold text-sm text-ink">Rp {Number(t.nominal || 0).toLocaleString('id-ID')}</div>
