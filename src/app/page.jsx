@@ -271,6 +271,26 @@ function getPeriodeBulanKey(dateStr) {
 }
 
 function getWarungMonthlyFeeStatus(warungId, periodeBulan, feeHistory = {}, feeConfig = {}) {
+    const mulaiPeriode = (feeConfig && feeConfig.mulaiPeriode) ? feeConfig.mulaiPeriode : '2026-11';
+    
+    // Jika periode bulan pengajuan sebelum kebijakan potongan mulai berlaku (misal bulan kemarin atau sebelumnya)
+    if (periodeBulan && periodeBulan < mulaiPeriode) {
+        return {
+            targetAplikasi: 0,
+            targetKader: 0,
+            targetTotal: 0,
+            terbayarAplikasi: 0,
+            terbayarKader: 0,
+            totalTerbayar: 0,
+            sisaAplikasi: 0,
+            sisaKader: 0,
+            totalSisa: 0,
+            isLunas: true,
+            isSebelumMulai: true,
+            mulaiPeriode
+        };
+    }
+
     const defaultAplikasi = feeConfig && feeConfig.biayaAplikasi !== undefined ? Number(feeConfig.biayaAplikasi) : 30000;
     const defaultKader = feeConfig && feeConfig.biayaKader !== undefined ? Number(feeConfig.biayaKader) : 200000;
     
@@ -303,7 +323,9 @@ function getWarungMonthlyFeeStatus(warungId, periodeBulan, feeHistory = {}, feeC
         sisaAplikasi,
         sisaKader,
         totalSisa,
-        isLunas: totalSisa === 0
+        isLunas: totalSisa === 0,
+        isSebelumMulai: false,
+        mulaiPeriode
     };
 }
 
@@ -2349,11 +2371,14 @@ function App() {
             }, 0);
     };
 
-    // Helper hitung pemakaian penarikan/jajan tabungan santri dalam periode tertentu
+    // Helper hitung pemakaian jajan tabungan santri dalam periode tertentu (hanya belanja kantin / POS / kasir)
     const getUsageInPeriod = (nis, periode = 'harian', dataTabunganList = dataTabungan) => {
         const sNisClean = String(nis || '').replace(/^0+/, '');
         const now = new Date();
-        const todayStr = now.toISOString().split('T')[0];
+        const localYear = now.getFullYear();
+        const localMonth = String(now.getMonth() + 1).padStart(2, '0');
+        const localDay = String(now.getDate()).padStart(2, '0');
+        const todayStr = `${localYear}-${localMonth}-${localDay}`;
         
         let startDateStr = todayStr;
         if (periode === 'mingguan') {
@@ -2361,9 +2386,12 @@ function App() {
             const diffToMonday = (day === 0 ? -6 : 1) - day;
             const monday = new Date(now);
             monday.setDate(now.getDate() + diffToMonday);
-            startDateStr = monday.toISOString().split('T')[0];
+            const mYear = monday.getFullYear();
+            const mMonth = String(monday.getMonth() + 1).padStart(2, '0');
+            const mDay = String(monday.getDate()).padStart(2, '0');
+            startDateStr = `${mYear}-${mMonth}-${mDay}`;
         } else if (periode === 'bulanan') {
-            startDateStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`;
+            startDateStr = `${localYear}-${localMonth}-01`;
         }
         
         const userWithdrawals = (dataTabunganList || []).filter(t => {
@@ -2371,7 +2399,10 @@ function App() {
             const tJenis = String(t.jenis || t.Jenis || '').toLowerCase().trim();
             const isWithdraw = tJenis === 'tarik' || tJenis === 'keluar' || tJenis.includes('tarik') || tJenis.includes('keluar') || tJenis === 'debet' || tJenis === 'debit';
             const tDate = String(t.tanggal || t.Tanggal || '').split('T')[0];
-            return (tNis === sNisClean || String(t.nis || t.NIS || '').trim() === String(nis || '').trim()) && isWithdraw && tDate >= startDateStr && tDate <= todayStr;
+            const ket = String(t.keterangan || t.Keterangan || '').toLowerCase();
+            // Hanya menghitung transaksi jajan (kantin/POS/kasir). Pengambilan tabungan langsung oleh bendahara tidak dihitung ke limit jajan.
+            const isJajan = ket.includes('kantin') || ket.includes('pos') || ket.includes('jajan') || ket.includes('belanja') || ket.includes('kasir') || ket.includes('trx-');
+            return (tNis === sNisClean || String(t.nis || t.NIS || '').trim() === String(nis || '').trim()) && isWithdraw && isJajan && tDate >= startDateStr;
         });
         
         return userWithdrawals.reduce((sum, t) => sum + (Number(t.nominal || t.Nominal || 0)), 0);
@@ -2427,7 +2458,8 @@ function App() {
             currentConfig.defaultLimit = nominal;
             currentConfig.defaultPeriode = periode;
             updatedSantriList = updatedSantriList.map(s => {
-                const hasCustom = !!santriLimits[s.nis];
+                const sNisClean = String(s.nis || '').replace(/^0+/, '');
+                const hasCustom = !!santriLimits[s.nis] || !!santriLimits[sNisClean];
                 if (!hasCustom) {
                     return { ...s, limit_jajan_harian: nominal, limit_periode: periode };
                 }
@@ -2439,21 +2471,30 @@ function App() {
             
             updatedSantriList = updatedSantriList.map(s => {
                 if (String(s.kelas).trim().toLowerCase() === String(targetKelas).trim().toLowerCase()) {
+                    const sNisClean = String(s.nis || '').replace(/^0+/, '');
                     santriLimits[s.nis] = { limit: nominal, periode: periode };
+                    if (sNisClean !== String(s.nis)) {
+                        santriLimits[sNisClean] = { limit: nominal, periode: periode };
+                    }
                     return { ...s, limit_jajan_harian: nominal, limit_periode: periode };
                 }
                 return s;
             });
             currentConfig.santriLimits = santriLimits;
         } else if (targetType === 'Santri') {
-            const targetNis = limitModalData.selectedNis;
+            const targetNis = String(limitModalData.selectedNis || '');
             if (!targetNis) return showNotification("Pilih santri terlebih dahulu!");
+            const targetNisClean = targetNis.replace(/^0+/, '');
 
             santriLimits[targetNis] = { limit: nominal, periode: periode };
+            if (targetNisClean !== targetNis) {
+                santriLimits[targetNisClean] = { limit: nominal, periode: periode };
+            }
             currentConfig.santriLimits = santriLimits;
 
             updatedSantriList = updatedSantriList.map(s => {
-                if (String(s.nis) === String(targetNis)) {
+                const sNis = String(s.nis || '');
+                if (sNis === targetNis || sNis.replace(/^0+/, '') === targetNisClean) {
                     return { ...s, limit_jajan_harian: nominal, limit_periode: periode };
                 }
                 return s;
@@ -2470,16 +2511,17 @@ function App() {
             }, { onConflict: 'kunci' });
 
             if (targetType === 'Santri') {
-                await supabase.from('Data Santri').update({ limit_jajan_harian: nominal }).eq('nis', limitModalData.selectedNis);
+                const targetNis = String(limitModalData.selectedNis || '');
+                const targetNisClean = targetNis.replace(/^0+/, '');
+                await supabase.from('Data Santri').update({ limit_jajan_harian: nominal }).in('nis', [targetNis, targetNisClean]);
             } else if (targetType === 'Kelas') {
                 const affectedSantri = updatedSantriList.filter(s => String(s.kelas).trim().toLowerCase() === String(limitModalData.selectedKelas).trim().toLowerCase());
-                for (const s of affectedSantri) {
-                    await supabase.from('Data Santri').update({ limit_jajan_harian: nominal }).eq('nis', s.nis);
+                const nisList = affectedSantri.map(s => s.nis);
+                if (nisList.length > 0) {
+                    await supabase.from('Data Santri').update({ limit_jajan_harian: nominal }).in('nis', nisList);
                 }
             } else if (targetType === 'Semua') {
-                for (const s of updatedSantriList) {
-                    await supabase.from('Data Santri').update({ limit_jajan_harian: nominal }).eq('nis', s.nis);
-                }
+                await supabase.from('Data Santri').update({ limit_jajan_harian: nominal }).neq('id', 'dummy_all_records');
             }
 
             const periodeText = periode === 'mingguan' ? 'Per Minggu' : periode === 'bulanan' ? 'Per Bulan' : 'Per Hari';
@@ -2506,24 +2548,7 @@ function App() {
             if (nom > currentSaldo) {
                 return showNotification(`Saldo tabungan tidak mencukupi! Saldo saat ini: Rp ${currentSaldo.toLocaleString('id-ID')}`);
             }
-
-            const { limit, periode } = getSantriLimitConfig(s);
-            if (limit > 0) {
-                const used = getUsageInPeriod(formData.nis, periode);
-                if (used + nom > limit) {
-                    const periodeLabel = periode === 'mingguan' ? 'minggu' : periode === 'bulanan' ? 'bulan' : 'hari';
-                    const confirmExceed = window.confirm(
-                        `PERINGATAN LIMIT TABUNGAN:\n\n` +
-                        `Santri: ${s.nama}\n` +
-                        `Batas Limit: Rp ${limit.toLocaleString('id-ID')} / ${periodeLabel}\n` +
-                        `Sudah Digunakan Periode Ini: Rp ${used.toLocaleString('id-ID')}\n` +
-                        `Penarikan Ini: Rp ${nom.toLocaleString('id-ID')}\n` +
-                        `Total Setelah Penarikan: Rp ${(used + nom).toLocaleString('id-ID')}\n\n` +
-                        `Penarikan ini MELEBIHI batas limit yang telah diatur. Apakah Anda (Admin) ingin tetap melanjutkan transaksi ini?`
-                    );
-                    if (!confirmExceed) return;
-                }
-            }
+            // Penarikan tunai tabungan di bendahara tidak dibatasi oleh limit jajan harian santri
         }
 
         setDataTabungan(prev => [{ id: `TB-${Date.now()}`, tanggal: new Date().toISOString().split('T')[0], nis: formData.nis, nama: s.nama, jenis: jenis, nominal: nom, keterangan: formData.keterangan || '' }, ...prev]);
@@ -5804,9 +5829,9 @@ function App() {
                                             <th className="px-6 py-3">Nama Santri</th>
                                             <th className="px-6 py-3">Kelas</th>
                                             <th className="px-6 py-3 text-right">Saldo Tabungan</th>
-                                            <th className="px-6 py-3 text-center">Aturan Limit</th>
-                                            <th className="px-6 py-3 text-right">Pemakaian Periode Ini</th>
-                                            <th className="px-6 py-3 text-right">Sisa Limit</th>
+                                            <th className="px-6 py-3 text-center">Limit Jajan</th>
+                                            <th className="px-6 py-3 text-right">Pemakaian Jajan</th>
+                                            <th className="px-6 py-3 text-right">Sisa Limit Jajan</th>
                                             <th className="px-6 py-3 text-center">Aksi</th>
                                         </tr>
                                     </thead>
@@ -6080,7 +6105,7 @@ function App() {
         if (!item) return;
         const warungName = getNamaWarung(item.WarungID);
         const periodeBulan = getPeriodeBulanKey(item.WaktuPengajuan);
-        const feeConfig = appConfig.pencairanFeeConfig || { biayaAplikasi: 30000, biayaKader: 200000, maxPotongPersen: 50 };
+        const feeConfig = appConfig.pencairanFeeConfig || { biayaAplikasi: 30000, biayaKader: 200000, maxPotongPersen: 50, mulaiPeriode: '2026-11' };
         const feeHistory = appConfig.pencairanFeeHistory || {};
         
         const monthlyStatus = getWarungMonthlyFeeStatus(item.WarungID, periodeBulan, feeHistory, feeConfig);
@@ -6991,24 +7016,36 @@ Terima kasih atas kerja samanya.`;
                                 </div>
 
                                 {/* Status Kewajiban Bulan Ini */}
-                                <div className="p-4 bg-blue-50/70 border border-blue-200 rounded-xl space-y-2">
-                                    <div className="flex justify-between items-center text-xs font-bold text-blue-900">
-                                        <span className="flex items-center gap-1.5"><Store className="w-3.5 h-3.5" /> Tanggungan Warung Bulan Ini:</span>
-                                        <span>Target Total: Rp {monthlyStatus.targetTotal.toLocaleString('id-ID')}</span>
-                                    </div>
-                                    <div className="grid grid-cols-2 gap-2 text-xs">
-                                        <div className="bg-white p-2.5 rounded-lg border border-blue-100">
-                                            <span className="text-steel block">Tagihan Aplikasi:</span>
-                                            <span className="font-semibold text-ink">Rp {monthlyStatus.terbayarAplikasi.toLocaleString('id-ID')} / Rp {monthlyStatus.targetAplikasi.toLocaleString('id-ID')}</span>
-                                            <span className="block text-[10px] text-amber-700 mt-0.5">Sisa: Rp {monthlyStatus.sisaAplikasi.toLocaleString('id-ID')}</span>
-                                        </div>
-                                        <div className="bg-white p-2.5 rounded-lg border border-blue-100">
-                                            <span className="text-steel block">Tagihan Kader:</span>
-                                            <span className="font-semibold text-ink">Rp {monthlyStatus.terbayarKader.toLocaleString('id-ID')} / Rp {monthlyStatus.targetKader.toLocaleString('id-ID')}</span>
-                                            <span className="block text-[10px] text-amber-700 mt-0.5">Sisa: Rp {monthlyStatus.sisaKader.toLocaleString('id-ID')}</span>
+                                {monthlyStatus.isSebelumMulai ? (
+                                    <div className="p-4 bg-amber-50/80 border border-amber-200 rounded-xl flex items-start gap-2.5 text-xs text-amber-900">
+                                        <AlertCircle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+                                        <div>
+                                            <div className="font-bold">Pengajuan Sebelum Kebijakan Pemotongan ({periodeBulan})</div>
+                                            <div className="text-[11px] text-amber-800 mt-0.5">
+                                                Pencairan ini diajukan pada periode bulan kemarin ({periodeBulan}), sebelum kebijakan pemotongan tagihan MOU mulai berlaku (Mulai {monthlyStatus.mulaiPeriode || '2026-11'}). Pemotongan otomatis diset Rp 0.
+                                            </div>
                                         </div>
                                     </div>
-                                </div>
+                                ) : (
+                                    <div className="p-4 bg-blue-50/70 border border-blue-200 rounded-xl space-y-2">
+                                        <div className="flex justify-between items-center text-xs font-bold text-blue-900">
+                                            <span className="flex items-center gap-1.5"><Store className="w-3.5 h-3.5" /> Tanggungan Warung Bulan Ini ({periodeBulan}):</span>
+                                            <span>Target Total: Rp {monthlyStatus.targetTotal.toLocaleString('id-ID')}</span>
+                                        </div>
+                                        <div className="grid grid-cols-2 gap-2 text-xs">
+                                            <div className="bg-white p-2.5 rounded-lg border border-blue-100">
+                                                <span className="text-steel block">Tagihan Aplikasi:</span>
+                                                <span className="font-semibold text-ink">Rp {monthlyStatus.terbayarAplikasi.toLocaleString('id-ID')} / Rp {monthlyStatus.targetAplikasi.toLocaleString('id-ID')}</span>
+                                                <span className="block text-[10px] text-amber-700 mt-0.5">Sisa: Rp {monthlyStatus.sisaAplikasi.toLocaleString('id-ID')}</span>
+                                            </div>
+                                            <div className="bg-white p-2.5 rounded-lg border border-blue-100">
+                                                <span className="text-steel block">Tagihan Kader:</span>
+                                                <span className="font-semibold text-ink">Rp {monthlyStatus.terbayarKader.toLocaleString('id-ID')} / Rp {monthlyStatus.targetKader.toLocaleString('id-ID')}</span>
+                                                <span className="block text-[10px] text-amber-700 mt-0.5">Sisa: Rp {monthlyStatus.sisaKader.toLocaleString('id-ID')}</span>
+                                            </div>
+                                        </div>
+                                    </div>
+                                )}
 
                                 {/* Form Input Pemotongan Bertahap */}
                                 <div className="p-4 bg-surface border border-whisper rounded-xl space-y-3">
@@ -7219,6 +7256,19 @@ Terima kasih atas kerja samanya.`;
                             <p className="text-xs text-steel">
                                 Tentukan nilai standar tagihan bulanan dan batas aman pemotongan per pencairan untuk seluruh warung.
                             </p>
+                            <div>
+                                <label className="block text-sm font-medium text-ink mb-1">Mulai Berlaku Bulan (Periode)</label>
+                                <input 
+                                    type="month"
+                                    required
+                                    value={modalConfigMOU.mulaiPeriode || '2026-11'}
+                                    onChange={(e) => setModalConfigMOU(prev => ({ ...prev, mulaiPeriode: e.target.value }))}
+                                    className={inputBase}
+                                />
+                                <span className="text-[11px] text-steel mt-0.5 block">
+                                    Pemotongan tagihan MOU hanya berlaku untuk pencairan mulai bulan yang dipilih ke atas. Pengajuan bulan kemarin (atau sebelumnya) tidak akan dipotong.
+                                </span>
+                            </div>
                             <div>
                                 <label className="block text-sm font-medium text-ink mb-1">Tagihan Aplikasi (Rp / Bulan)</label>
                                 <input 
