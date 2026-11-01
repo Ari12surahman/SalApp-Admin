@@ -1629,7 +1629,10 @@ function App() {
 
         setPakasirData(prev => ({ ...prev, loading: true, step: 'LOADING', method }));
         try {
-            const amountToPay = formData.sisa || formData.nominal || 0;
+            const pokokAmount = formData.sisa || formData.nominal || 0;
+            const appFee = formData.biaya_aplikasi ? Number(formData.biaya_aplikasi) : 0;
+            const adminFee = (method === 'qris' || method === 'QRIS') ? 0 : 3000;
+            const amountToPay = pokokAmount + appFee + adminFee;
             const isQris = method === 'QRIS' || method === 'qris';
             if (!isQris && amountToPay < 10000) {
                 showNotification("Nominal pembayaran via Virtual Account minimal Rp 10.000. Untuk nominal di bawah Rp 10.000, silakan gunakan QRIS.");
@@ -8215,15 +8218,48 @@ Terima kasih atas kerja samanya.`;
 
                             {(pakasirData.step === 'SHOW_QR' || pakasirData.step === 'SHOW_VA') && (
                                 <div className="text-center py-2 animate-fade-in-up">
-                                    <h3 className="text-lg font-bold text-ink mb-1">{pakasirData.step === 'SHOW_QR' ? 'Scan QRIS' : 'Transfer Virtual Account'}</h3>
+                                    <h3 className="text-lg font-bold text-ink mb-3">{pakasirData.step === 'SHOW_QR' ? 'Scan QRIS' : 'Transfer Virtual Account'}</h3>
                                     
+                                    {/* Tabel Rincian Pembayaran (Persis PortalNative) */}
+                                    <div className="w-full bg-white border border-slate-200 rounded-xl overflow-hidden shadow-sm text-sm text-left mb-4">
+                                        <div className="bg-slate-50 p-2.5 border-b border-slate-200 text-center font-bold text-slate-800">
+                                            Halaman Pembayaran
+                                        </div>
+                                        <div className="divide-y divide-slate-100">
+                                            <div className="flex">
+                                                <div className="w-1/3 p-2.5 bg-slate-50/70 border-r border-slate-200 text-slate-500 font-medium text-xs">Order Id</div>
+                                                <div className="w-2/3 p-2.5 text-slate-800 font-mono text-xs flex items-center">{pakasirData.uniqueOrderId || formData.id}</div>
+                                            </div>
+                                            <div className="flex">
+                                                <div className="w-1/3 p-2.5 bg-slate-50/70 border-r border-slate-200 text-slate-500 font-medium text-xs">Nominal</div>
+                                                <div className="w-2/3 p-2.5 text-slate-800 font-semibold text-xs">Rp {Number(formData.sisa || formData.nominal || 0).toLocaleString("id-ID")}</div>
+                                            </div>
+                                            <div className="flex">
+                                                <div className="w-1/3 p-2.5 bg-slate-50/70 border-r border-slate-200 text-slate-500 font-medium text-xs">Metode</div>
+                                                <div className="w-2/3 p-2.5 text-slate-800 font-semibold text-xs uppercase">{getBankDisplayName(pakasirData.method)}</div>
+                                            </div>
+                                            <div className="flex">
+                                                <div className="w-1/3 p-2.5 bg-slate-50/70 border-r border-slate-200 text-slate-500 font-medium text-xs">Biaya Admin</div>
+                                                <div className="w-2/3 p-2.5 text-slate-800 font-semibold text-xs">Rp 3.000</div>
+                                            </div>
+                                            <div className="flex">
+                                                <div className="w-1/3 p-2.5 bg-slate-50/70 border-r border-slate-200 text-slate-500 font-medium text-xs">Biaya Aplikasi</div>
+                                                <div className="w-2/3 p-2.5 text-slate-800 font-semibold text-xs">Rp {Number(formData.biaya_aplikasi || 0).toLocaleString("id-ID")}</div>
+                                            </div>
+                                            <div className="flex bg-slate-50/40">
+                                                <div className="w-1/3 p-2.5 bg-slate-50 border-r border-slate-200 text-slate-900 font-bold text-sm">Total Bayar</div>
+                                                <div className="w-2/3 p-2.5 text-blue-700 font-bold text-base">Rp {(Number(formData.sisa || formData.nominal || 0) + 3000 + Number(formData.biaya_aplikasi || 0)).toLocaleString("id-ID")}</div>
+                                            </div>
+                                        </div>
+                                    </div>
+
                                     {pakasirTimeLeft > 0 ? (
                                         <>
                                             <p className="text-sm font-bold text-red-600 mb-1">Selesaikan pembayaran sebelum waktu habis: {Math.floor(pakasirTimeLeft / 60)}:{(pakasirTimeLeft % 60).toString().padStart(2, '0')}</p>
-                                            <p className="text-xs font-bold text-red-600 mb-6 px-2">⚠️ Mohon JANGAN tutup halaman ini atau keluar dari aplikasi sebelum pembayaran selesai.</p>
+                                            <p className="text-xs font-bold text-red-600 mb-4 px-2">⚠️ Mohon JANGAN tutup halaman ini atau keluar dari aplikasi sebelum pembayaran selesai.</p>
                                         </>
                                     ) : (
-                                        <p className="text-base font-bold text-red-600 mb-6">Waktu Pembayaran Habis!</p>
+                                        <p className="text-base font-bold text-red-600 mb-4">Waktu Pembayaran Habis!</p>
                                     )}
 
                                     {pakasirData.isPaid ? (
@@ -8240,70 +8276,30 @@ Terima kasih atas kerja samanya.`;
                                             )}
 
                                             {pakasirData.step === 'SHOW_VA' && (
-                                                <div className="bg-canvas border border-whisper rounded-xl p-6 mb-4">
-                                                    <div className="w-14 h-14 rounded-xl bg-white border border-slate-200 p-2 flex items-center justify-center mx-auto mb-2 shadow-xs">
+                                                <div className="bg-slate-50 border border-slate-200 rounded-2xl p-6 mb-4 flex flex-col items-center">
+                                                    <div className="w-20 h-12 rounded-xl bg-white border border-slate-200 p-1.5 flex items-center justify-center mb-2 shadow-xs">
                                                         <img src={`/banks/${(pakasirData.method || 'bri').replace('_va','').replace('cimb_niaga','cimb')}.png`} alt="Bank" className="w-full h-full object-contain" />
                                                     </div>
-                                                    <p className="text-xs font-semibold text-steel uppercase mb-1">{getBankDisplayName(pakasirData.method)}</p>
-                                                    <div className="text-3xl font-mono font-bold text-ink tracking-wider break-all">{pakasirData.qrString}</div>
+                                                    <p className="text-xs font-bold text-slate-400 uppercase tracking-widest mb-1">{getBankDisplayName(pakasirData.method)}</p>
+                                                    <div className="text-3xl font-mono font-bold text-slate-900 tracking-wider break-all mb-4">{pakasirData.qrString}</div>
+                                                    
+                                                    <button onClick={() => copyToClipboard(pakasirData.qrString)} className="py-2.5 px-6 bg-slate-200 hover:bg-slate-300 text-slate-800 rounded-full font-bold text-xs transition-colors flex items-center justify-center gap-2">
+                                                        <Copy className="w-4 h-4" /> Copy VA
+                                                    </button>
                                                 </div>
                                             )}
 
-                                            <div className="flex gap-2 mb-6">
-                                                {pakasirData.step === 'SHOW_QR' ? (
-                                                    <button onClick={async () => {
-                                                        try {
-                                                            const res = await fetch(`https://api.qrserver.com/v1/create-qr-code/?size=500x500&data=` + encodeURIComponent(pakasirData.qrString));
-                                                            const blob = await res.blob();
-                                                            const url = window.URL.createObjectURL(blob);
-                                                            const a = document.createElement('a');
-                                                            a.style.display = 'none';
-                                                            a.href = url;
-                                                            a.download = `QRIS-${formData.id || Date.now()}.png`;
-                                                            document.body.appendChild(a);
-                                                            a.click();
-                                                            window.URL.revokeObjectURL(url);
-                                                        } catch(e) {
-                                                            alert("Gagal mengunduh QR, silakan Screenshot layar ini.");
-                                                        }
-                                                    }} className="flex-1 py-3 bg-whisper hover:bg-slate-200 text-ink rounded-xl font-semibold transition-colors flex justify-center items-center gap-2"><Download className="w-4 h-4" /> Download QR</button>
-                                                ) : (
-                                                    <>
-                                                        <button onClick={() => copyToClipboard(pakasirData.qrString)} className="flex-1 py-3 bg-whisper hover:bg-slate-200 text-ink rounded-xl font-semibold transition-colors flex justify-center items-center gap-2"><Copy className="w-4 h-4" /> Salin VA</button>
-                                                        <button onClick={() => copyToClipboard(formData.sisa)} className="flex-1 py-3 bg-whisper hover:bg-slate-200 text-ink rounded-xl font-semibold transition-colors flex justify-center items-center gap-2"><Copy className="w-4 h-4" /> Salin Nominal</button>
-                                                    </>
-                                                )}
-                                                {pakasirData.checkoutUrl && (
-                                                    <a href={pakasirData.checkoutUrl} target="_blank" rel="noreferrer" className="flex-1 py-3 bg-blue-100 hover:bg-blue-200 text-blue-700 rounded-xl font-semibold transition-colors flex justify-center items-center gap-2"><ExternalLink className="w-4 h-4" /> Buka Checkout</a>
-                                                )}
+                                            <div className="w-full p-4 bg-blue-50/60 rounded-2xl flex justify-between items-center border border-blue-100 mb-4">
+                                                <div className="text-left">
+                                                    <p className="text-xs text-blue-600 font-medium">Total Pembayaran</p>
+                                                    <p className="text-xl font-extrabold text-blue-950">Rp {(Number(formData.sisa || formData.nominal || 0) + 3000 + Number(formData.biaya_aplikasi || 0)).toLocaleString("id-ID")}</p>
+                                                </div>
+                                                <div className="flex items-center gap-2 text-xs font-bold text-blue-600">
+                                                    <span className="w-2 h-2 rounded-full bg-blue-600 animate-ping"></span> Menunggu Transfer...
+                                                </div>
                                             </div>
 
-                                            <button 
-    onClick={async () => {
-        try {
-            await fetch('/api/doku/webhook', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    order: {
-                        invoice_number: pakasirData.uniqueOrderId || formData.id,
-                        amount: formData.sisa || formData.nominal || 0
-                    },
-                    transaction: { status: 'SUCCESS' },
-                    channel: { id: (pakasirData.method || 'VIRTUAL_ACCOUNT').toUpperCase() }
-                })
-            });
-        } catch (e) {}
-        setPakasirData(prev => ({ ...prev, isPaid: true }));
-        showNotification("Simulasi pembayaran berhasil! Memproses pelunasan...");
-        setTimeout(() => { processPelunasanOtomatis(new Date().toISOString()); }, 1000);
-    }} 
-    className="w-full py-3 mb-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-semibold transition-colors flex items-center justify-center gap-2 shadow-sm"
->
-    <Check className="w-4 h-4" /> Simulasi Sukses (Test Callback Webhook)
-</button>
-
-                                            <button onClick={() => setPakasirData({ step: 'CHOOSE_METHOD', method: '', loading: false, qrString: '', url: '', checkoutUrl: '', isSandbox: false })} className="w-full py-3 mt-2 bg-transparent hover:bg-slate-50 text-steel rounded-xl font-semibold transition-colors">Pilih Pembayaran Lain</button>
+                                            <button onClick={() => setPakasirData({ step: 'CHOOSE_METHOD', method: '', loading: false, qrString: '', url: '', checkoutUrl: '', isSandbox: false })} className="w-full py-3 bg-transparent hover:bg-slate-50 text-steel rounded-xl font-semibold transition-colors">Pilih Pembayaran Lain</button>
                                         </>
                                     ) : null}
                                 </div>
