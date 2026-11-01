@@ -542,6 +542,8 @@ function App() {
     const [inputRfidEdit, setInputRfidEdit] = useState('');
     const [inputRfidDirect, setInputRfidDirect] = useState('');
     const [tabunganKelasFilter, setTabunganKelasFilter] = useState('Semua');
+    const [tabunganLimitStatusFilter, setTabunganLimitStatusFilter] = useState('Semua'); // 'Semua', 'Habis', 'HampirHabis', 'Aman', 'Bebas'
+    const [tabunganLimitPeriodeFilter, setTabunganLimitPeriodeFilter] = useState('Semua'); // 'Semua', 'harian', 'mingguan', 'bulanan'
     // --- EDIT RIWAYAT PEMOTONGAN KAS & INFAQ ---
     const [modalEditRiwayatInsidental, setModalEditRiwayatInsidental] = useState(false);
     const [formEditRiwayatInsidental, setFormEditRiwayatInsidental] = useState({
@@ -1143,11 +1145,31 @@ function App() {
             })
             .subscribe();
 
+        // Realtime Subscription untuk MasterConfig (sinkron limit tabungan & branding)
+        const configChannel = supabase
+            .channel('realtime-admin-masterconfig')
+            .on('postgres_changes', { event: '*', schema: 'public', table: 'MasterConfig' }, async () => {
+                const { data: cfgRows } = await supabase.from('MasterConfig').select('*');
+                if (cfgRows && cfgRows.length > 0) {
+                    const cfg = {};
+                    cfgRows.forEach(item => {
+                        if (item.kunci) {
+                            try {
+                                cfg[item.kunci] = (typeof item.nilai === 'string' && (item.nilai.startsWith('[') || item.nilai.startsWith('{'))) ? JSON.parse(item.nilai) : item.nilai;
+                            } catch(e) { cfg[item.kunci] = item.nilai; }
+                        }
+                    });
+                    setAppConfig(prev => ({ ...prev, ...cfg }));
+                }
+            })
+            .subscribe();
+
         return () => {
             clearInterval(interval);
             supabase.removeChannel(tagihanChannel);
             supabase.removeChannel(santriChannel);
             supabase.removeChannel(tabunganChannel);
+            supabase.removeChannel(configChannel);
         };
     }, [isLoaded]);
 
@@ -2413,8 +2435,9 @@ function App() {
         if (!santri) return { limit: 0, periode: 'harian', isCustom: false };
         const globalCfg = appConfigObj?.tabunganLimitConfig || {};
         const santriMap = globalCfg?.santriLimits || {};
-        const sNisClean = String(santri.nis || '').replace(/^0+/, '');
-        const custom = santriMap[santri.nis] || santriMap[sNisClean];
+        const sNis = String(santri.nis || '').trim();
+        const sNisClean = sNis.replace(/^0+/, '');
+        const custom = santriMap[sNis] || santriMap[sNisClean];
         
         if (custom && custom.limit !== undefined) {
             return {
@@ -2424,23 +2447,23 @@ function App() {
             };
         }
         
-        if (santri.limit_jajan_harian && Number(santri.limit_jajan_harian) > 0) {
-            return {
-                limit: Number(santri.limit_jajan_harian),
-                periode: santri.limit_periode || 'harian',
-                isCustom: true
-            };
-        }
-        
-        if (globalCfg.defaultLimit && Number(globalCfg.defaultLimit) > 0) {
+        if (globalCfg.defaultLimit !== undefined && Number(globalCfg.defaultLimit) > 0) {
             return {
                 limit: Number(globalCfg.defaultLimit),
                 periode: globalCfg.defaultPeriode || 'harian',
                 isCustom: false
             };
         }
+
+        if (santri.limit_jajan_harian && Number(santri.limit_jajan_harian) > 0) {
+            return {
+                limit: Number(santri.limit_jajan_harian),
+                periode: santri.limit_periode || globalCfg.defaultPeriode || 'harian',
+                isCustom: true
+            };
+        }
         
-        return { limit: 0, periode: 'harian', isCustom: false };
+        return { limit: 0, periode: globalCfg.defaultPeriode || 'harian', isCustom: false };
     };
 
     const handleSaveLimitTabungan = async (e) => {
@@ -2449,7 +2472,15 @@ function App() {
         const nominal = parseInt(String(limitModalData.nominal || 0).replace(/\D/g, ''), 10) || 0;
         const periode = limitModalData.periode || 'harian';
 
-        const currentConfig = { ...(appConfig.tabunganLimitConfig || {}) };
+        let currentConfig = { ...(appConfig.tabunganLimitConfig || {}) };
+        try {
+            const { data: latestRow } = await supabase.from('MasterConfig').select('nilai').eq('kunci', 'tabunganLimitConfig').maybeSingle();
+            if (latestRow?.nilai) {
+                const parsed = JSON.parse(latestRow.nilai);
+                currentConfig = { ...parsed, ...currentConfig, santriLimits: { ...(parsed.santriLimits || {}), ...(currentConfig.santriLimits || {}) } };
+            }
+        } catch (e) {}
+
         const santriLimits = { ...(currentConfig.santriLimits || {}) };
 
         let updatedSantriList = [...dataSantri];
@@ -2489,6 +2520,10 @@ function App() {
             santriLimits[targetNis] = { limit: nominal, periode: periode };
             if (targetNisClean !== targetNis) {
                 santriLimits[targetNisClean] = { limit: nominal, periode: periode };
+            }
+            const foundObj = dataSantri.find(s => String(s.nis || '').trim() === targetNis || String(s.nis || '').trim().replace(/^0+/, '') === targetNisClean);
+            if (foundObj && foundObj.nis) {
+                santriLimits[String(foundObj.nis)] = { limit: nominal, periode: periode };
             }
             currentConfig.santriLimits = santriLimits;
 
@@ -5550,11 +5585,59 @@ function App() {
         const filteredIds = paginatedTabungan.map(t => t.id);
         const allChecked = filteredIds.length > 0 && filteredIds.every(id => selectedIds.includes(id));
 
-        // Perhitungan Limit Tabungan untuk sub-tab Limit
+        const globalCfg = appConfig.tabunganLimitConfig || {};
+
+        // Hitung statistik limit untuk semua santri (Real-time untuk harian, mingguan, bulanan)
+        let totalDibatasi = 0;
+        let totalHabis = 0;
+        let habisHarian = 0;
+        let habisMingguan = 0;
+        let habisBulanan = 0;
+        let hampirHabis = 0;
+
+        dataSantri.forEach(s => {
+            const cfg = getSantriLimitConfig(s);
+            if (cfg.limit > 0) {
+                totalDibatasi++;
+                const used = getUsageInPeriod(s.nis, cfg.periode);
+                const sisa = cfg.limit - used;
+                if (sisa <= 0) {
+                    totalHabis++;
+                    if (cfg.periode === 'mingguan') habisMingguan++;
+                    else if (cfg.periode === 'bulanan') habisBulanan++;
+                    else habisHarian++;
+                } else if (sisa <= (cfg.limit * 0.25)) {
+                    hampirHabis++;
+                }
+            }
+        });
+
+        // Perhitungan Limit Tabungan untuk sub-tab Limit dengan filter status & periode
         const filteredSantriForLimit = dataSantri.filter(s => {
             const matchSearch = (s.nama || '').toLowerCase().includes(searchTerm.toLowerCase()) || String(s.nis || '').includes(searchTerm);
             const matchKelas = tabunganKelasFilter === 'Semua' || String(s.kelas).trim().toLowerCase() === String(tabunganKelasFilter).trim().toLowerCase();
-            return matchSearch && matchKelas;
+            
+            const limitCfg = getSantriLimitConfig(s);
+            const matchPeriode = tabunganLimitPeriodeFilter === 'Semua' || limitCfg.periode === tabunganLimitPeriodeFilter;
+
+            let matchStatus = true;
+            if (tabunganLimitStatusFilter !== 'Semua') {
+                if (limitCfg.limit <= 0) {
+                    matchStatus = tabunganLimitStatusFilter === 'Bebas';
+                } else {
+                    const used = getUsageInPeriod(s.nis, limitCfg.periode);
+                    const sisa = limitCfg.limit - used;
+                    if (tabunganLimitStatusFilter === 'Habis') {
+                        matchStatus = sisa <= 0;
+                    } else if (tabunganLimitStatusFilter === 'HampirHabis') {
+                        matchStatus = sisa > 0 && sisa <= (limitCfg.limit * 0.25);
+                    } else if (tabunganLimitStatusFilter === 'Aman') {
+                        matchStatus = sisa > (limitCfg.limit * 0.25);
+                    }
+                }
+            }
+
+            return matchSearch && matchKelas && matchPeriode && matchStatus;
         });
 
         const runningBalanceMap = computeRunningBalanceMap(dataTabungan);
@@ -5565,8 +5648,7 @@ function App() {
             const isWithdraw = j === 'tarik' || j === 'keluar' || j.includes('tarik') || j.includes('keluar') || j === 'debet' || j === 'debit';
             return isWithdraw ? sum - nom : sum + nom;
         }, 0);
-        const santriWithLimitCount = dataSantri.filter(s => getSantriLimitConfig(s).limit > 0).length;
-        const globalCfg = appConfig.tabunganLimitConfig || {};
+        const santriWithLimitCount = totalDibatasi;
 
         return (
             <div className="space-y-6 animate-in fade-in duration-500">
@@ -5772,13 +5854,34 @@ function App() {
                                     <span className="text-xs text-steel font-semibold uppercase">Santri Dibatasi</span>
                                 </div>
                                 <div className="text-xl font-bold text-amber-600">{santriWithLimitCount} <span className="text-xs text-steel font-normal">dari {dataSantri.length} santri</span></div>
+                                <div className="text-[11px] text-steel mt-1 font-mono">Bebas: <strong className="text-blue-600">{dataSantri.length - santriWithLimitCount}</strong> santri</div>
+                            </div>
+                            <div 
+                                className={`border p-5 rounded-2xl shadow-sm cursor-pointer transition-all ${tabunganLimitStatusFilter === 'Habis' ? 'bg-rose-100/70 border-rose-400 ring-2 ring-rose-400' : 'bg-surface border-whisper hover:border-rose-300'}`}
+                                onClick={() => setTabunganLimitStatusFilter(prev => prev === 'Habis' ? 'Semua' : 'Habis')}
+                                title="Klik untuk filter santri yang limitnya habis"
+                            >
+                                <div className="flex items-center justify-between mb-2">
+                                    <div className="flex items-center gap-2">
+                                        <div className="w-8 h-8 rounded-lg bg-rose-50 text-rose-600 flex items-center justify-center font-bold"><AlertCircle className="w-4 h-4" /></div>
+                                        <span className="text-xs text-steel font-semibold uppercase">Limit Habis</span>
+                                    </div>
+                                    {totalHabis > 0 && <span className="px-2 py-0.5 text-[10px] font-bold rounded-full bg-rose-600 text-white animate-pulse">Perlu Cek</span>}
+                                </div>
+                                <div className="text-xl font-black text-rose-600">{totalHabis} <span className="text-xs text-steel font-normal">santri over-limit</span></div>
+                                <div className="flex flex-wrap gap-1.5 text-[10px] text-steel font-mono mt-1 pt-1 border-t border-border/40">
+                                    <span>Harian: <strong className="text-rose-600">{habisHarian}</strong></span> • 
+                                    <span>Mingguan: <strong className="text-rose-600">{habisMingguan}</strong></span> • 
+                                    <span>Bulanan: <strong className="text-rose-600">{habisBulanan}</strong></span>
+                                </div>
                             </div>
                             <div className="bg-surface border border-whisper p-5 rounded-2xl shadow-sm">
                                 <div className="flex items-center gap-3 mb-2">
                                     <div className="w-8 h-8 rounded-lg bg-blue-50 text-blue-600 flex items-center justify-center font-bold"><ShieldCheck className="w-4 h-4" /></div>
-                                    <span className="text-xs text-steel font-semibold uppercase">Tanpa Batasan</span>
+                                    <span className="text-xs text-steel font-semibold uppercase">Status Keamanan</span>
                                 </div>
-                                <div className="text-xl font-bold text-blue-600">{dataSantri.length - santriWithLimitCount} <span className="text-xs text-steel font-normal">santri bebas</span></div>
+                                <div className="text-xl font-bold text-blue-600">{dataSantri.length - totalHabis} <span className="text-xs text-steel font-normal">santri aktif aman</span></div>
+                                <div className="text-[11px] text-steel mt-1 font-mono">Mendekati limit: <strong className="text-amber-600">{hampirHabis}</strong> santri</div>
                             </div>
                             <div className="bg-surface border border-whisper p-5 rounded-2xl shadow-sm">
                                 <div className="flex items-center gap-3 mb-2">
@@ -5791,31 +5894,64 @@ function App() {
                                         : 'Tidak Dibatasi'
                                     }
                                 </div>
+                                <div className="text-[11px] text-steel mt-1">Berlaku untuk santri tanpa limit khusus</div>
                             </div>
                         </div>
 
-                        {/* Search & Kelas Filter Bar */}
+                        {/* Search & Filter Bar Lengkap */}
                         <div className="bg-surface border border-whisper shadow-sm rounded-card overflow-hidden">
-                            <div className="p-4 border-b border-whisper/50 flex flex-col sm:flex-row justify-between items-center gap-3 bg-canvas/40">
-                                <div className="flex items-center gap-2 w-full sm:w-auto">
-                                    <span className="text-xs font-semibold text-steel uppercase">Filter Kelas:</span>
-                                    <select 
-                                        value={tabunganKelasFilter} 
-                                        onChange={(e) => setTabunganKelasFilter(e.target.value)} 
-                                        className={`${inputBase} py-1.5 text-xs w-auto`}
-                                    >
-                                        <option value="Semua">Semua Kelas</option>
-                                        {masterKelasList.map(k => <option key={k} value={k}>{k}</option>)}
-                                    </select>
+                            <div className="p-4 border-b border-whisper/50 flex flex-col md:flex-row justify-between items-stretch md:items-center gap-3 bg-canvas/40">
+                                <div className="flex flex-wrap items-center gap-2.5">
+                                    <div className="flex items-center gap-1.5">
+                                        <span className="text-xs font-semibold text-steel uppercase">Kelas:</span>
+                                        <select 
+                                            value={tabunganKelasFilter} 
+                                            onChange={(e) => setTabunganKelasFilter(e.target.value)} 
+                                            className={`${inputBase} py-1.5 text-xs w-auto`}
+                                        >
+                                            <option value="Semua">Semua Kelas</option>
+                                            {masterKelasList.map(k => <option key={k} value={k}>{k}</option>)}
+                                        </select>
+                                    </div>
+
+                                    <div className="flex items-center gap-1.5">
+                                        <span className="text-xs font-semibold text-steel uppercase">Status:</span>
+                                        <select 
+                                            value={tabunganLimitStatusFilter} 
+                                            onChange={(e) => setTabunganLimitStatusFilter(e.target.value)} 
+                                            className={`${inputBase} py-1.5 text-xs w-auto font-medium ${tabunganLimitStatusFilter === 'Habis' ? 'text-rose-600 font-bold border-rose-300 bg-rose-50' : ''}`}
+                                        >
+                                            <option value="Semua">Semua Status</option>
+                                            <option value="Habis">🔴 Limit Habis ({totalHabis})</option>
+                                            <option value="HampirHabis">🟡 Mendekati Limit ({hampirHabis})</option>
+                                            <option value="Aman">🟢 Aman</option>
+                                            <option value="Bebas">Bebas (Tanpa Limit)</option>
+                                        </select>
+                                    </div>
+
+                                    <div className="flex items-center gap-1.5">
+                                        <span className="text-xs font-semibold text-steel uppercase">Periode:</span>
+                                        <select 
+                                            value={tabunganLimitPeriodeFilter} 
+                                            onChange={(e) => setTabunganLimitPeriodeFilter(e.target.value)} 
+                                            className={`${inputBase} py-1.5 text-xs w-auto`}
+                                        >
+                                            <option value="Semua">Semua Periode</option>
+                                            <option value="harian">Harian</option>
+                                            <option value="mingguan">Mingguan</option>
+                                            <option value="bulanan">Bulanan</option>
+                                        </select>
+                                    </div>
                                 </div>
-                                <div className="relative w-full sm:w-auto">
+
+                                <div className="relative w-full md:w-auto">
                                     <Search className="w-4 h-4 absolute left-3 top-3 text-steel" />
                                     <input 
                                         type="text" 
                                         placeholder="Cari santri / NIS..." 
                                         value={searchTerm} 
                                         onChange={(e) => setSearchTerm(e.target.value)} 
-                                        className={`${inputBase} pl-9 w-full sm:w-64`} 
+                                        className={`${inputBase} pl-9 w-full md:w-64`} 
                                     />
                                 </div>
                             </div>
@@ -5837,7 +5973,7 @@ function App() {
                                     </thead>
                                     <tbody className="divide-y divide-slate-100">
                                         {filteredSantriForLimit.length === 0 ? (
-                                            <tr><td colSpan="8" className="text-center py-8 text-steel">Tidak ada santri ditemukan.</td></tr>
+                                            <tr><td colSpan="8" className="text-center py-8 text-steel">Tidak ada santri ditemukan sesuai filter.</td></tr>
                                         ) : filteredSantriForLimit.map((s) => {
                                             const saldo = getSantriSaldoTabungan(s.nis);
                                             
@@ -5848,9 +5984,16 @@ function App() {
                                             const periodeLabel = limitCfg.periode === 'mingguan' ? 'Minggu' : limitCfg.periode === 'bulanan' ? 'Bulan' : 'Hari';
 
                                             return (
-                                                <tr key={s.nis} className="bg-surface hover:bg-canvas transition-colors">
+                                                <tr key={s.nis} className={`transition-colors ${sisa !== null && sisa <= 0 ? 'bg-rose-50/40 hover:bg-rose-50/70' : 'bg-surface hover:bg-canvas'}`}>
                                                     <td className="px-6 py-4 font-mono text-xs text-steel">{s.nis}</td>
-                                                    <td className="px-6 py-4 font-semibold text-ink">{s.nama}</td>
+                                                    <td className="px-6 py-4 font-semibold text-ink">
+                                                        <div>{s.nama}</div>
+                                                        {sisa !== null && sisa <= 0 && (
+                                                            <span className="inline-flex items-center gap-1 text-[10px] font-bold text-rose-600 bg-rose-100/80 px-1.5 py-0.5 rounded mt-0.5">
+                                                                <AlertCircle className="w-3 h-3" /> Over-Limit ({periodeLabel})
+                                                            </span>
+                                                        )}
+                                                    </td>
                                                     <td className="px-6 py-4 text-steel text-xs"><span className="px-2 py-1 bg-slate-100 rounded-md font-medium">{s.kelas || '-'}</span></td>
                                                     <td className="px-6 py-4 text-right font-bold text-emerald-600">Rp {saldo.toLocaleString('id-ID')}</td>
                                                     <td className="px-6 py-4 text-center">
@@ -5882,9 +6025,25 @@ function App() {
                                                     </td>
                                                     <td className="px-6 py-4 text-right font-bold">
                                                         {limitCfg.limit > 0 ? (
-                                                            <span className={`text-xs px-2 py-1 rounded-md ${sisa <= 0 ? 'bg-rose-50 text-rose-700 font-bold' : sisa <= (limitCfg.limit * 0.25) ? 'bg-amber-50 text-amber-700' : 'text-emerald-700 bg-emerald-50'}`}>
-                                                                Rp {sisa.toLocaleString('id-ID')}
-                                                            </span>
+                                                            sisa <= 0 ? (
+                                                                <div className="inline-flex flex-col items-end">
+                                                                    <span className="text-xs px-2.5 py-1 rounded-md bg-rose-100 text-rose-700 font-bold border border-rose-300 flex items-center gap-1">
+                                                                        <AlertCircle className="w-3.5 h-3.5 text-rose-600" /> HABIS (Rp 0)
+                                                                    </span>
+                                                                    <span className="text-[10px] text-rose-600 font-semibold mt-0.5">
+                                                                        Limit {periodeLabel} Terlampaui
+                                                                    </span>
+                                                                </div>
+                                                            ) : (
+                                                                <div className="inline-flex flex-col items-end">
+                                                                    <span className={`text-xs px-2.5 py-1 rounded-md ${sisa <= (limitCfg.limit * 0.25) ? 'bg-amber-50 text-amber-700 border border-amber-200' : 'text-emerald-700 bg-emerald-50 border border-emerald-200'}`}>
+                                                                        Rp {sisa.toLocaleString('id-ID')}
+                                                                    </span>
+                                                                    <span className="text-[10px] text-steel mt-0.5">
+                                                                        Sisa {periodeLabel} Ini
+                                                                    </span>
+                                                                </div>
+                                                            )
                                                         ) : (
                                                             <span className="text-steel text-xs font-normal">Tak Terbatas</span>
                                                         )}
