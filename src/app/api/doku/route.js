@@ -83,6 +83,10 @@ export async function POST(request) {
         'cimb_niaga_va': 'cimb',
         'danamon_va': 'danamon',
         'danamon': 'danamon',
+        'permata_va': 'permata',
+        'permata': 'permata',
+        'mandiri_va': 'mandiri',
+        'mandiri': 'mandiri',
         'doku_va': 'doku',
         'doku': 'doku'
       };
