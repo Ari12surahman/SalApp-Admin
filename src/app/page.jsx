@@ -8174,7 +8174,7 @@ Terima kasih atas kerja samanya.`;
                                         <div className="w-full flex items-center justify-between p-3.5 border border-slate-200 rounded-xl bg-slate-50 opacity-60 cursor-not-allowed">
                                             <div className="flex items-center gap-3.5">
                                                 <div className="w-10 h-10 rounded-lg bg-white border border-slate-200 p-1.5 flex items-center justify-center shrink-0">
-                                                    <img src="/banks/qris.svg" alt="QRIS" className="w-full h-full object-contain opacity-50" />
+                                                    <img src="/banks/qris.png" alt="QRIS" className="w-full h-full object-contain opacity-50" />
                                                 </div>
                                                 <div className="text-left">
                                                     <span className="font-semibold text-slate-600 block text-sm">QRIS (Gopay, OVO, Dana, ShopeePay)</span>
@@ -8185,12 +8185,12 @@ Terima kasih atas kerja samanya.`;
                                         </div>
 
                                         {[
-                                            { id: 'bri_va', name: 'Bank BRI', logo: '/banks/bri.svg' },
-                                            { id: 'bni_va', name: 'Bank BNI', logo: '/banks/bni.svg' },
-                                            { id: 'bsi_va', name: 'Bank Syariah Indonesia (BSI)', logo: '/banks/bsi.svg' },
-                                            { id: 'cimb_niaga_va', name: 'Bank CIMB Niaga', logo: '/banks/cimb.svg' },
-                                            { id: 'danamon_va', name: 'Bank Danamon', logo: '/banks/danamon.svg' },
-                                            { id: 'permata_va', name: 'Bank Permata', logo: '/banks/permata.svg' }
+                                            { id: 'bri_va', name: 'Bank BRI', logo: '/banks/bri.png' },
+                                            { id: 'bni_va', name: 'Bank BNI', logo: '/banks/bni.png' },
+                                            { id: 'bsi_va', name: 'Bank Syariah Indonesia (BSI)', logo: '/banks/bsi.png' },
+                                            { id: 'cimb_niaga_va', name: 'Bank CIMB Niaga', logo: '/banks/cimb.png' },
+                                            { id: 'danamon_va', name: 'Bank Danamon', logo: '/banks/danamon.png' },
+                                            { id: 'permata_va', name: 'Bank Permata', logo: '/banks/permata.png' }
                                         ].map(bank => (
                                             <button key={bank.id} onClick={() => handleGeneratePakasirQR(bank.id)} className="w-full flex items-center justify-between p-3.5 border border-whisper rounded-xl hover:bg-canvas hover:border-blue-400 transition-all">
                                                 <div className="flex items-center gap-3.5">
@@ -8242,7 +8242,7 @@ Terima kasih atas kerja samanya.`;
                                             {pakasirData.step === 'SHOW_VA' && (
                                                 <div className="bg-canvas border border-whisper rounded-xl p-6 mb-4">
                                                     <div className="w-14 h-14 rounded-xl bg-white border border-slate-200 p-2 flex items-center justify-center mx-auto mb-2 shadow-xs">
-                                                        <img src={`/banks/${(pakasirData.method || 'bri').replace('_va','').replace('cimb_niaga','cimb')}.svg`} alt="Bank" className="w-full h-full object-contain" />
+                                                        <img src={`/banks/${(pakasirData.method || 'bri').replace('_va','').replace('cimb_niaga','cimb')}.png`} alt="Bank" className="w-full h-full object-contain" />
                                                     </div>
                                                     <p className="text-xs font-semibold text-steel uppercase mb-1">{getBankDisplayName(pakasirData.method)}</p>
                                                     <div className="text-3xl font-mono font-bold text-ink tracking-wider break-all">{pakasirData.qrString}</div>
