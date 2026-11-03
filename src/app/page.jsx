@@ -1010,82 +1010,52 @@ function App() {
         }
     }, []);
 
-    // Background Auto-Refresh (Polling)
+    // Background Auto-Refresh (Optimized Polling - hemat Egress)
     useEffect(() => {
         if (!isLoaded) return;
         const interval = setInterval(() => {
-            if (true) {
+            // Hemat kuota: Jangan jalankan query jika tab browser sedang tidak aktif / diminimize
+            if (typeof document !== 'undefined' && document.hidden) return;
 
-                (async () => {
-                    try {
-                        const tables = ['Santri', 'Pegawai', 'Admin', 'Tagihan', 'Pembayaran', 'Tabungan', 'Kas', 'Gaji', 'Logs', 'MasterPeriode', 'MasterJabatan', 'MasterKelas', 'MasterTagihan', 'MasterConfig', 'MasterRoleAccess'];
-                        const result = {};
-                        for (const t of tables) {
-                            let actualT = t;
-                            if (t === 'Santri') actualT = 'Data Santri';
-                            if (t === 'Pegawai') actualT = 'Data Pegawai';
-
-                            const data = await fetchAllSupabaseRows(actualT);
-                            result[t] = data ? sortSupabaseData(actualT, data) : [];
-                        }
-                        const jsonStr = JSON.stringify(result);
-
-                        try {
-                            const data = JSON.parse(jsonStr);
-
-                            const updateIfChanged = (sheet, setter) => {
-                                const serverStr = JSON.stringify(data[sheet] || []);
-                                if (window['lastSync_' + sheet] !== serverStr) {
-                                    // Jangan timpa jika ada save yang masih pending atau baru saja menulis
-                                    if (window['_pending_' + sheet]) return;
-                                    if (window['lastWrite_' + sheet] && Date.now() - window['lastWrite_' + sheet] < 30000) {
-                                        return;
-                                    }
-                                    window['lastSync_' + sheet] = serverStr;
-                                    setter(data[sheet] || []);
-                                }
-                            };
-
-                            updateIfChanged('Santri', setDataSantri);
-                            updateIfChanged('Pegawai', setDataPegawai);
-                            updateIfChanged('Tagihan', (val) => setDataTagihan((val || []).filter(t => String(t.status || '').trim().toLowerCase() !== 'lunas')));
-                            updateIfChanged('Pembayaran', setDataPembayaran);
-                            updateIfChanged('Tabungan', setDataTabungan);
-                            updateIfChanged('Kas', setDataKas);
-                            updateIfChanged('Gaji', setDataGaji);
-                            updateIfChanged('MasterTagihan', (val) => {
-                                if (Array.isArray(val) && val.length > 0) setMasterTagihanList(val);
-                            });
-                            updateIfChanged('MasterConfig', (val) => {
-                                if (Array.isArray(val) && val.length > 0) {
-                                    const cfg = {};
-                                    val.forEach(item => {
-                                        if (item.kunci) {
-                                            try {
-                                                cfg[item.kunci] = (typeof item.nilai === 'string' && (item.nilai.startsWith('[') || item.nilai.startsWith('{'))) ? JSON.parse(item.nilai) : item.nilai;
-                                            } catch (e) { cfg[item.kunci] = item.nilai; }
-                                        }
-                                    });
-                                    setAppConfig(prev => ({ ...prev, ...cfg, appLogo: cfg.appLogo || prev.appLogo || '/logo.png' }));
-                                }
-                            });
-                            updateIfChanged('MasterRoleAccess', (val) => {
-                                if (Array.isArray(val) && val.length > 0) {
-                                    setDataRoleAccess(val.map(r => ({
-                                        jabatan: r.jabatan,
-                                        aksesMenu: typeof r.aksesMenu === 'string' ? r.aksesMenu.split(',').filter(Boolean) : (r.aksesMenu || [])
-                                    })));
-                                }
-                            });
-                        } catch (e) { }
-
-                    } catch (err) {
-                        console.error("Error fetching initial data", err);
+            (async () => {
+                try {
+                    // Hanya polling tabel transaksi dinamis (Logs, Santri, Pegawai, Master dll tidak perlu di-polling terus menerus)
+                    const tables = ['Tagihan', 'Pembayaran', 'Tabungan', 'Kas', 'Gaji'];
+                    const result = {};
+                    for (const t of tables) {
+                        const data = await fetchAllSupabaseRows(t);
+                        result[t] = data ? sortSupabaseData(t, data) : [];
                     }
-                })();
+                    const jsonStr = JSON.stringify(result);
 
-            }
-        }, 15000); // 15 detik
+                    try {
+                        const data = JSON.parse(jsonStr);
+
+                        const updateIfChanged = (sheet, setter) => {
+                            const serverStr = JSON.stringify(data[sheet] || []);
+                            if (window['lastSync_' + sheet] !== serverStr) {
+                                // Jangan timpa jika ada save yang masih pending atau baru saja menulis
+                                if (window['_pending_' + sheet]) return;
+                                if (window['lastWrite_' + sheet] && Date.now() - window['lastWrite_' + sheet] < 30000) {
+                                    return;
+                                }
+                                window['lastSync_' + sheet] = serverStr;
+                                setter(data[sheet] || []);
+                            }
+                        };
+
+                        updateIfChanged('Tagihan', (val) => setDataTagihan((val || []).filter(t => String(t.status || '').trim().toLowerCase() !== 'lunas')));
+                        updateIfChanged('Pembayaran', setDataPembayaran);
+                        updateIfChanged('Tabungan', setDataTabungan);
+                        updateIfChanged('Kas', setDataKas);
+                        updateIfChanged('Gaji', setDataGaji);
+                    } catch (e) { }
+
+                } catch (err) {
+                    console.error("Error fetching background data", err);
+                }
+            })();
+        }, 90000); // 90 detik (sebelumnya 15 detik), menghemat lebih dari 85% Egress
 
         // Realtime Subscription untuk Tagihan
         const tagihanChannel = supabase
@@ -1148,6 +1118,38 @@ function App() {
             })
             .subscribe();
 
+        // Realtime Subscription untuk Pembayaran
+        const pembayaranChannel = supabase
+            .channel('realtime-admin-pembayaran')
+            .on('postgres_changes', { event: '*', schema: 'public', table: 'Pembayaran' }, async () => {
+                const data = await fetchAllSupabaseRows('Pembayaran');
+                if (data) {
+                    const sortedData = sortSupabaseData('Pembayaran', data);
+                    const serverStr = JSON.stringify(sortedData);
+                    if (!window['_pending_Pembayaran'] && (!window['lastWrite_Pembayaran'] || Date.now() - window['lastWrite_Pembayaran'] >= 30000)) {
+                        window['lastSync_Pembayaran'] = serverStr;
+                        setDataPembayaran(sortedData);
+                    }
+                }
+            })
+            .subscribe();
+
+        // Realtime Subscription untuk Kas
+        const kasChannel = supabase
+            .channel('realtime-admin-kas')
+            .on('postgres_changes', { event: '*', schema: 'public', table: 'Kas' }, async () => {
+                const data = await fetchAllSupabaseRows('Kas');
+                if (data) {
+                    const sortedData = sortSupabaseData('Kas', data);
+                    const serverStr = JSON.stringify(sortedData);
+                    if (!window['_pending_Kas'] && (!window['lastWrite_Kas'] || Date.now() - window['lastWrite_Kas'] >= 30000)) {
+                        window['lastSync_Kas'] = serverStr;
+                        setDataKas(sortedData);
+                    }
+                }
+            })
+            .subscribe();
+
         // Realtime Subscription untuk MasterConfig (sinkron limit tabungan & branding)
         const configChannel = supabase
             .channel('realtime-admin-masterconfig')
@@ -1172,6 +1174,8 @@ function App() {
             supabase.removeChannel(tagihanChannel);
             supabase.removeChannel(santriChannel);
             supabase.removeChannel(tabunganChannel);
+            supabase.removeChannel(pembayaranChannel);
+            supabase.removeChannel(kasChannel);
             supabase.removeChannel(configChannel);
         };
     }, [isLoaded]);
@@ -6204,17 +6208,26 @@ function App() {
     const fetchPencairanGlobal = async () => {
         setLoadingPencairan(true);
         try {
-            const [pRes, wRes, cfgRes] = await Promise.all([
+            const queries = [
                 supabase.from('Pencairan').select('*').order('WaktuPengajuan', { ascending: false }),
-                supabase.from('Warung').select('*'),
                 supabase.from('MasterConfig').select('*').in('kunci', ['pencairanFeeConfig', 'pencairanFeeHistory'])
-            ]);
+            ];
+            // Hanya fetch Warung jika belum ada di state (hemat Egress)
+            if (!dataWarung || dataWarung.length === 0) {
+                queries.push(supabase.from('Warung').select('*'));
+            }
+
+            const results = await Promise.all(queries);
+            const pRes = results[0];
+            const cfgRes = results[1];
+            const wRes = results[2];
+
             if (!pRes.error) {
                 setDataPencairan(pRes.data || []);
             } else {
                 showNotification('Gagal memuat data pencairan', 'error');
             }
-            if (!wRes.error) {
+            if (wRes && !wRes.error) {
                 setDataWarung(wRes.data || []);
             }
             if (cfgRes?.data && cfgRes.data.length > 0) {
@@ -6239,8 +6252,9 @@ function App() {
         if (activeTab === 'pencairan') {
             fetchPencairanGlobal();
             interval = setInterval(() => {
+                if (typeof document !== 'undefined' && document.hidden) return;
                 fetchPencairanGlobal();
-            }, 10000); // Polling 10 detik
+            }, 30000); // 30 detik (sebelumnya 10 detik) & skip saat tab tidak aktif
         }
         return () => {
             if (interval) clearInterval(interval);
