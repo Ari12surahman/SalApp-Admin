@@ -378,22 +378,42 @@ import {
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from "recharts";
 import * as XLSX from "xlsx";
 
-// Helper nama bank Pakasir v2
+// Helper nama bank WijayaPay
 const getBankDisplayName = (method) => {
     const map = {
+        qris: 'QRIS Dinamis',
+        bca_va: 'BCA Virtual Account',
+        mandiri_va: 'Mandiri Virtual Account',
         bri_va: 'BRI Virtual Account',
         bni_va: 'BNI Virtual Account',
         bsi_va: 'BSI Virtual Account',
         cimb_niaga_va: 'CIMB Niaga VA',
+        cimb_va: 'CIMB Niaga VA',
+        permata_va: 'Bank Permata VA',
         danamon_va: 'Danamon VA',
-        muamalat_va: 'Muamalat VA',
-        ocbc_va: 'OCBC VA',
         maybank_va: 'Maybank VA',
+        ocbc_va: 'OCBC VA',
+        muamalat_va: 'Muamalat VA',
         bnc_va: 'Bank Neo Commerce (BNC)',
-        qris: 'QRIS',
         payment_link: 'Payment Link'
     };
     return map[method] || String(method || '').replace('_va', ' VA').toUpperCase();
+};
+
+const getBankLogo = (method) => {
+    const m = String(method || '').toLowerCase();
+    if (m.includes('bca')) return '/banks/bca.svg';
+    if (m.includes('mandiri')) return '/banks/mandiri.svg';
+    if (m.includes('bri')) return '/banks/bri.svg';
+    if (m.includes('bni')) return '/banks/bni.svg';
+    if (m.includes('bsi') || m.includes('bsm')) return '/banks/bsi.svg';
+    if (m.includes('cimb')) return '/banks/cimb.svg';
+    if (m.includes('permata')) return '/banks/permata.svg';
+    if (m.includes('danamon')) return '/banks/danamon.svg';
+    if (m.includes('maybank')) return '/banks/maybank.svg';
+    if (m.includes('ocbc')) return '/banks/ocbc.svg';
+    if (m.includes('qris')) return '/banks/qris.svg';
+    return null;
 };
 
 // --- CSS Classes (Stitch Design Taste) ---
@@ -1601,10 +1621,10 @@ function App() {
                 const apiKey = masterRef?.pakasirApiKey || masterRef?.pakasir_apikey || masterRef?.PAKASIR_APIKEY || appConfig.pakasirApiKey || appConfig.pakasir_apikey || appConfig.PAKASIR_APIKEY || 'xxx123';
 
                 let data;
-                const res = await fetch('/api/doku', {
+                const res = await fetch('/api/wijayapay', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ action: 'checkDokuStatus', data: { orderId: pakasirData.txnId || formData.id } })
+                    body: JSON.stringify({ action: 'checkStatus', data: { orderId: pakasirData.txnId || formData.id } })
                 });
                 data = await res.json();
 
@@ -1666,10 +1686,10 @@ function App() {
             }]);
 
             let data;
-            const res = await fetch('/api/doku', {
+            const res = await fetch('/api/wijayapay', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ action: 'requestDokuPayment', data: { method, amount: amountToPay, orderId: uniqueOrderId, customerName: formData.nama || 'Santri', tipe: 'TAGIHAN_ADMIN', tagihanData: tRef || formData } })
+                body: JSON.stringify({ action: 'requestPayment', data: { method, amount: amountToPay, orderId: uniqueOrderId, customerName: formData.nama || 'Santri', tipe: 'TAGIHAN_ADMIN', tagihanData: tRef || formData } })
             });
             
             let rawData = await res.json();
@@ -1700,12 +1720,19 @@ function App() {
             }
         } catch (error) {
             console.error('Payment Catch Error:', error);
-            const isQris = method === 'QRIS' || method === 'qris';
-            const mockString = isQris ? "00020101021226610016ID.CO.SHOPEE.WWW01189360091800216005230208216005230303UME51440014ID.CO.QRIS.WWW0215ID10243228429300303UME5204792953033605409100003.005802ID5907Pakasir6012KAB.KEBUMEN61055439262230519SP25RZRATEQI2HQ65Q46304A079" : "8023123456789012";
-            setPakasirTimeLeft(900);
-            setPakasirData({ step: isQris ? 'SHOW_QR' : 'SHOW_VA', method: method, loading: false, qrString: mockString, url: '', isSandbox: true });
-            addLog('INTEGRATION', 'PEMBAYARAN ONLINE', `Simulasi pembayaran ${isQris ? 'QRIS' : 'Virtual Account'} untuk ${formData.id}`);
-            showNotification(`Info: ${error.message || error}.`);
+            const errStr = String(error?.message || error || '');
+            const ipMatch = errStr.match(/(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})/);
+            const detectedIp = ipMatch ? ipMatch[1] : '';
+
+            setPakasirData({ 
+                step: 'ERROR', 
+                method: method, 
+                loading: false, 
+                errorMessage: errStr,
+                detectedIp: detectedIp,
+                uniqueOrderId: uniqueOrderId
+            });
+            showNotification(`Info: ${errStr}`);
         }
     };
 
@@ -8211,38 +8238,78 @@ Terima kasih atas kerja samanya.`;
                                 <div className="animate-fade-in-up">
                                     <h3 className="text-lg font-bold text-ink mb-3">Pilih Metode Pembayaran</h3>
                                     <div className="space-y-3 mb-2 max-h-80 overflow-y-auto pr-2">
-                                        <div className="w-full flex items-center justify-between p-3.5 border border-slate-200 rounded-xl bg-slate-50 opacity-60 cursor-not-allowed">
+                                        {/* QRIS Aktif */}
+                                        <button 
+                                            type="button" 
+                                            onClick={() => handleGeneratePakasirQR('qris')} 
+                                            className="w-full flex items-center justify-between p-3.5 border-2 border-emerald-400 bg-emerald-50/50 rounded-xl hover:bg-emerald-50 hover:border-emerald-500 transition-all shadow-xs group"
+                                        >
                                             <div className="flex items-center gap-3.5">
-                                                <div className="w-10 h-10 rounded-lg bg-white border border-slate-200 p-1.5 flex items-center justify-center shrink-0">
-                                                    <img src="/banks/qris.png" alt="QRIS" className="w-full h-full object-contain opacity-50" />
+                                                <div className="w-12 h-10 rounded-lg bg-white border border-emerald-200 p-1 flex items-center justify-center shrink-0 shadow-xs">
+                                                    <img src="/banks/qris.svg" alt="QRIS" className="w-full h-full object-contain" />
                                                 </div>
                                                 <div className="text-left">
-                                                    <span className="font-semibold text-slate-600 block text-sm">QRIS (Gopay, OVO, Dana, ShopeePay)</span>
-                                                    <span className="text-[10px] text-slate-500 font-semibold bg-slate-200/80 px-1.5 py-0.5 rounded">Segera Hadir</span>
+                                                    <span className="font-bold text-emerald-950 block text-sm">QRIS Dinamis (Otomatis)</span>
+                                                    <span className="text-[11px] text-emerald-700">BCA, Mandiri, BRI, BNI, GoPay, OVO, Dana, ShopeePay</span>
                                                 </div>
                                             </div>
-                                            <span className="text-xs text-slate-400 font-medium">Dalam Pemeliharaan</span>
-                                        </div>
+                                            <span className="text-xs bg-emerald-600 text-white font-bold px-2.5 py-1 rounded-md">Instan</span>
+                                        </button>
+
+                                        <p className="text-xs font-bold text-slate-400 uppercase tracking-wider pt-2 pb-1">Virtual Account Bank (WijayaPay)</p>
 
                                         {[
-                                            { id: 'bri_va', name: 'Bank BRI', logo: '/banks/bri.png' },
-                                            { id: 'bni_va', name: 'Bank BNI', logo: '/banks/bni.png' },
-                                            { id: 'bsi_va', name: 'Bank Syariah Indonesia (BSI)', logo: '/banks/bsi.png' },
-                                            { id: 'cimb_niaga_va', name: 'Bank CIMB Niaga', logo: '/banks/cimb.png' },
-                                            { id: 'danamon_va', name: 'Bank Danamon', logo: '/banks/danamon.png' },
-                                            { id: 'permata_va', name: 'Bank Permata', logo: '/banks/permata.png' }
+                                            { id: 'bca_va', name: 'Bank BCA', logo: '/banks/bca.svg' },
+                                            { id: 'mandiri_va', name: 'Bank Mandiri', logo: '/banks/mandiri.svg' },
+                                            { id: 'bri_va', name: 'Bank BRI', logo: '/banks/bri.svg' },
+                                            { id: 'bni_va', name: 'Bank BNI', logo: '/banks/bni.svg' },
+                                            { id: 'bsi_va', name: 'Bank Syariah Indonesia (BSI)', logo: '/banks/bsi.svg' },
+                                            { id: 'cimb_niaga_va', name: 'Bank CIMB Niaga', logo: '/banks/cimb.svg' },
+                                            { id: 'permata_va', name: 'Bank Permata', logo: '/banks/permata.svg' },
+                                            { id: 'danamon_va', name: 'Bank Danamon', logo: '/banks/danamon.svg' },
+                                            { id: 'maybank_va', name: 'Bank Maybank', logo: '/banks/maybank.svg' },
+                                            { id: 'ocbc_va', name: 'Bank OCBC', logo: '/banks/ocbc.svg' },
                                         ].map(bank => (
-                                            <button key={bank.id} onClick={() => handleGeneratePakasirQR(bank.id)} className="w-full flex items-center justify-between p-3.5 border border-whisper rounded-xl hover:bg-canvas hover:border-blue-400 transition-all">
+                                            <button key={bank.id} onClick={() => handleGeneratePakasirQR(bank.id)} className="w-full flex items-center justify-between p-3.5 border border-whisper rounded-xl hover:bg-canvas hover:border-blue-400 transition-all group bg-white">
                                                 <div className="flex items-center gap-3.5">
-                                                    <div className="w-10 h-10 rounded-lg bg-white border border-slate-200 p-1 flex items-center justify-center shrink-0 shadow-xs">
+                                                    <div className="w-12 h-10 rounded-lg bg-white border border-slate-200 p-1 flex items-center justify-center shrink-0 shadow-xs">
                                                         <img src={bank.logo} alt={bank.name} className="w-full h-full object-contain" />
                                                     </div>
-                                                    <span className="font-semibold text-ink text-left">{bank.name}</span>
+                                                    <div className="text-left">
+                                                        <span className="font-semibold text-ink block text-sm group-hover:text-blue-600 transition-colors">{bank.name}</span>
+                                                        <span className="text-[11px] text-slate-400">Virtual Account Otomatis</span>
+                                                    </div>
                                                 </div>
-                                                <ArrowRight className="w-4 h-4 text-steel" />
+                                                <ArrowRight className="w-4 h-4 text-steel group-hover:text-blue-600 group-hover:translate-x-0.5 transition-all" />
                                             </button>
                                         ))}
                                     </div>
+                                </div>
+                            )}
+
+                            {pakasirData.step === 'ERROR' && (
+                                <div className="text-center py-6 px-4 bg-red-50 border border-red-200 rounded-2xl animate-fade-in-up">
+                                    <div className="w-12 h-12 bg-red-100 text-red-600 rounded-full flex items-center justify-center mx-auto mb-3">
+                                        <X className="w-6 h-6" />
+                                    </div>
+                                    <h4 className="font-bold text-red-800 text-base mb-1">Gagal Menghubungkan ke WijayaPay</h4>
+                                    <p className="text-xs text-red-700 mb-4 max-w-sm mx-auto leading-relaxed">
+                                        {pakasirData.errorMessage || "Terjadi kesalahan saat memproses transaksi."}
+                                    </p>
+                                    {pakasirData.errorMessage?.includes('whitelist') && (
+                                        <div className="p-3 bg-white rounded-xl border border-red-200 text-left text-xs text-slate-700 mb-4">
+                                            <p className="font-bold text-slate-900 mb-1">💡 Solusi Cepat IP Whitelist:</p>
+                                            <ol className="list-decimal pl-4 space-y-1 text-slate-600">
+                                                <li>Buka <a href="https://app.wijayapay.com/pengaturan/credential" target="_blank" rel="noreferrer" className="text-blue-600 underline font-semibold">app.wijayapay.com/pengaturan/credential</a></li>
+                                                <li>Klik <b>Edit Credential</b></li>
+                                                <li>Di kolom <b>Whitelist IP</b>, isi tanda bintang (<b>*</b>) atau tambahkan IP: <code className="bg-slate-100 px-1 py-0.5 rounded font-mono font-bold text-red-600">{pakasirData.detectedIp || '54.80.15.216, 54.226.62.196, 182.10.161.222'}</code></li>
+                                                <li>Klik <b>Simpan</b>, lalu coba lagi.</li>
+                                            </ol>
+                                        </div>
+                                    )}
+                                    <button onClick={() => setPakasirData({ step: 'CHOOSE_METHOD' })} className="py-2.5 px-6 bg-slate-900 text-white rounded-xl text-xs font-bold hover:bg-slate-800 transition-colors">
+                                        Pilih Metode Lain
+                                    </button>
                                 </div>
                             )}
 
@@ -8315,7 +8382,7 @@ Terima kasih atas kerja samanya.`;
                                             {pakasirData.step === 'SHOW_VA' && (
                                                 <div className="bg-slate-50 border border-slate-200 rounded-2xl p-6 mb-4 flex flex-col items-center">
                                                     <div className="w-20 h-12 rounded-xl bg-white border border-slate-200 p-1.5 flex items-center justify-center mb-2 shadow-xs">
-                                                        <img src={`/banks/${(pakasirData.method || 'bri').replace('_va','').replace('cimb_niaga','cimb')}.png`} alt="Bank" className="w-full h-full object-contain" />
+                                                        <img src={getBankLogo(pakasirData.method) || '/banks/bri.svg'} alt="Bank" className="w-full h-full object-contain" />
                                                     </div>
                                                     <p className="text-xs font-bold text-slate-400 uppercase tracking-widest mb-1">{getBankDisplayName(pakasirData.method)}</p>
                                                     <div className="text-3xl font-mono font-bold text-slate-900 tracking-wider break-all mb-4">{pakasirData.qrString}</div>
@@ -8535,7 +8602,7 @@ Terima kasih atas kerja samanya.`;
             const customFooterTabungan = (
                 <div className="px-6 py-4 bg-canvas border-t border-whisper flex justify-end gap-2 shrink-0 rounded-b-2xl">
                     <button type="button" onClick={closeModal} className={btnOutline}>Batal</button>
-                    {isSetor && (!formData.id) && (<button type="button" onClick={() => handleOpenPakasir(true)} className="bg-blue-500 hover:bg-blue-600 text-white rounded-lg px-4 py-2 font-medium flex items-center justify-center gap-2 shadow-sm shrink-0 text-sm"><QrCode className="w-4 h-4" /> Pembayaran Online (DOKU)</button>)}
+                    {isSetor && (!formData.id) && (<button type="button" onClick={() => handleOpenPakasir(true)} className="bg-blue-500 hover:bg-blue-600 text-white rounded-lg px-4 py-2 font-medium flex items-center justify-center gap-2 shadow-sm shrink-0 text-sm"><QrCode className="w-4 h-4" /> Pembayaran Online (QRIS / VA)</button>)}
                     <button type="submit" className={btnPrimary}>Simpan Tunai</button>
                 </div>
             );
@@ -8793,7 +8860,7 @@ Terima kasih atas kerja samanya.`;
             const customFooter = (
                 <div className="px-6 py-4 bg-canvas border-t border-whisper flex justify-end gap-2 shrink-0 rounded-b-2xl">
                     <button type="button" onClick={closeModal} className={btnOutline}>Batal</button>
-                    {!formData.id && (<button type="button" onClick={() => handleOpenPakasir(false)} className="bg-blue-500 hover:bg-blue-600 text-white rounded-lg px-4 py-2 font-medium flex items-center justify-center gap-2 shadow-sm shrink-0 text-sm"><QrCode className="w-4 h-4" /> Pembayaran Online (DOKU)</button>)}
+                    {!formData.id && (<button type="button" onClick={() => handleOpenPakasir(false)} className="bg-blue-500 hover:bg-blue-600 text-white rounded-lg px-4 py-2 font-medium flex items-center justify-center gap-2 shadow-sm shrink-0 text-sm"><QrCode className="w-4 h-4" /> Pembayaran Online (QRIS / VA)</button>)}
                     <button type="submit" className={btnPrimary}>Simpan Tunai</button>
                 </div>
             );

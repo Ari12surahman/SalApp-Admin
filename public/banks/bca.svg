@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 40" fill="none">
+  <rect width="120" height="40" rx="8" fill="#003D79" fill-opacity="0.06"/>
+  <g transform="translate(10, 8)">
+    <!-- BCA Diamond / Waves Icon -->
+    <path d="M7 2L0 12l7 10h6L6 12 13 2H7z" fill="#003D79"/>
+    <path d="M14 2l-7 10 7 10h6L13 12 20 2h-6z" fill="#003D79"/>
+    <!-- BCA Text -->
+    <text x="28" y="18" font-family="Arial, Helvetica, sans-serif" font-weight="900" font-size="18" fill="#003D79" letter-spacing="1">BCA</text>
+  </g>
+</svg>

@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 140 40" fill="none">
+  <rect width="140" height="40" rx="8" fill="#FFC800" fill-opacity="0.12"/>
+  <g transform="translate(8, 8)">
+    <!-- Maybank Tiger Icon -->
+    <circle cx="12" cy="12" r="11" fill="#FFC800"/>
+    <path d="M7 16c2-4 8-4 10 0-2 2-8 2-10 0z" fill="#222"/>
+    <circle cx="9.5" cy="10.5" r="1.5" fill="#222"/>
+    <circle cx="14.5" cy="10.5" r="1.5" fill="#222"/>
+    <!-- Maybank Text -->
+    <text x="29" y="17" font-family="Arial, Helvetica, sans-serif" font-weight="800" font-size="15" fill="#231F20">Maybank</text>
+  </g>
+</svg>
