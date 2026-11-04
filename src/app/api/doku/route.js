@@ -38,6 +38,19 @@ export async function POST(request) {
     const action = body.action || 'requestDokuPayment';
     const payload = typeof body.data === 'string' ? JSON.parse(body.data) : (body.data || body);
 
+    // Otomatis route ke WijayaPay Gateway yang sudah aktif
+    try {
+      const { POST: handleWijayapay } = await import('../wijayapay/route.js');
+      const forwardedReq = new Request(request.url, {
+        method: 'POST',
+        headers: request.headers,
+        body: JSON.stringify(body)
+      });
+      return await handleWijayapay(forwardedReq);
+    } catch (routeErr) {
+      console.warn("WijayaPay router fallback to DOKU:", routeErr);
+    }
+
     const isSandbox = Boolean(payload.isSandbox || process.env.DOKU_IS_SANDBOX === 'true' || (payload.clientId && payload.clientId.startsWith('MCH-')));
     const activeDokuUrl = isSandbox ? DOKU_SANDBOX_BASE_URL : DOKU_BASE_URL;
     const clientId = payload.clientId || DEFAULT_CLIENT_ID;

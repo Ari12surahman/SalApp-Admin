@@ -19,22 +19,29 @@ export async function POST(request) {
 
     console.log("DOKU Webhook Payload:", JSON.stringify(payload, null, 2));
 
-    // 1. Ekstraksi data baik dari format SNAP maupun Non-SNAP
+    // 1. Ekstraksi data baik dari format SNAP, WijayaPay, maupun Non-SNAP
     const invoiceNumber = 
+      payload.ref_id ||
       payload.order?.invoice_number || 
       payload.originalPartnerReferenceNo || 
       payload.invoice_number || 
       payload.order_id || 
       '';
 
+    const statusPembayaran = String(payload.status_pembayaran || payload.status || '').toLowerCase();
     const isSuccess = 
+      statusPembayaran === 'paid' ||
+      statusPembayaran === 'success' ||
+      statusPembayaran === 'settlement' ||
+      statusPembayaran === 'berhasil' ||
       payload.transaction?.status === 'SUCCESS' ||
       payload.latestTransactionStatus === '00' ||
-      payload.status === 'SUCCESS' ||
       payload.transactionStatusDesc?.toLowerCase() === 'success' ||
       payload.service?.status === 'SUCCESS';
 
     const amount = Number(
+      payload.total_bayar ||
+      payload.total_dibayar ||
       payload.order?.amount || 
       payload.amount?.value || 
       payload.amount || 
@@ -42,10 +49,12 @@ export async function POST(request) {
     );
 
     const channelName = 
+      payload.payment_method ||
+      payload.payment_name ||
       payload.channel?.id || 
       payload.service?.id || 
       payload.additionalInfo?.channelId || 
-      'DOKU';
+      'Online';
 
     if (!invoiceNumber) {
       console.warn("Webhook received without invoice number");
