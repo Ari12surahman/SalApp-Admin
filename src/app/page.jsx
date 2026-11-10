@@ -1075,7 +1075,7 @@ function App() {
                     console.error("Error fetching background data", err);
                 }
             })();
-        }, 90000); // 90 detik (sebelumnya 15 detik), menghemat lebih dari 85% Egress
+        }, 600000); // 10 menit (sebelumnya 90s) - hemat 95%+ Egress karena Realtime Subscription sudah aktif otomatis
 
         // Realtime Subscription untuk Tagihan
         const tagihanChannel = supabase
@@ -6281,7 +6281,7 @@ function App() {
             interval = setInterval(() => {
                 if (typeof document !== 'undefined' && document.hidden) return;
                 fetchPencairanGlobal();
-            }, 30000); // 30 detik (sebelumnya 10 detik) & skip saat tab tidak aktif
+            }, 180000); // 3 menit (sebelumnya 30 detik) & skip saat tab tidak aktif
         }
         return () => {
             if (interval) clearInterval(interval);
