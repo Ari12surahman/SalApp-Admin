@@ -371,7 +371,7 @@ import {
     ArrowUpCircle, Edit, Printer, CheckCircle2, BarChart3, History, Activity, QrCode, Link as LinkIcon,
     Copy, ExternalLink, RefreshCw, Check, Briefcase, BookOpen, DownloadCloud, TrendingDown, Menu, ArrowRight, ArrowLeft, Eye, EyeOff, ChevronRight, Scan, Download,
     SlidersHorizontal, ShieldAlert, ShieldCheck, ShoppingBag, Store, CalendarDays, Package,
-    Coins, Scissors, HandHeart, Building2, Key
+    Coins, Scissors, HandHeart, Building2, Key, Clock, Sparkles
 } from "lucide-react";
 
 // Import Recharts dengan parameter bundle untuk mencegah error lodash missing modules
@@ -2651,16 +2651,42 @@ function App() {
         );
 
         if (santri) {
+            const isKamar = String(santri.nis || '').startsWith('KAS-') || (santri.nama || '').toLowerCase().startsWith('kas ') || String(santri.kelas || '').toLowerCase() === 'asrama';
             const saldoTabungan = getSantriSaldoTabungan(santri.nis);
             const totalTunggakan = dataTagihan
                 .filter(t => String(t.nis).replace(/^0+/, '') === String(santri.nis).replace(/^0+/, '') && t.status !== 'Lunas')
                 .reduce((sum, item) => sum + (Number(item.nominal || 0) - Number(item.terbayar || 0)), 0);
 
+            const limitCfg = !isKamar ? getSantriLimitConfig(santri) : { limit: 0, periode: 'mingguan', isCustom: false };
+            const usedInPeriod = (!isKamar && limitCfg.limit > 0) ? getUsageInPeriod(santri.nis, limitCfg.periode) : 0;
+            const sisaLimit = (!isKamar && limitCfg.limit > 0) ? Math.max(0, limitCfg.limit - usedInPeriod) : null;
+            const percentageUsed = (!isKamar && limitCfg.limit > 0) ? Math.min(100, Math.round((usedInPeriod / limitCfg.limit) * 100)) : 0;
+            const periodeLabel = limitCfg.periode === 'mingguan' ? 'Minggu Ini (Reset Senin)' : limitCfg.periode === 'bulanan' ? 'Bulan Ini' : 'Hari Ini';
+
+            // Ambil 3 transaksi mutasi tabungan terakhir
+            const santriRows = (dataTabungan || []).filter(t => 
+                String(t.nis || t.NIS || '').trim().replace(/^0+/, '') === String(santri.nis).replace(/^0+/, '')
+            );
+            const sortedRows = [...santriRows].reverse();
+            const recentMutasi = sortedRows.slice(0, 3).map(t => ({
+                tanggal: t.tanggal || t.Tanggal || '-',
+                jenis: t.jenis || t.Jenis || 'Setor',
+                nominal: Number(t.nominal || t.Nominal || 0),
+                keterangan: t.keterangan || t.Keterangan || ''
+            }));
+
             setScanResult({
                 found: true,
                 santri: santri,
+                isKamar: isKamar,
                 saldoTabungan: saldoTabungan,
-                totalTunggakan: totalTunggakan
+                totalTunggakan: totalTunggakan,
+                limitCfg: limitCfg,
+                usedInPeriod: usedInPeriod,
+                sisaLimit: sisaLimit,
+                percentageUsed: percentageUsed,
+                periodeLabel: periodeLabel,
+                mutasi: recentMutasi
             });
         } else {
             setScanResult({ found: false, code: scanInput });
@@ -8423,12 +8449,12 @@ Terima kasih atas kerja samanya.`;
             return (
                 <div className="fixed inset-0 z-50 flex items-center justify-center p-4 sm:p-0">
                     <div className="absolute inset-0 bg-slate/60 backdrop-blur-sm" onClick={closeModal}></div>
-                    <div className="relative bg-surface rounded-2xl shadow-xl w-full max-w-xl mx-auto overflow-hidden animate-in zoom-in-95 duration-200">
-                        <div className="p-4 sm:p-6 border-b border-whisper flex justify-between items-center bg-canvas">
+                    <div className="relative bg-surface rounded-2xl shadow-xl w-full max-w-xl mx-auto overflow-hidden animate-in zoom-in-95 duration-200 max-h-[90vh] flex flex-col">
+                        <div className="p-4 sm:p-6 border-b border-whisper flex justify-between items-center bg-canvas shrink-0">
                             <h2 className="text-xl font-bold text-ink flex items-center gap-2"><Scan className="w-5 h-5 text-accent" /> Cek Saldo & Tagihan</h2>
                             <button onClick={closeModal} className="p-2 text-steel hover:text-rose-600 hover:bg-rose-50 rounded-xl transition-colors"><X className="w-5 h-5" /></button>
                         </div>
-                        <div className="p-4 sm:p-6 bg-surface">
+                        <div className="p-4 sm:p-6 bg-surface overflow-y-auto">
                             <form onSubmit={handleScanRFID} className="mb-6">
                                 <label className="block text-sm font-medium text-steel mb-2 text-center">Scan Kartu RFID atau Ketik NIS</label>
                                 <input
@@ -8455,8 +8481,7 @@ Terima kasih atas kerja samanya.`;
                                     ) : (
                                         <div>
                                             {(() => {
-                                                const isKamar = String(scanResult.santri.nis || '').startsWith('KAS-') || (scanResult.santri.nama || '').toLowerCase().startsWith('kas ');
-                                                if (isKamar) {
+                                                if (scanResult.isKamar) {
                                                     return (
                                                         <div>
                                                             <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-indigo-600 text-white font-mono text-xs font-bold uppercase tracking-wider mb-3 shadow-sm">
@@ -8474,10 +8499,45 @@ Terima kasih atas kerja samanya.`;
                                                                     Rp {scanResult.saldoTabungan.toLocaleString('id-ID')}
                                                                 </div>
                                                             </div>
-                                                            <div className="mt-4 p-2.5 rounded-xl bg-slate-50 border border-slate-200 text-xs text-steel flex items-center justify-center gap-2">
+                                                            <div className="mt-4 p-2.5 rounded-xl bg-indigo-50/80 border border-indigo-200/50 flex items-center gap-2 text-left">
+                                                                <Sparkles className="w-4 h-4 text-indigo-600 shrink-0" />
+                                                                <p className="font-mono text-xs text-indigo-950">
+                                                                    <strong>Bebas Limit Belanja:</strong> Saldo dapat dipakai penuh di kasir POS dengan otorisasi PIN 6 digit.
+                                                                </p>
+                                                            </div>
+                                                            <div className="mt-3 p-2.5 rounded-xl bg-slate-50 border border-slate-200 text-xs text-steel flex items-center justify-center gap-2">
                                                                 <ShieldCheck className="w-4 h-4 text-emerald-600" />
                                                                 <span>Dilindungi PIN 6 Digit: <strong>{scanResult.santri.pin ? '••••••' : 'Default 123456'}</strong> (Wajib saat belanja di Kasir POS)</span>
                                                             </div>
+
+                                                            {/* Mutasi 3 Transaksi Terakhir Kas Kamar */}
+                                                            {scanResult.mutasi && scanResult.mutasi.length > 0 && (
+                                                                <div className="mt-4 pt-4 border-t border-indigo-200/40 text-left">
+                                                                    <div className="flex items-center gap-1.5 font-mono text-[11px] font-bold uppercase tracking-wider text-indigo-900 mb-2">
+                                                                        <History className="w-3.5 h-3.5 text-indigo-600" /> 3 Transaksi Terakhir:
+                                                                    </div>
+                                                                    <div className="space-y-1.5 font-mono text-xs">
+                                                                        {scanResult.mutasi.map((m, idx) => {
+                                                                            const isTarik = String(m.jenis).toLowerCase() === 'tarik';
+                                                                            return (
+                                                                                <div key={idx} className="flex justify-between items-center p-2 rounded-lg bg-surface border border-indigo-200/60 shadow-xs">
+                                                                                    <div className="truncate pr-2">
+                                                                                        <div className="font-semibold text-ink text-xs truncate">
+                                                                                            {m.keterangan || (isTarik ? 'Belanja Kasir POS' : 'Setoran Kas')}
+                                                                                        </div>
+                                                                                        <div className="text-[10px] text-steel">
+                                                                                            {m.tanggal} • <span className={isTarik ? 'text-rose-600 font-bold' : 'text-emerald-600 font-bold'}>{m.jenis}</span>
+                                                                                        </div>
+                                                                                    </div>
+                                                                                    <div className={`font-bold text-xs shrink-0 ${isTarik ? 'text-rose-600' : 'text-emerald-600'}`}>
+                                                                                        {isTarik ? '-' : '+'} Rp {m.nominal.toLocaleString('id-ID')}
+                                                                                    </div>
+                                                                                </div>
+                                                                            );
+                                                                        })}
+                                                                    </div>
+                                                                </div>
+                                                            )}
                                                         </div>
                                                     );
                                                 }
@@ -8488,16 +8548,164 @@ Terima kasih atas kerja samanya.`;
                                                             <p className="text-steel font-medium mt-1">Kelas {scanResult.santri.kelas} • NIS: {scanResult.santri.nis}</p>
                                                         </div>
 
+                                                        {/* Grid Saldo & Tunggakan */}
                                                         <div className="grid grid-cols-2 gap-4">
-                                                            <div className="bg-emerald-50 border border-emerald-100 p-4 rounded-xl">
-                                                                <div className="text-emerald-700 font-semibold text-sm mb-1 uppercase tracking-wide">Saldo Tabungan</div>
+                                                            <div className="bg-emerald-50 border border-emerald-100 p-4 rounded-xl text-left">
+                                                                <div className="text-emerald-700 font-semibold text-xs mb-1 uppercase tracking-wide">Saldo Tabungan</div>
                                                                 <div className="text-2xl font-bold text-emerald-600">Rp {scanResult.saldoTabungan.toLocaleString('id-ID')}</div>
                                                             </div>
-                                                            <div className={`border p-4 rounded-xl ${scanResult.totalTunggakan > 0 ? 'bg-rose-50 border-rose-100' : 'bg-slate-50 border-whisper'}`}>
-                                                                <div className={`${scanResult.totalTunggakan > 0 ? 'text-rose-700' : 'text-slate'} font-semibold text-sm mb-1 uppercase tracking-wide`}>Total Tunggakan</div>
+                                                            <div className={`border p-4 rounded-xl text-left ${scanResult.totalTunggakan > 0 ? 'bg-rose-50 border-rose-100' : 'bg-slate-50 border-whisper'}`}>
+                                                                <div className={`${scanResult.totalTunggakan > 0 ? 'text-rose-700' : 'text-slate'} font-semibold text-xs mb-1 uppercase tracking-wide`}>Total Tunggakan</div>
                                                                 <div className={`text-2xl font-bold ${scanResult.totalTunggakan > 0 ? 'text-rose-600' : 'text-slate'}`}>Rp {scanResult.totalTunggakan.toLocaleString('id-ID')}</div>
                                                             </div>
                                                         </div>
+
+                                                        {/* Kartu Status Limit Jajan (Sama seperti POS) */}
+                                                        <div className="mt-4 text-left">
+                                                            {scanResult.limitCfg?.limit === 0 ? (
+                                                                <div className="p-4 rounded-xl bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-between shadow-xs">
+                                                                    <div className="flex items-center gap-2.5">
+                                                                        <Sparkles className="w-5 h-5 text-emerald-600 shrink-0" />
+                                                                        <div>
+                                                                            <p className="font-bold text-xs uppercase tracking-wider text-emerald-950">
+                                                                                BEBAS LIMIT JAJAN
+                                                                            </p>
+                                                                            <p className="text-xs text-steel">
+                                                                                Santri tidak dibatasi kuota jajan berkala (dapat berbelanja sesuai saldo aktif).
+                                                                            </p>
+                                                                        </div>
+                                                                    </div>
+                                                                    <span className="px-2.5 py-1 rounded-md bg-emerald-600 text-white font-mono text-[10px] font-bold uppercase tracking-wider shrink-0">
+                                                                        UNLIMITED
+                                                                    </span>
+                                                                </div>
+                                                            ) : (
+                                                                <div className={`p-4 rounded-xl border font-mono transition-all shadow-xs ${
+                                                                    (scanResult.sisaLimit !== null && scanResult.sisaLimit <= 0)
+                                                                        ? 'bg-rose-50/80 border-rose-300 text-rose-950'
+                                                                        : (scanResult.percentageUsed || 0) >= 75
+                                                                            ? 'bg-amber-50/80 border-amber-300 text-amber-950'
+                                                                            : 'bg-emerald-50/80 border-emerald-300 text-emerald-950'
+                                                                }`}>
+                                                                    {/* Header Limit */}
+                                                                    <div className="flex flex-wrap items-center justify-between gap-2 pb-2.5 border-b border-black/5">
+                                                                        <div className="flex items-center gap-1.5 font-bold text-xs uppercase tracking-wider text-ink">
+                                                                            <Clock className="w-4 h-4 text-emerald-600 shrink-0" />
+                                                                            <span>STATUS LIMIT: {scanResult.periodeLabel}</span>
+                                                                        </div>
+                                                                        <div className="flex items-center gap-1.5">
+                                                                            {scanResult.limitCfg?.isCustom && (
+                                                                                <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-100 text-amber-800 border border-amber-300">
+                                                                                    KHUSUS
+                                                                                </span>
+                                                                            )}
+                                                                            <span className="px-2 py-0.5 rounded text-xs font-bold bg-emerald-100 text-emerald-800 border border-emerald-300">
+                                                                                Rp {(scanResult.limitCfg?.limit || 0).toLocaleString('id-ID')}
+                                                                            </span>
+                                                                        </div>
+                                                                    </div>
+
+                                                                    {/* Grid 3 Statistik Kuota */}
+                                                                    <div className="grid grid-cols-3 gap-2 py-3 text-center">
+                                                                        <div className="p-2.5 rounded-lg bg-surface border border-whisper shadow-xs">
+                                                                            <span className="text-[10px] text-steel uppercase tracking-wider block mb-0.5 font-semibold">
+                                                                                Batas Limit
+                                                                            </span>
+                                                                            <span className="text-xs sm:text-sm font-black text-ink">
+                                                                                Rp {(scanResult.limitCfg?.limit || 0).toLocaleString('id-ID')}
+                                                                            </span>
+                                                                        </div>
+                                                                        <div className="p-2.5 rounded-lg bg-surface border border-whisper shadow-xs">
+                                                                            <span className="text-[10px] text-steel uppercase tracking-wider block mb-0.5 font-semibold">
+                                                                                Sudah Terpakai
+                                                                            </span>
+                                                                            <span className="text-xs sm:text-sm font-black text-rose-600">
+                                                                                Rp {(scanResult.usedInPeriod || 0).toLocaleString('id-ID')}
+                                                                            </span>
+                                                                        </div>
+                                                                        <div className="p-2.5 rounded-lg bg-surface border border-whisper shadow-xs">
+                                                                            <span className="text-[10px] text-steel uppercase tracking-wider block mb-0.5 font-bold">
+                                                                                Sisa Limit
+                                                                            </span>
+                                                                            <span className={`text-xs sm:text-sm font-black ${
+                                                                                (scanResult.sisaLimit !== null && scanResult.sisaLimit <= 0)
+                                                                                    ? 'text-rose-600'
+                                                                                    : 'text-emerald-600'
+                                                                            }`}>
+                                                                                {(scanResult.sisaLimit !== null && scanResult.sisaLimit <= 0)
+                                                                                    ? 'HABIS (Rp 0)'
+                                                                                    : `Rp ${(scanResult.sisaLimit || 0).toLocaleString('id-ID')}`
+                                                                                }
+                                                                            </span>
+                                                                        </div>
+                                                                    </div>
+
+                                                                    {/* Progress Bar Pemakaian */}
+                                                                    <div className="space-y-1 mt-1">
+                                                                        <div className="flex justify-between items-center text-[10px] text-steel font-semibold">
+                                                                            <span>Pemakaian Kuota</span>
+                                                                            <span className="font-bold">{scanResult.percentageUsed || 0}% Terpakai</span>
+                                                                        </div>
+                                                                        <div className="w-full bg-slate-200 h-2 rounded-full overflow-hidden">
+                                                                            <div 
+                                                                                className={`h-full rounded-full transition-all duration-500 ${
+                                                                                    (scanResult.percentageUsed || 0) >= 100
+                                                                                        ? 'bg-rose-500'
+                                                                                        : (scanResult.percentageUsed || 0) >= 75
+                                                                                            ? 'bg-amber-500'
+                                                                                            : 'bg-emerald-500'
+                                                                                }`}
+                                                                                style={{ width: `${Math.min(100, scanResult.percentageUsed || 0)}%` }}
+                                                                            />
+                                                                        </div>
+                                                                    </div>
+
+                                                                    {/* Status Banner */}
+                                                                    <div className="mt-3 pt-2.5 border-t border-black/5">
+                                                                        {(scanResult.sisaLimit !== null && scanResult.sisaLimit <= 0) ? (
+                                                                            <p className="text-xs font-bold text-rose-600 flex items-center gap-1.5 leading-tight">
+                                                                                <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                                                                                Limit jajan minggu ini telah habis. Belanja di kasir POS baru dapat dilakukan kembali setelah reset otomatis hari Senin.
+                                                                            </p>
+                                                                        ) : (
+                                                                            <p className="text-xs text-steel flex items-center gap-1.5 leading-tight">
+                                                                                <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                                                                                Santri dapat berbelanja di kasir POS maksimal <strong className="text-ink">Rp {(scanResult.sisaLimit || 0).toLocaleString('id-ID')}</strong> sampai reset periode berikutnya.
+                                                                            </p>
+                                                                        )}
+                                                                    </div>
+                                                                </div>
+                                                            )}
+                                                        </div>
+
+                                                        {/* Mutasi 3 Transaksi Terakhir Santri */}
+                                                        {scanResult.mutasi && scanResult.mutasi.length > 0 && (
+                                                            <div className="mt-4 pt-4 border-t border-whisper text-left">
+                                                                <div className="flex items-center gap-1.5 font-mono text-[11px] font-bold uppercase tracking-wider text-steel mb-2">
+                                                                    <History className="w-3.5 h-3.5 text-accent" /> 3 Transaksi Tabungan Terakhir:
+                                                                </div>
+                                                                <div className="space-y-1.5 font-mono text-xs">
+                                                                    {scanResult.mutasi.map((m, idx) => {
+                                                                        const isTarik = String(m.jenis).toLowerCase() === 'tarik';
+                                                                        return (
+                                                                            <div key={idx} className="flex justify-between items-center p-2 rounded-lg bg-surface border border-whisper shadow-xs">
+                                                                                <div className="truncate pr-2">
+                                                                                    <div className="font-semibold text-ink text-xs truncate">
+                                                                                        {m.keterangan || (isTarik ? 'Belanja POS / Tarik' : 'Setoran Tabungan')}
+                                                                                    </div>
+                                                                                    <div className="text-[10px] text-steel">
+                                                                                        {m.tanggal} • <span className={isTarik ? 'text-rose-600 font-bold' : 'text-emerald-600 font-bold'}>{m.jenis}</span>
+                                                                                    </div>
+                                                                                </div>
+                                                                                <div className={`font-bold text-xs shrink-0 ${isTarik ? 'text-rose-600' : 'text-emerald-600'}`}>
+                                                                                    {isTarik ? '-' : '+'} Rp {m.nominal.toLocaleString('id-ID')}
+                                                                                </div>
+                                                                            </div>
+                                                                        );
+                                                                    })}
+                                                                </div>
+                                                            </div>
+                                                        )}
                                                     </div>
                                                 );
                                             })()}
