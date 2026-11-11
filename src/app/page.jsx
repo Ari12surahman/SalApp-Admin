@@ -2433,21 +2433,22 @@ function App() {
     // Helper hitung pemakaian jajan tabungan santri dalam periode tertentu (hanya belanja kantin / POS / kasir)
     const getUsageInPeriod = (nis, periode = 'harian', dataTabunganList = dataTabungan) => {
         const sNisClean = String(nis || '').replace(/^0+/, '');
-        const now = new Date();
-        const localYear = now.getFullYear();
-        const localMonth = String(now.getMonth() + 1).padStart(2, '0');
-        const localDay = String(now.getDate()).padStart(2, '0');
+        
+        // Dapatkan waktu dalam zona Asia/Jakarta (WIB) agar reset Senin tepat pukul 00:00:00 WIB
+        const wibDate = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Jakarta' }));
+        const localYear = wibDate.getFullYear();
+        const localMonth = String(wibDate.getMonth() + 1).padStart(2, '0');
+        const localDay = String(wibDate.getDate()).padStart(2, '0');
         const todayStr = `${localYear}-${localMonth}-${localDay}`;
         
         let startDateStr = todayStr;
         if (periode === 'mingguan') {
-            const day = now.getDay();
+            const day = wibDate.getDay();
             const diffToMonday = (day === 0 ? -6 : 1) - day;
-            const monday = new Date(now);
-            monday.setDate(now.getDate() + diffToMonday);
-            const mYear = monday.getFullYear();
-            const mMonth = String(monday.getMonth() + 1).padStart(2, '0');
-            const mDay = String(monday.getDate()).padStart(2, '0');
+            wibDate.setDate(wibDate.getDate() + diffToMonday);
+            const mYear = wibDate.getFullYear();
+            const mMonth = String(wibDate.getMonth() + 1).padStart(2, '0');
+            const mDay = String(wibDate.getDate()).padStart(2, '0');
             startDateStr = `${mYear}-${mMonth}-${mDay}`;
         } else if (periode === 'bulanan') {
             startDateStr = `${localYear}-${localMonth}-01`;
