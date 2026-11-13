@@ -394,7 +394,8 @@ import {
     ArrowUpCircle, Edit, Printer, CheckCircle2, BarChart3, History, Activity, QrCode, Link as LinkIcon,
     Copy, ExternalLink, RefreshCw, Check, Briefcase, BookOpen, DownloadCloud, TrendingDown, Menu, ArrowRight, ArrowLeft, Eye, EyeOff, ChevronRight, Scan, Download,
     SlidersHorizontal, ShieldAlert, ShieldCheck, ShoppingBag, Store, CalendarDays, Package,
-    Coins, Scissors, HandHeart, Building2, Key, Clock, Sparkles, Banknote, Layers
+    Coins, Scissors, HandHeart, Building2, Key, Clock, Sparkles, Banknote, Layers,
+    Trophy, UserPlus, UserCheck
 } from "lucide-react";
 
 // Import Recharts dengan parameter bundle untuk mencegah error lodash missing modules
@@ -532,6 +533,10 @@ function App() {
         try {
             setIsLoggedIn(JSON.parse(localStorage.getItem('_auth_loggedIn')) || false);
             setCurrentUser(JSON.parse(localStorage.getItem('_auth_user')) || null);
+            const cachedAnggota = localStorage.getItem('appConfig_kasEkskulAnggotaMap');
+            if (cachedAnggota) {
+                setAppConfig(prev => ({ ...prev, kasEkskulAnggotaMap: JSON.parse(cachedAnggota) }));
+            }
         } catch (e) { }
     }, []);
 
@@ -555,6 +560,7 @@ function App() {
     // --- IURAN & KAS INSIDENTAL (POTONG OTOMATIS) ---
     const defaultMasterInsidental = [
         { id: 'Kas Kamar', label: 'Kas Kamar', icon: 'Building2', defaultNom: 10000, desc: 'Iuran kas kamar asrama', alokasiDefault: 'KasKamar', targetDefault: 'Kamar' },
+        { id: 'Kas Ekskul', label: 'Kas Ekskul', icon: 'Trophy', defaultNom: 15000, desc: 'Iuran kegiatan ekskul santri', alokasiDefault: 'KasKamar', targetDefault: 'Ekskul' },
         { id: 'Kas Kelas', label: 'Kas Kelas', icon: 'Users', defaultNom: 5000, desc: 'Uang kas kelas santri', alokasiDefault: 'BukuKas', targetDefault: 'Kelas' },
         { id: 'Infaq / Sedekah', label: 'Infaq', icon: 'HandHeart', defaultNom: 2000, desc: 'Jumat berkah / amal santri', alokasiDefault: 'BukuKas', targetDefault: 'Semua' },
         { id: 'Cukur', label: 'Cukur Santri', icon: 'Scissors', defaultNom: 15000, desc: 'Jasa tukang cukur', alokasiDefault: 'BukuKas', targetDefault: 'Kelas' },
@@ -563,12 +569,13 @@ function App() {
     const [showModalMasterInsidental, setShowModalMasterInsidental] = useState(false);
     const [formMasterKat, setFormMasterKat] = useState({ id: '', label: '', defaultNom: 10000, desc: '', alokasiDefault: 'BukuKas', targetDefault: 'Kelas' });
     const [iuranSelectedKamarNis, setIuranSelectedKamarNis] = useState('');
-    const [iuranKategori, setIuranKategori] = useState('Kas Kamar');
-    const [iuranTargetType, setIuranTargetType] = useState('Kamar'); // 'Kamar' | 'Kelas' | 'PilihSantri' | 'Semua'
+    const [iuranSelectedEkskulNis, setIuranSelectedEkskulNis] = useState('');
+    const [iuranKategori, setIuranKategori] = useState('Kas Ekskul');
+    const [iuranTargetType, setIuranTargetType] = useState('Ekskul'); // 'Ekskul' | 'Kamar' | 'Kelas' | 'PilihSantri' | 'Semua'
     const [iuranSelectedKelas, setIuranSelectedKelas] = useState('');
     const [iuranSelectedNisList, setIuranSelectedNisList] = useState([]);
-    const [iuranNominal, setIuranNominal] = useState(10000);
-    const [iuranKeterangan, setIuranKeterangan] = useState('Kas Kamar');
+    const [iuranNominal, setIuranNominal] = useState(15000);
+    const [iuranKeterangan, setIuranKeterangan] = useState('Kas Ekskul');
     const [iuranAlokasi, setIuranAlokasi] = useState('KasKamar'); // 'BukuKas' | 'KasKamar' | 'None'
     const [iuranTujuanAkunNis, setIuranTujuanAkunNis] = useState('');
     const [iuranSkipInsufficient, setIuranSkipInsufficient] = useState(true);
@@ -588,6 +595,14 @@ function App() {
     const [modalEditRfidKamar, setModalEditRfidKamar] = useState(null); // { nis, nama, uid }
     const [inputRfidEdit, setInputRfidEdit] = useState('');
     const [inputRfidDirect, setInputRfidDirect] = useState('');
+
+    // --- MANAJEMEN ANGGOTA KAS / EKSKUL ---
+    const [modalKelolaAnggota, setModalKelolaAnggota] = useState(null); // kas object: { nis, nama, kelas, ... }
+    const [anggotaActiveTab, setAnggotaActiveTab] = useState('list'); // 'list' | 'tambah'
+    const [anggotaSearchSantri, setAnggotaSearchSantri] = useState('');
+    const [anggotaFilterKelas, setAnggotaFilterKelas] = useState('Semua');
+    const [anggotaSelectedNisAdd, setAnggotaSelectedNisAdd] = useState([]);
+    const [savingAnggota, setSavingAnggota] = useState(false);
 
     // --- FITUR PENCAIRAN KAS TUNAI (CASH OUT) ---
     const [modalPencairanKas, setModalPencairanKas] = useState(false);
@@ -3756,7 +3771,17 @@ function App() {
     const handleEksekusiPotongIuran = async () => {
         const currentKelas = iuranSelectedKelas || masterKelasList[0] || '';
         let targetSantri = [];
-        if (iuranTargetType === 'Kamar') {
+        if (iuranTargetType === 'Ekskul') {
+            const selectedEkskulObj = dataSantri.find(s => String(s.nis) === String(iuranSelectedEkskulNis));
+            if (!selectedEkskulObj) return showNotification('Pilih akun kas / ekskul target terlebih dahulu!', 'error');
+            const anggotaNisList = (appConfig?.kasEkskulAnggotaMap || {})[selectedEkskulObj.nis] || [];
+            if (anggotaNisList.length === 0) return showNotification(`Belum ada santri yang didaftarkan ke anggota ${selectedEkskulObj.nama}! Buka 'Kelola Anggota' untuk menambahkan santri.`, 'error');
+            targetSantri = dataSantri.filter(s => 
+                !String(s.nis || '').startsWith('KAS-') &&
+                (!s.status || s.status.toLowerCase() !== 'keluar') &&
+                anggotaNisList.includes(String(s.nis))
+            );
+        } else if (iuranTargetType === 'Kamar') {
             const selectedKamarObj = dataSantri.find(s => String(s.nis) === String(iuranSelectedKamarNis));
             if (!selectedKamarObj) return showNotification('Pilih kamar / asrama target terlebih dahulu!', 'error');
             const kamarKelas = String(selectedKamarObj.kelas || '').trim().toLowerCase();
@@ -3846,6 +3871,15 @@ function App() {
 
             // Simpan ke state Tabungan (otomatis auto-sync ke Supabase Tabungan)
             setDataTabungan(prev => [...newTabunganRecords, ...prev]);
+
+            // Simpan instan ke Supabase Tabungan
+            try {
+                if (newTabunganRecords.length > 0) {
+                    await supabase.from('Tabungan').insert(newTabunganRecords);
+                }
+            } catch (tabInsertErr) {
+                console.warn("Fallback auto-sync tabungan:", tabInsertErr);
+            }
 
             // Jika dialokasikan ke Buku Kas Pondok (Tabel Kas)
             if (iuranAlokasi === 'BukuKas') {
@@ -4155,6 +4189,38 @@ function App() {
         }
     };
 
+    // --- MANAJEMEN ANGGOTA KAS / EKSKUL ---
+    const handleSimpanAnggotaEkskul = async (kasNis, newNisList) => {
+        setSavingAnggota(true);
+        try {
+            const currentMap = { ...(appConfig.kasEkskulAnggotaMap || {}) };
+            currentMap[kasNis] = Array.from(new Set(newNisList.map(String)));
+
+            setAppConfig(prev => ({
+                ...prev,
+                kasEkskulAnggotaMap: currentMap
+            }));
+
+            const { error } = await supabase.from('MasterConfig').upsert({
+                kunci: 'kasEkskulAnggotaMap',
+                nilai: JSON.stringify(currentMap)
+            }, { onConflict: 'kunci' });
+
+            if (error) console.error("Gagal simpan kasEkskulAnggotaMap ke Supabase:", error);
+
+            try {
+                localStorage.setItem('appConfig_kasEkskulAnggotaMap', JSON.stringify(currentMap));
+            } catch (e) {}
+
+            showNotification(`Berhasil memperbarui anggota kas (${newNisList.length} santri)!`, 'success');
+        } catch (err) {
+            console.error(err);
+            showNotification('Terjadi kesalahan saat menyimpan anggota.', 'error');
+        } finally {
+            setSavingAnggota(false);
+        }
+    };
+
     // --- LOGIKA PENCAIRAN KAS TUNAI (CASH OUT) & CETAK KUITANSI ---
     const handleBukaModalPencairan = (akun = null) => {
         const availableKas = dataSantri.filter(s => 
@@ -4345,7 +4411,17 @@ function App() {
         const currentKategoriList = appConfig?.masterKategoriInsidental || defaultMasterInsidental;
 
         let targetSantri = [];
-        if (iuranTargetType === 'Kamar') {
+        if (iuranTargetType === 'Ekskul') {
+            const selectedEkskulObj = dataSantri.find(s => String(s.nis) === String(iuranSelectedEkskulNis));
+            if (selectedEkskulObj) {
+                const anggotaNisList = (appConfig?.kasEkskulAnggotaMap || {})[selectedEkskulObj.nis] || [];
+                targetSantri = dataSantri.filter(s => 
+                    !String(s.nis || '').startsWith('KAS-') &&
+                    (!s.status || s.status.toLowerCase() !== 'keluar') &&
+                    anggotaNisList.includes(String(s.nis))
+                );
+            }
+        } else if (iuranTargetType === 'Kamar') {
             const selectedKamarObj = dataSantri.find(s => String(s.nis) === String(iuranSelectedKamarNis));
             if (selectedKamarObj) {
                 const kamarKelas = String(selectedKamarObj.kelas || '').trim().toLowerCase();
@@ -4500,7 +4576,7 @@ function App() {
                 )}
 
                 {/* Form Utama (2 Kolom) */}
-                <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+                <div id="section-form-iuran" className="grid grid-cols-1 lg:grid-cols-12 gap-6">
                     {/* Kolom Kiri: Formulir Pengaturan */}
                     <div className="lg:col-span-7 space-y-6">
                         <div className="bg-surface border border-whisper rounded-2xl p-6 shadow-sm space-y-5">
@@ -4518,10 +4594,11 @@ function App() {
                                         <Settings className="w-3.5 h-3.5" /> Kelola Master Insidental
                                     </button>
                                 </div>
-                                <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2.5">
+                                <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2">
                                     {currentKategoriList.map(item => {
                                         const isSelected = iuranKategori === item.id;
                                         const IconComp = item.icon === 'Building2' ? Building2 :
+                                                         item.icon === 'Trophy' ? Trophy :
                                                          item.icon === 'Users' ? Users :
                                                          item.icon === 'HandHeart' ? HandHeart :
                                                          item.icon === 'Scissors' ? Scissors :
@@ -4536,7 +4613,16 @@ function App() {
                                                     if (item.alokasiDefault) setIuranAlokasi(item.alokasiDefault);
                                                     if (item.targetDefault) setIuranTargetType(item.targetDefault);
                                                     
-                                                    if (item.id === 'Kas Kamar' || item.targetDefault === 'Kamar') {
+                                                    if (item.id === 'Kas Ekskul' || item.targetDefault === 'Ekskul') {
+                                                        setIuranTargetType('Ekskul');
+                                                        setIuranAlokasi('KasKamar');
+                                                        const firstEkskul = akunKamarTersedia.find(k => (k.nama || '').toLowerCase().includes('ekskul') || (k.kelas || '').toLowerCase() === 'ekskul') || akunKamarTersedia[0];
+                                                        if (firstEkskul) {
+                                                            setIuranSelectedEkskulNis(firstEkskul.nis);
+                                                            setIuranTujuanAkunNis(firstEkskul.nis);
+                                                            setIuranKeterangan(`Iuran ${firstEkskul.nama}`);
+                                                        }
+                                                    } else if (item.id === 'Kas Kamar' || item.targetDefault === 'Kamar') {
                                                         setIuranTargetType('Kamar');
                                                         setIuranAlokasi('KasKamar');
                                                         const firstKamar = akunKamarTersedia[0];
@@ -4577,8 +4663,9 @@ function App() {
                                 <label className="block text-xs font-bold text-steel uppercase tracking-wider mb-2.5">
                                     2. Target Santri Yang Dipotong
                                 </label>
-                                <div className="flex border border-whisper rounded-xl p-1 bg-canvas/40 mb-3 gap-1 text-xs font-semibold">
+                                <div className="flex flex-wrap border border-whisper rounded-xl p-1 bg-canvas/40 mb-3 gap-1 text-xs font-semibold">
                                     {[
+                                        { id: 'Ekskul', label: 'Per Ekskul / Kas' },
                                         { id: 'Kamar', label: 'Per Kamar' },
                                         { id: 'Kelas', label: 'Per Kelas' },
                                         { id: 'PilihSantri', label: `Pilih Manual (${iuranSelectedNisList.length})` },
@@ -4587,10 +4674,21 @@ function App() {
                                         <button
                                             key={tab.id}
                                             type="button"
-                                            onClick={() => setIuranTargetType(tab.id)}
-                                            className={`flex-1 py-2 rounded-lg transition-all ${
+                                            onClick={() => {
+                                                setIuranTargetType(tab.id);
+                                                if (tab.id === 'Ekskul' && !iuranSelectedEkskulNis && akunKamarTersedia.length > 0) {
+                                                    const firstEk = akunKamarTersedia.find(k => (k.nama || '').toLowerCase().includes('ekskul') || (k.kelas || '').toLowerCase() === 'ekskul') || akunKamarTersedia[0];
+                                                    if (firstEk) {
+                                                        setIuranSelectedEkskulNis(firstEk.nis);
+                                                        setIuranTujuanAkunNis(firstEk.nis);
+                                                        setIuranAlokasi('KasKamar');
+                                                        setIuranKeterangan(`Iuran ${firstEk.nama}`);
+                                                    }
+                                                }
+                                            }}
+                                            className={`flex-1 py-2 px-2 rounded-lg transition-all text-center whitespace-nowrap ${
                                                 iuranTargetType === tab.id 
-                                                    ? 'bg-surface text-indigo-600 shadow-sm font-bold' 
+                                                    ? 'bg-surface text-indigo-600 shadow-sm font-bold ring-1 ring-indigo-200' 
                                                     : 'text-steel hover:text-ink'
                                             }`}
                                         >
@@ -4598,6 +4696,111 @@ function App() {
                                         </button>
                                     ))}
                                 </div>
+
+                                {iuranTargetType === 'Ekskul' && (
+                                    <div className="p-3.5 bg-gradient-to-r from-amber-50/70 to-indigo-50/70 border border-amber-200/80 rounded-xl space-y-2.5">
+                                        <div className="flex justify-between items-center">
+                                            <label className="text-xs font-semibold text-amber-950 flex items-center gap-1.5">
+                                                <Trophy className="w-4 h-4 text-amber-600" /> Pilih Akun Kas / Ekskul Target:
+                                            </label>
+                                            <div className="flex items-center gap-2">
+                                                {(() => {
+                                                    const ek = akunKamarTersedia.find(k => String(k.nis) === String(iuranSelectedEkskulNis));
+                                                    if (!ek) return null;
+                                                    return (
+                                                        <button 
+                                                            type="button" 
+                                                            onClick={() => {
+                                                                setModalKelolaAnggota(ek);
+                                                                setAnggotaActiveTab('list');
+                                                                setAnggotaSearchSantri('');
+                                                                setAnggotaFilterKelas('Semua');
+                                                                setAnggotaSelectedNisAdd([]);
+                                                            }}
+                                                            className="text-[11px] font-bold text-indigo-700 bg-white hover:bg-indigo-50 border border-indigo-200 px-2 py-0.5 rounded-md shadow-2xs flex items-center gap-1 transition-all"
+                                                        >
+                                                            <Users className="w-3 h-3 text-indigo-600" /> Kelola Anggota ({targetSantri.length})
+                                                        </button>
+                                                    );
+                                                })()}
+                                                <button 
+                                                    type="button" 
+                                                    onClick={() => setShowModalBuatAkunKamar(true)}
+                                                    className="text-[11px] font-bold text-amber-800 hover:underline"
+                                                >
+                                                    + Buat Kas Baru
+                                                </button>
+                                            </div>
+                                        </div>
+                                        <select
+                                            value={iuranSelectedEkskulNis}
+                                            onChange={(e) => {
+                                                const val = e.target.value;
+                                                setIuranSelectedEkskulNis(val);
+                                                setIuranTujuanAkunNis(val);
+                                                setIuranAlokasi('KasKamar');
+                                                const ek = akunKamarTersedia.find(k => String(k.nis) === String(val));
+                                                if (ek) {
+                                                    setIuranKeterangan(`Iuran ${ek.nama}`);
+                                                }
+                                            }}
+                                            className={`${inputBase} text-xs py-2 bg-white`}
+                                        >
+                                            <option value="">Pilih Akun Kas / Ekskul...</option>
+                                            {akunKamarTersedia.map(k => {
+                                                const mCount = ((appConfig?.kasEkskulAnggotaMap || {})[k.nis] || []).length;
+                                                return (
+                                                    <option key={k.nis} value={k.nis}>
+                                                        {k.nama} ({k.kelas || 'Ekskul'}) — {mCount} Santri Terdaftar
+                                                    </option>
+                                                );
+                                            })}
+                                        </select>
+                                        {(() => {
+                                            const ek = akunKamarTersedia.find(k => String(k.nis) === String(iuranSelectedEkskulNis));
+                                            if (!ek) return null;
+                                            const anggotaCount = targetSantri.length;
+                                            if (anggotaCount === 0) {
+                                                return (
+                                                    <div className="p-3 bg-amber-100/70 border border-amber-300 rounded-lg flex items-center justify-between text-xs text-amber-900">
+                                                        <div className="flex items-center gap-2">
+                                                            <AlertCircle className="w-4 h-4 text-amber-600 shrink-0" />
+                                                            <span>Belum ada anak yang dikelompokkan ke <strong>{ek.nama}</strong>.</span>
+                                                        </div>
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => {
+                                                                setModalKelolaAnggota(ek);
+                                                                setAnggotaActiveTab('tambah');
+                                                                setAnggotaSearchSantri('');
+                                                                setAnggotaFilterKelas('Semua');
+                                                                setAnggotaSelectedNisAdd([]);
+                                                            }}
+                                                            className="px-2.5 py-1 bg-amber-600 hover:bg-amber-700 text-white rounded-md font-bold text-[11px] shrink-0 shadow-2xs"
+                                                        >
+                                                            + Tambah Anggota
+                                                        </button>
+                                                    </div>
+                                                );
+                                            }
+                                            return (
+                                                <div className="text-[11px] text-indigo-900 bg-white/90 p-2.5 rounded-lg border border-indigo-200 space-y-1">
+                                                    <div className="flex justify-between items-center font-bold">
+                                                        <span className="flex items-center gap-1.5 text-indigo-700">
+                                                            <Trophy className="w-3.5 h-3.5 text-amber-500" /> {ek.nama}: <strong>{anggotaCount} santri anggota</strong>
+                                                        </span>
+                                                        <span className="text-emerald-700 font-mono">
+                                                            Saldo Kas: Rp {getSantriSaldoTabungan(ek.nis).toLocaleString('id-ID')}
+                                                        </span>
+                                                    </div>
+                                                    <p className="text-steel text-[10px]">
+                                                        Dana penarikan otomatis masuk ke rekening kas ini ({ek.nis}) & siap dipakai belanja di POS atau dicairkan tunai.
+                                                    </p>
+                                                </div>
+                                            );
+                                        })()}
+                                    </div>
+                                )}
 
                                 {iuranTargetType === 'Kamar' && (
                                     <div className="p-3.5 bg-indigo-50/70 border border-indigo-200 rounded-xl space-y-2">
@@ -5108,6 +5311,7 @@ function App() {
                                 <tr>
                                     <th className="px-6 py-3">Nama Kas / Ekskul</th>
                                     <th className="px-6 py-3">Kategori / Asrama</th>
+                                    <th className="px-6 py-3 text-center">Anggota Santri</th>
                                     <th className="px-6 py-3 text-right">Saldo Kas</th>
                                     <th className="px-6 py-3 text-center">Kartu RFID (UID)</th>
                                     <th className="px-6 py-3 text-center">PIN Kasir POS</th>
@@ -5117,13 +5321,14 @@ function App() {
                             <tbody className="divide-y divide-slate-100 text-xs">
                                 {akunKamarTersedia.length === 0 ? (
                                     <tr>
-                                        <td colSpan={6} className="px-6 py-8 text-center text-steel">
+                                        <td colSpan={7} className="px-6 py-8 text-center text-steel">
                                             Belum ada akun dompet kas / ekskul. Klik "Tambah Akun Kas / Ekskul" untuk membuatnya.
                                         </td>
                                     </tr>
                                 ) : (
                                     akunKamarTersedia.map(k => {
                                         const saldo = getSantriSaldoTabungan(k.nis);
+                                        const anggotaList = (appConfig?.kasEkskulAnggotaMap || {})[k.nis] || [];
                                         const sharedCardAccounts = k.uid 
                                             ? akunKamarTersedia.filter(other => String(other.uid || '').trim().toLowerCase() === String(k.uid).trim().toLowerCase()) 
                                             : [];
@@ -5148,6 +5353,23 @@ function App() {
                                                     <span className="inline-block px-2 py-0.5 rounded text-[11px] font-semibold bg-slate-100 text-slate-800 border border-slate-200">
                                                         {k.kelas || 'Umum'}
                                                     </span>
+                                                </td>
+                                                <td className="px-6 py-3 text-center">
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => {
+                                                            setModalKelolaAnggota(k);
+                                                            setAnggotaActiveTab('list');
+                                                            setAnggotaSearchSantri('');
+                                                            setAnggotaFilterKelas('Semua');
+                                                            setAnggotaSelectedNisAdd([]);
+                                                        }}
+                                                        className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-bold bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 transition-all cursor-pointer shadow-2xs"
+                                                        title="Klik untuk Kelola Anggota Santri"
+                                                    >
+                                                        <Users className="w-3.5 h-3.5 text-indigo-600" />
+                                                        {anggotaList.length} Santri
+                                                    </button>
                                                 </td>
                                                 <td className="px-6 py-3 text-right font-bold font-mono text-emerald-700 text-sm">
                                                     Rp {saldo.toLocaleString('id-ID')}
@@ -5181,6 +5403,40 @@ function App() {
                                                 <td className="px-6 py-3 text-right space-x-1.5 whitespace-nowrap">
                                                     <button
                                                         type="button"
+                                                        onClick={() => {
+                                                            setModalKelolaAnggota(k);
+                                                            setAnggotaActiveTab('list');
+                                                            setAnggotaSearchSantri('');
+                                                            setAnggotaFilterKelas('Semua');
+                                                            setAnggotaSelectedNisAdd([]);
+                                                        }}
+                                                        className="px-2.5 py-1 bg-white hover:bg-indigo-50 text-indigo-700 border border-indigo-200 rounded-lg text-xs font-semibold shadow-xs inline-flex items-center gap-1 transition-all"
+                                                        title="Kelola Daftar Santri Anggota"
+                                                    >
+                                                        <Users className="w-3.5 h-3.5 text-indigo-600" /> Anggota
+                                                    </button>
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => {
+                                                            setTabunganSubTab('iuran');
+                                                            setIuranTargetType('Ekskul');
+                                                            setIuranKategori('Kas Ekskul');
+                                                            setIuranSelectedEkskulNis(k.nis);
+                                                            setIuranTujuanAkunNis(k.nis);
+                                                            setIuranAlokasi('KasKamar');
+                                                            setIuranKeterangan(`Iuran ${k.nama}`);
+                                                            setTimeout(() => {
+                                                                const el = document.getElementById('section-form-iuran');
+                                                                if (el) el.scrollIntoView({ behavior: 'smooth' });
+                                                            }, 60);
+                                                        }}
+                                                        className="px-2.5 py-1 bg-indigo-600 hover:bg-indigo-700 active:scale-95 text-white rounded-lg text-xs font-bold shadow-xs inline-flex items-center gap-1 transition-all"
+                                                        title="Tarik Iuran Otomatis dari Anggota"
+                                                    >
+                                                        <ArrowDownCircle className="w-3.5 h-3.5" /> Tarik Iuran
+                                                    </button>
+                                                    <button
+                                                        type="button"
                                                         onClick={() => handleBukaModalPencairan(k)}
                                                         className="px-2.5 py-1 bg-emerald-600 hover:bg-emerald-700 active:scale-95 text-white rounded-lg text-xs font-semibold shadow-xs inline-flex items-center gap-1 transition-all"
                                                         title="Cairkan Uang Cash / Tarik Tunai"
@@ -5193,7 +5449,7 @@ function App() {
                                                             setModalEditRfidKamar(k);
                                                             setInputRfidEdit(k.uid || '');
                                                         }}
-                                                        className="px-2.5 py-1 bg-white hover:bg-slate-50 text-indigo-700 border border-indigo-200 rounded-lg text-xs font-semibold shadow-xs"
+                                                        className="px-2 py-1 bg-white hover:bg-slate-50 text-steel border border-whisper rounded-lg text-xs font-semibold shadow-xs"
                                                         title="Ganti / Hubungkan Kartu RFID"
                                                     >
                                                         <Scan className="w-3 h-3 inline mr-1" /> Kartu
@@ -5204,7 +5460,7 @@ function App() {
                                                             setModalEditPinKamar(k);
                                                             setInputPinEdit(k.pin || '123456');
                                                         }}
-                                                        className="px-2.5 py-1 bg-white hover:bg-slate-50 text-amber-700 border border-amber-200 rounded-lg text-xs font-semibold shadow-xs"
+                                                        className="px-2 py-1 bg-white hover:bg-slate-50 text-steel border border-whisper rounded-lg text-xs font-semibold shadow-xs"
                                                         title="Ubah PIN Kasir POS"
                                                     >
                                                         <Key className="w-3 h-3 inline mr-1" /> PIN
@@ -5954,6 +6210,346 @@ function App() {
                                     </button>
                                 </div>
                             </div>
+                        </div>
+                    </div>
+                )}
+
+                {/* MODAL KELOLA ANGGOTA KAS / EKSKUL */}
+                {modalKelolaAnggota && (
+                    <div className="fixed inset-0 z-[120] flex items-center justify-center p-3 sm:p-4 bg-ink/50 backdrop-blur-sm animate-in fade-in duration-200">
+                        <div className="bg-surface rounded-2xl border border-whisper shadow-2xl max-w-2xl w-full max-h-[92vh] flex flex-col overflow-hidden">
+                            {/* Modal Header */}
+                            <div className="p-4 sm:p-5 border-b border-whisper flex items-start justify-between bg-gradient-to-r from-indigo-50/80 via-purple-50/50 to-amber-50/40">
+                                <div className="flex items-center gap-3">
+                                    <div className="w-10 h-10 rounded-xl bg-indigo-600 text-white flex items-center justify-center shadow-md shrink-0">
+                                        <Trophy className="w-5 h-5" />
+                                    </div>
+                                    <div>
+                                        <div className="flex items-center gap-2">
+                                            <h3 className="font-bold text-ink text-base">Kelola Anggota: {modalKelolaAnggota.nama}</h3>
+                                            <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-indigo-100 text-indigo-800 border border-indigo-200">
+                                                {modalKelolaAnggota.kelas || 'Ekskul'}
+                                            </span>
+                                        </div>
+                                        <p className="text-xs text-steel mt-0.5">
+                                            Kelompokkan anak-anak ke ekskul ini agar bisa ditarik iuran kas otomatis sekali klik.
+                                        </p>
+                                    </div>
+                                </div>
+                                <button
+                                    type="button"
+                                    onClick={() => setModalKelolaAnggota(null)}
+                                    className="p-1 rounded-lg text-steel hover:text-ink hover:bg-canvas transition-colors"
+                                >
+                                    <X className="w-5 h-5" />
+                                </button>
+                            </div>
+
+                            {/* Modal Tabs */}
+                            {(() => {
+                                const currentNisList = (appConfig?.kasEkskulAnggotaMap || {})[modalKelolaAnggota.nis] || [];
+                                const anggotaSantriList = dataSantri.filter(s => currentNisList.includes(String(s.nis)));
+                                const nonAnggotaSantriList = dataSantri.filter(s => 
+                                    !String(s.nis || '').startsWith('KAS-') &&
+                                    !(s.nama || '').toLowerCase().startsWith('kas ') &&
+                                    !(s.kelas || '').toLowerCase().includes('ekskul') &&
+                                    (!s.status || s.status.toLowerCase() !== 'keluar') &&
+                                    !currentNisList.includes(String(s.nis))
+                                );
+
+                                return (
+                                    <>
+                                        <div className="px-4 sm:px-5 pt-3 border-b border-whisper flex items-center justify-between bg-canvas/30">
+                                            <div className="flex gap-2">
+                                                <button
+                                                    type="button"
+                                                    onClick={() => setAnggotaActiveTab('list')}
+                                                    className={`pb-2.5 px-3 text-xs font-bold border-b-2 transition-all flex items-center gap-1.5 ${
+                                                        anggotaActiveTab === 'list'
+                                                            ? 'border-indigo-600 text-indigo-600'
+                                                            : 'border-transparent text-steel hover:text-ink'
+                                                    }`}
+                                                >
+                                                    <Users className="w-3.5 h-3.5" />
+                                                    Anggota Terdaftar ({anggotaSantriList.length})
+                                                </button>
+                                                <button
+                                                    type="button"
+                                                    onClick={() => setAnggotaActiveTab('tambah')}
+                                                    className={`pb-2.5 px-3 text-xs font-bold border-b-2 transition-all flex items-center gap-1.5 ${
+                                                        anggotaActiveTab === 'tambah'
+                                                            ? 'border-indigo-600 text-indigo-600'
+                                                            : 'border-transparent text-steel hover:text-ink'
+                                                    }`}
+                                                >
+                                                    <UserPlus className="w-3.5 h-3.5" />
+                                                    + Tambah Anggota Santri
+                                                </button>
+                                            </div>
+                                            <span className="text-[11px] font-mono text-steel pb-2 hidden sm:inline">
+                                                ID: {modalKelolaAnggota.nis}
+                                            </span>
+                                        </div>
+
+                                        {/* Modal Body */}
+                                        <div className="p-4 sm:p-5 overflow-y-auto flex-1 space-y-4">
+                                            {anggotaActiveTab === 'list' && (
+                                                <>
+                                                    {/* Search inside members */}
+                                                    <div className="flex flex-col sm:flex-row gap-2 items-center justify-between">
+                                                        <div className="relative w-full sm:w-72">
+                                                            <Search className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-steel" />
+                                                            <input
+                                                                type="text"
+                                                                placeholder="Cari anggota ekskul..."
+                                                                value={anggotaSearchSantri}
+                                                                onChange={(e) => setAnggotaSearchSantri(e.target.value)}
+                                                                className={`${inputBase} pl-8 py-1.5 text-xs w-full`}
+                                                            />
+                                                        </div>
+                                                        {anggotaSantriList.length > 0 && (
+                                                            <button
+                                                                type="button"
+                                                                onClick={() => {
+                                                                    if (window.confirm(`Keluarkan SEMUA ${anggotaSantriList.length} santri dari anggota ${modalKelolaAnggota.nama}?`)) {
+                                                                        handleSimpanAnggotaEkskul(modalKelolaAnggota.nis, []);
+                                                                    }
+                                                                }}
+                                                                className="text-[11px] text-rose-600 hover:text-rose-700 font-semibold px-2.5 py-1 rounded-lg border border-rose-200 hover:bg-rose-50 transition-colors"
+                                                            >
+                                                                Kosongkan Anggota
+                                                            </button>
+                                                        )}
+                                                    </div>
+
+                                                    {/* Member list */}
+                                                    {anggotaSantriList.length === 0 ? (
+                                                        <div className="py-12 text-center text-steel border-2 border-dashed border-whisper rounded-xl bg-canvas/30">
+                                                            <Users className="w-10 h-10 text-slate-300 mx-auto mb-2" />
+                                                            <p className="font-semibold text-ink text-sm">Belum Ada Anggota Terdaftar</p>
+                                                            <p className="text-xs text-steel max-w-sm mx-auto mt-1 mb-4">
+                                                                Santri yang terdaftar di sini akan otomatis terisi saat bendahara menarik iuran ekskul.
+                                                            </p>
+                                                            <button
+                                                                type="button"
+                                                                onClick={() => setAnggotaActiveTab('tambah')}
+                                                                className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-bold shadow-sm inline-flex items-center gap-1.5 transition-all"
+                                                            >
+                                                                <UserPlus className="w-3.5 h-3.5" /> Tambah Anggota Sekarang
+                                                            </button>
+                                                        </div>
+                                                    ) : (
+                                                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                                                            {anggotaSantriList
+                                                                .filter(s => 
+                                                                    (s.nama || '').toLowerCase().includes(anggotaSearchSantri.toLowerCase()) || 
+                                                                    String(s.nis || '').includes(anggotaSearchSantri) ||
+                                                                    (s.kelas || '').toLowerCase().includes(anggotaSearchSantri.toLowerCase())
+                                                                )
+                                                                .map(s => {
+                                                                    const saldoTab = getSantriSaldoTabungan(s.nis);
+                                                                    return (
+                                                                        <div key={s.nis} className="p-3 rounded-xl border border-whisper bg-surface hover:border-indigo-200 transition-all flex items-center justify-between gap-2 shadow-2xs">
+                                                                            <div className="flex items-center gap-2.5 min-w-0">
+                                                                                <div className="w-8 h-8 rounded-lg bg-indigo-50 text-indigo-700 font-bold flex items-center justify-center text-xs shrink-0">
+                                                                                    {(s.nama || 'S').charAt(0).toUpperCase()}
+                                                                                </div>
+                                                                                <div className="min-w-0">
+                                                                                    <div className="font-bold text-xs text-ink truncate">{s.nama}</div>
+                                                                                    <div className="text-[10px] text-steel font-mono">
+                                                                                        {s.nis} • <span className="text-indigo-600 font-semibold">{s.kelas || 'Umum'}</span>
+                                                                                    </div>
+                                                                                    <div className="text-[10px] text-emerald-700 font-mono font-semibold">
+                                                                                        Saldo: Rp {saldoTab.toLocaleString('id-ID')}
+                                                                                    </div>
+                                                                                </div>
+                                                                            </div>
+                                                                            <button
+                                                                                type="button"
+                                                                                onClick={() => {
+                                                                                    const updated = currentNisList.filter(id => String(id) !== String(s.nis));
+                                                                                    handleSimpanAnggotaEkskul(modalKelolaAnggota.nis, updated);
+                                                                                }}
+                                                                                className="p-1.5 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition-colors shrink-0"
+                                                                                title="Keluarkan dari Ekskul"
+                                                                            >
+                                                                                <X className="w-4 h-4" />
+                                                                            </button>
+                                                                        </div>
+                                                                    );
+                                                                })}
+                                                        </div>
+                                                    )}
+                                                </>
+                                            )}
+
+                                            {anggotaActiveTab === 'tambah' && (
+                                                <>
+                                                    {/* Filters & Bulk select */}
+                                                    <div className="flex flex-col sm:flex-row gap-2 items-center justify-between bg-canvas/60 p-2.5 rounded-xl border border-whisper">
+                                                        <div className="flex items-center gap-2 w-full sm:w-auto">
+                                                            <div className="relative flex-1 sm:w-48">
+                                                                <Search className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-steel" />
+                                                                <input
+                                                                    type="text"
+                                                                    placeholder="Cari santri..."
+                                                                    value={anggotaSearchSantri}
+                                                                    onChange={(e) => setAnggotaSearchSantri(e.target.value)}
+                                                                    className={`${inputBase} pl-7 py-1 text-xs w-full bg-white`}
+                                                                />
+                                                            </div>
+                                                            <select
+                                                                value={anggotaFilterKelas}
+                                                                onChange={(e) => setAnggotaFilterKelas(e.target.value)}
+                                                                className={`${inputBase} py-1 text-xs bg-white`}
+                                                            >
+                                                                <option value="Semua">Semua Kelas</option>
+                                                                {masterKelasList.map(cls => (
+                                                                    <option key={cls} value={cls}>{cls}</option>
+                                                                ))}
+                                                            </select>
+                                                        </div>
+
+                                                        {(() => {
+                                                            const filteredNonAnggota = nonAnggotaSantriList.filter(s => {
+                                                                const matchQuery = (s.nama || '').toLowerCase().includes(anggotaSearchSantri.toLowerCase()) || 
+                                                                                   String(s.nis || '').includes(anggotaSearchSantri);
+                                                                const matchClass = anggotaFilterKelas === 'Semua' || String(s.kelas || '').trim().toLowerCase() === String(anggotaFilterKelas).trim().toLowerCase();
+                                                                return matchQuery && matchClass;
+                                                            });
+
+                                                            return (
+                                                                <div className="flex items-center gap-2 w-full sm:w-auto justify-end">
+                                                                    <button
+                                                                        type="button"
+                                                                        onClick={() => {
+                                                                            const allFilteredNis = filteredNonAnggota.map(s => String(s.nis));
+                                                                            setAnggotaSelectedNisAdd(prev => Array.from(new Set([...prev, ...allFilteredNis])));
+                                                                        }}
+                                                                        className="text-[11px] font-bold text-indigo-700 hover:text-indigo-900 px-2 py-1 rounded bg-indigo-50 border border-indigo-200"
+                                                                    >
+                                                                        Pilih Semua ({filteredNonAnggota.length})
+                                                                    </button>
+                                                                    {anggotaSelectedNisAdd.length > 0 && (
+                                                                        <button
+                                                                            type="button"
+                                                                            onClick={() => setAnggotaSelectedNisAdd([])}
+                                                                            className="text-[11px] font-semibold text-steel hover:text-ink px-2 py-1"
+                                                                        >
+                                                                            Batal ({anggotaSelectedNisAdd.length})
+                                                                        </button>
+                                                                    )}
+                                                                </div>
+                                                            );
+                                                        })()}
+                                                    </div>
+
+                                                    {/* Santri Checkbox List */}
+                                                    {(() => {
+                                                        const filteredNonAnggota = nonAnggotaSantriList.filter(s => {
+                                                            const matchQuery = (s.nama || '').toLowerCase().includes(anggotaSearchSantri.toLowerCase()) || 
+                                                                               String(s.nis || '').includes(anggotaSearchSantri);
+                                                            const matchClass = anggotaFilterKelas === 'Semua' || String(s.kelas || '').trim().toLowerCase() === String(anggotaFilterKelas).trim().toLowerCase();
+                                                            return matchQuery && matchClass;
+                                                        });
+
+                                                        if (filteredNonAnggota.length === 0) {
+                                                            return (
+                                                                <div className="py-8 text-center text-steel text-xs">
+                                                                    Semua santri yang cocok sudah menjadi anggota ekskul ini atau tidak ditemukan.
+                                                                </div>
+                                                            );
+                                                        }
+
+                                                        return (
+                                                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 max-h-[320px] overflow-y-auto pr-1">
+                                                                {filteredNonAnggota.map(s => {
+                                                                    const isChecked = anggotaSelectedNisAdd.includes(String(s.nis));
+                                                                    const saldoTab = getSantriSaldoTabungan(s.nis);
+                                                                    return (
+                                                                        <label
+                                                                            key={s.nis}
+                                                                            className={`p-2.5 rounded-xl border transition-all flex items-center justify-between gap-2.5 cursor-pointer select-none ${
+                                                                                isChecked 
+                                                                                    ? 'bg-indigo-50/80 border-indigo-500 shadow-2xs' 
+                                                                                    : 'bg-surface border-whisper hover:border-slate-300'
+                                                                            }`}
+                                                                        >
+                                                                            <div className="flex items-center gap-2.5 min-w-0">
+                                                                                <input
+                                                                                    type="checkbox"
+                                                                                    checked={isChecked}
+                                                                                    onChange={() => {
+                                                                                        const strNis = String(s.nis);
+                                                                                        if (isChecked) {
+                                                                                            setAnggotaSelectedNisAdd(prev => prev.filter(id => id !== strNis));
+                                                                                        } else {
+                                                                                            setAnggotaSelectedNisAdd(prev => [...prev, strNis]);
+                                                                                        }
+                                                                                    }}
+                                                                                    className="w-4 h-4 rounded text-indigo-600 focus:ring-indigo-500"
+                                                                                />
+                                                                                <div className="min-w-0">
+                                                                                    <div className="font-bold text-xs text-ink truncate">{s.nama}</div>
+                                                                                    <div className="text-[10px] text-steel font-mono">
+                                                                                        {s.nis} • <span className="text-indigo-600 font-semibold">{s.kelas || 'Umum'}</span>
+                                                                                    </div>
+                                                                                </div>
+                                                                            </div>
+                                                                            <div className="text-right shrink-0">
+                                                                                <div className="text-[10px] text-steel">Saldo</div>
+                                                                                <div className="text-[11px] font-mono font-bold text-emerald-700">
+                                                                                    Rp {saldoTab.toLocaleString('id-ID')}
+                                                                                </div>
+                                                                            </div>
+                                                                        </label>
+                                                                    );
+                                                                })}
+                                                            </div>
+                                                        );
+                                                    })()}
+                                                </>
+                                            )}
+                                        </div>
+
+                                        {/* Modal Footer */}
+                                        <div className="p-4 sm:p-5 border-t border-whisper flex items-center justify-between bg-canvas/30">
+                                            <button
+                                                type="button"
+                                                onClick={() => setModalKelolaAnggota(null)}
+                                                className="px-4 py-2 border border-whisper text-steel hover:text-ink hover:bg-canvas rounded-xl text-xs font-semibold transition-colors"
+                                            >
+                                                Tutup
+                                            </button>
+                                            {anggotaActiveTab === 'tambah' && (
+                                                <button
+                                                    type="button"
+                                                    disabled={anggotaSelectedNisAdd.length === 0 || savingAnggota}
+                                                    onClick={async () => {
+                                                        const combined = Array.from(new Set([...currentNisList, ...anggotaSelectedNisAdd]));
+                                                        await handleSimpanAnggotaEkskul(modalKelolaAnggota.nis, combined);
+                                                        setAnggotaSelectedNisAdd([]);
+                                                        setAnggotaActiveTab('list');
+                                                    }}
+                                                    className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 active:scale-95 disabled:opacity-50 text-white rounded-xl text-xs font-bold shadow-md flex items-center gap-1.5 transition-all"
+                                                >
+                                                    <UserPlus className="w-3.5 h-3.5" />
+                                                    {savingAnggota ? 'Menyimpan...' : `Tambahkan ${anggotaSelectedNisAdd.length} Santri`}
+                                                </button>
+                                            )}
+                                            {anggotaActiveTab === 'list' && (
+                                                <button
+                                                    type="button"
+                                                    onClick={() => setAnggotaActiveTab('tambah')}
+                                                    className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 active:scale-95 text-white rounded-xl text-xs font-bold shadow-md flex items-center gap-1.5 transition-all"
+                                                >
+                                                    <Plus className="w-3.5 h-3.5" /> Tambah Santri Baru
+                                                </button>
+                                            )}
+                                        </div>
+                                    </>
+                                );
+                            })()}
                         </div>
                     </div>
                 )}
