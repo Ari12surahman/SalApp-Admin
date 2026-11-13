@@ -392,10 +392,10 @@ import {
     LayoutDashboard, Users, CreditCard, Wallet, TrendingUp, AlertCircle, Plus, Search, Filter, Bell,
     User, X, Trash2, Settings, FileSpreadsheet, FileText, BadgePercent, Zap, ArrowDownCircle,
     ArrowUpCircle, Edit, Printer, CheckCircle2, BarChart3, History, Activity, QrCode, Link as LinkIcon,
-    Copy, ExternalLink, RefreshCw, Check, Briefcase, BookOpen, DownloadCloud, TrendingDown, Menu, ArrowRight, ArrowLeft, Eye, EyeOff, ChevronRight, Scan, Download,
+    Copy, ExternalLink, RefreshCw, Check, Briefcase, BookOpen, DownloadCloud, TrendingDown, Menu, ArrowRight, ArrowLeft, Eye, EyeOff, ChevronLeft, ChevronRight, Scan, Download,
     SlidersHorizontal, ShieldAlert, ShieldCheck, ShoppingBag, Store, CalendarDays, Package,
     Coins, Scissors, HandHeart, Building2, Key, Clock, Sparkles, Banknote, Layers,
-    Trophy, UserPlus, UserCheck
+    Trophy, UserPlus, UserCheck, Lock, Unlock
 } from "lucide-react";
 
 // Import Recharts dengan parameter bundle untuk mencegah error lodash missing modules
@@ -582,6 +582,10 @@ function App() {
     const [iuranSearchSantri, setIuranSearchSantri] = useState('');
     const [iuranProcessing, setIuranProcessing] = useState(false);
     const [iuranHasilEksekusi, setIuranHasilEksekusi] = useState(null);
+    const [iuranSectionTab, setIuranSectionTab] = useState('akunKas'); // 'akunKas' | 'tarikIuran' | 'riwayat' | 'kategori'
+    const [akunKasSearch, setAkunKasSearch] = useState('');
+    const [akunKasPage, setAkunKasPage] = useState(1);
+    const [iuranRiwayatPage, setIuranRiwayatPage] = useState(1);
     const [iuranRiwayatFilter, setIuranRiwayatFilter] = useState('Semua');
     const [iuranRiwayatSearch, setIuranRiwayatSearch] = useState('');
     const [showModalBuatAkunKamar, setShowModalBuatAkunKamar] = useState(false);
@@ -664,6 +668,9 @@ function App() {
     const [notification, setNotification] = useState(null);
     const [scanResult, setScanResult] = useState(null);
     const [scanActiveMultiKasIdx, setScanActiveMultiKasIdx] = useState(0);
+    const [scanUnlockedKasNisList, setScanUnlockedKasNisList] = useState([]);
+    const [scanPinInput, setScanPinInput] = useState('');
+    const [scanPinError, setScanPinError] = useState(null);
     const [scanInput, setScanInput] = useState('');
     const scanInputRef = useRef(null);
 
@@ -2692,10 +2699,53 @@ function App() {
         showNotification(`Data Kas dicatat!`); closeModal();
     };
 
+    const handleUnlockScanKas = (overridePin) => {
+        const inputVal = String(overridePin !== undefined ? overridePin : scanPinInput).trim();
+        if (!inputVal) return;
+
+        const currentActive = scanResult?.santri;
+        const currentExpected = String(currentActive?.pin || '123456');
+
+        if (inputVal === currentExpected) {
+            if (currentActive?.nis) {
+                setScanUnlockedKasNisList(prev => [...prev.filter(n => n !== currentActive.nis), currentActive.nis]);
+            }
+            setScanPinInput('');
+            setScanPinError(null);
+            return;
+        }
+
+        if (scanResult?.isMultiKas && scanResult?.multiKasList?.length > 1) {
+            const matchedIdx = scanResult.multiKasList.findIndex(mk => String(mk.pin || '123456') === inputVal);
+            if (matchedIdx !== -1) {
+                const matched = scanResult.multiKasList[matchedIdx];
+                setScanActiveMultiKasIdx(matchedIdx);
+                setScanResult(prev => ({
+                    ...prev,
+                    santri: matched.santri,
+                    nama: matched.nama,
+                    saldoTabungan: matched.saldo,
+                    mutasi: matched.mutasi,
+                    isKamar: matched.isKamar
+                }));
+                setScanUnlockedKasNisList(prev => [...prev.filter(n => n !== matched.nis), matched.nis]);
+                setScanPinInput('');
+                setScanPinError(null);
+                return;
+            }
+        }
+
+        setScanPinError('PIN Salah! Anda tidak memiliki izin untuk melihat kas ini.');
+    };
+
     const handleScanRFID = (e) => {
         e.preventDefault();
         const code = String(scanInput).trim().replace(/^0+/, '');
         if (!code) return;
+
+        setScanUnlockedKasNisList([]);
+        setScanPinInput('');
+        setScanPinError(null);
 
         // Cari santri/kas berdasarkan uid atau nis (dukung multi-kas)
         const matchingSantriList = dataSantri.filter(s =>
@@ -3935,7 +3985,10 @@ function App() {
             // Simpan instan ke Supabase Tabungan
             try {
                 if (newTabunganRecords.length > 0) {
-                    await supabase.from('Tabungan').insert(newTabunganRecords);
+                    const { error: insErr } = await supabase.from('Tabungan').insert(newTabunganRecords);
+                    if (insErr) {
+                        console.error("Gagal simpan tabungan ke Supabase:", insErr);
+                    }
                 }
             } catch (tabInsertErr) {
                 console.warn("Fallback auto-sync tabungan:", tabInsertErr);
@@ -3970,6 +4023,9 @@ function App() {
                 detailSukses: santriToProcess,
                 detailGagal: insufficient
             });
+            // Alihkan otomatis ke tab riwayat agar user langsung melihat hasilnya
+            setIuranSectionTab('riwayat');
+            setIuranRiwayatPage(1);
         } catch (err) {
             console.error("Gagal potong iuran:", err);
             showNotification("Gagal memproses pemotongan iuran!", "error");
@@ -4530,22 +4586,41 @@ function App() {
             String(s.nis || '').startsWith('KAS-')
         );
 
+        const filteredAkunKas = akunKamarTersedia.filter(k => {
+            if (!akunKasSearch) return true;
+            const q = akunKasSearch.toLowerCase();
+            return (k.nama || '').toLowerCase().includes(q) ||
+                   String(k.nis || '').toLowerCase().includes(q) ||
+                   String(k.kelas || '').toLowerCase().includes(q) ||
+                   String(k.uid || '').toLowerCase().includes(q);
+        });
+        const akunKasPerPage = 8;
+        const totalAkunKasPages = Math.max(1, Math.ceil(filteredAkunKas.length / akunKasPerPage));
+        const pagedAkunKas = filteredAkunKas.slice((akunKasPage - 1) * akunKasPerPage, akunKasPage * akunKasPerPage);
+
         const riwayatInsidental = dataTabungan.filter(t => {
             const ket = (t.keterangan || '').toLowerCase();
+            const tid = String(t.id || '');
             const matchesCategory = 
-                ket.includes('[kas kamar]') || 
+                tid.startsWith('TB-IRN') ||
+                tid.startsWith('TB-CAIR') ||
+                ket.includes('[kas ') || 
                 ket.includes('[infaq') || 
                 ket.includes('[cukur') || 
                 ket.includes('[kas kelas]') || 
                 ket.includes('[iuran') ||
-                ket.includes('[pencairan tunai');
+                ket.includes('[kegiatan') ||
+                ket.includes('[pencairan') ||
+                ket.includes('[penerimaan');
             if (!matchesCategory) return false;
             if (iuranRiwayatFilter !== 'Semua') {
-                if (iuranRiwayatFilter === 'Kas Kamar' && !ket.includes('[kas kamar]')) return false;
-                if (iuranRiwayatFilter === 'Infaq' && !ket.includes('[infaq')) return false;
-                if (iuranRiwayatFilter === 'Cukur' && !ket.includes('[cukur')) return false;
-                if (iuranRiwayatFilter === 'Kas Kelas' && !ket.includes('[kas kelas]')) return false;
-                if (iuranRiwayatFilter === 'Pencairan Tunai' && !ket.includes('[pencairan tunai')) return false;
+                if (iuranRiwayatFilter === 'Kas Ekskul' && !(ket.includes('[kas ekskul]') || ket.includes('penerimaan kas ekskul'))) return false;
+                if (iuranRiwayatFilter === 'Kas Kamar' && !(ket.includes('[kas kamar]') || ket.includes('penerimaan kas kamar'))) return false;
+                if (iuranRiwayatFilter === 'Infaq' && !(ket.includes('[infaq') || ket.includes('penerimaan infaq'))) return false;
+                if (iuranRiwayatFilter === 'Cukur' && !(ket.includes('[cukur') || ket.includes('penerimaan cukur'))) return false;
+                if (iuranRiwayatFilter === 'Kas Kelas' && !(ket.includes('[kas kelas]') || ket.includes('penerimaan kas kelas'))) return false;
+                if (iuranRiwayatFilter === 'Kegiatan' && !(ket.includes('[kegiatan') || ket.includes('penerimaan kegiatan'))) return false;
+                if (iuranRiwayatFilter === 'Pencairan Tunai' && !(ket.includes('[pencairan') || tid.startsWith('TB-CAIR'))) return false;
             }
             if (iuranRiwayatSearch) {
                 const s = iuranRiwayatSearch.toLowerCase();
@@ -4555,6 +4630,10 @@ function App() {
             }
             return true;
         });
+
+        const iuranRiwayatPerPage = 12;
+        const totalRiwayatPages = Math.max(1, Math.ceil(riwayatInsidental.length / iuranRiwayatPerPage));
+        const pagedRiwayatInsidental = riwayatInsidental.slice((iuranRiwayatPage - 1) * iuranRiwayatPerPage, iuranRiwayatPage * iuranRiwayatPerPage);
 
         return (
             <div className="space-y-6 animate-in fade-in duration-300">
@@ -4581,12 +4660,70 @@ function App() {
                             <button
                                 type="button"
                                 onClick={() => setShowModalBuatAkunKamar(true)}
-                                className="px-4 py-2.5 bg-white hover:bg-slate-50 text-indigo-700 border border-indigo-200 rounded-xl font-semibold text-xs flex items-center gap-2 shadow-sm transition-all"
+                                className="px-4 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl font-semibold text-xs flex items-center gap-2 shadow-sm transition-all"
                             >
-                                <Plus className="w-4 h-4" /> Buat Akun Dompet Kamar
+                                <Plus className="w-4 h-4" /> Tambah Akun Kas / Ekskul
                             </button>
                         </div>
                     </div>
+                </div>
+
+                {/* SUB-NAVIGASI TAB UANG KAS: MENGHILANGKAN SCROLL PANJANG */}
+                <div className="flex flex-wrap items-center gap-2 border-b border-whisper pb-3">
+                    <button
+                        type="button"
+                        onClick={() => setIuranSectionTab('akunKas')}
+                        className={`px-4 py-2.5 rounded-xl text-xs font-bold transition-all flex items-center gap-2 ${
+                            iuranSectionTab === 'akunKas'
+                                ? 'bg-indigo-600 text-white shadow-sm ring-2 ring-indigo-500/20'
+                                : 'bg-surface hover:bg-canvas text-steel border border-whisper'
+                        }`}
+                    >
+                        <Building2 className="w-4 h-4" />
+                        <span>Daftar Akun Kas & Ekskul</span>
+                        <span className={`px-2 py-0.5 rounded-full text-[10px] font-mono ${
+                            iuranSectionTab === 'akunKas' ? 'bg-white/20 text-white' : 'bg-slate-100 text-slate-700'
+                        }`}>
+                            {akunKamarTersedia.length}
+                        </span>
+                    </button>
+                    <button
+                        type="button"
+                        onClick={() => setIuranSectionTab('tarikIuran')}
+                        className={`px-4 py-2.5 rounded-xl text-xs font-bold transition-all flex items-center gap-2 ${
+                            iuranSectionTab === 'tarikIuran'
+                                ? 'bg-indigo-600 text-white shadow-sm ring-2 ring-indigo-500/20'
+                                : 'bg-surface hover:bg-canvas text-steel border border-whisper'
+                        }`}
+                    >
+                        <Zap className="w-4 h-4" />
+                        <span>Tarik Iuran Otomatis</span>
+                    </button>
+                    <button
+                        type="button"
+                        onClick={() => setIuranSectionTab('riwayat')}
+                        className={`px-4 py-2.5 rounded-xl text-xs font-bold transition-all flex items-center gap-2 ${
+                            iuranSectionTab === 'riwayat'
+                                ? 'bg-indigo-600 text-white shadow-sm ring-2 ring-indigo-500/20'
+                                : 'bg-surface hover:bg-canvas text-steel border border-whisper'
+                        }`}
+                    >
+                        <History className="w-4 h-4" />
+                        <span>Riwayat Pemotongan & Infaq</span>
+                        <span className={`px-2 py-0.5 rounded-full text-[10px] font-mono ${
+                            iuranSectionTab === 'riwayat' ? 'bg-white/20 text-white' : 'bg-slate-100 text-slate-700'
+                        }`}>
+                            {riwayatInsidental.length}
+                        </span>
+                    </button>
+                    <button
+                        type="button"
+                        onClick={() => setShowModalMasterInsidental(true)}
+                        className="px-3.5 py-2.5 rounded-xl text-xs font-bold bg-surface hover:bg-canvas text-steel border border-whisper transition-all flex items-center gap-2 ml-auto"
+                    >
+                        <Settings className="w-4 h-4 text-indigo-600" />
+                        <span>Master Kategori Iuran</span>
+                    </button>
                 </div>
 
                 {/* Banner Hasil Eksekusi Terakhir (Jika ada) */}
@@ -4599,10 +4736,10 @@ function App() {
                                 </div>
                                 <div>
                                     <h4 className="font-bold text-ink text-sm">
-                                        Pemotongan ${iuranHasilEksekusi.kategori} Berhasil Diproses!
+                                        Pemotongan {iuranHasilEksekusi.kategori} Berhasil Diproses!
                                     </h4>
                                     <p className="text-xs text-steel mt-0.5">
-                                        ${iuranHasilEksekusi.keterangan} • ${iuranHasilEksekusi.tanggal}
+                                        {iuranHasilEksekusi.keterangan || '-'} • {iuranHasilEksekusi.tanggal}
                                     </p>
                                 </div>
                             </div>
@@ -4617,26 +4754,27 @@ function App() {
                         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 pt-2 border-t border-emerald-200/60 text-xs">
                             <div>
                                 <span className="text-steel">Santri Terpotong:</span>
-                                <div className="font-bold text-emerald-700 text-sm">${iuranHasilEksekusi.suksesCount} santri</div>
+                                <div className="font-bold text-emerald-700 text-sm">{iuranHasilEksekusi.suksesCount} santri</div>
                             </div>
                             <div>
                                 <span className="text-steel">Total Dana Masuk:</span>
-                                <div className="font-bold text-emerald-700 text-sm">Rp ${iuranHasilEksekusi.totalDana.toLocaleString('id-ID')}</div>
+                                <div className="font-bold text-emerald-700 text-sm">Rp {iuranHasilEksekusi.totalDana.toLocaleString('id-ID')}</div>
                             </div>
                             <div>
                                 <span className="text-steel">Nominal per Anak:</span>
-                                <div className="font-bold text-ink text-sm">Rp ${iuranHasilEksekusi.nominalPerSantri.toLocaleString('id-ID')}</div>
+                                <div className="font-bold text-ink text-sm">Rp {iuranHasilEksekusi.nominalPerSantri.toLocaleString('id-ID')}</div>
                             </div>
                             <div>
                                 <span className="text-steel">Saldo Kurang (Dilewati):</span>
-                                <div className="font-bold text-amber-600 text-sm">${iuranHasilEksekusi.gagalCount} santri</div>
+                                <div className="font-bold text-amber-600 text-sm">{iuranHasilEksekusi.gagalCount} santri</div>
                             </div>
                         </div>
                     </div>
                 )}
 
                 {/* Form Utama (2 Kolom) */}
-                <div id="section-form-iuran" className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+                {iuranSectionTab === 'tarikIuran' && (
+                    <div id="section-form-iuran" className="grid grid-cols-1 lg:grid-cols-12 gap-6">
                     {/* Kolom Kiri: Formulir Pengaturan */}
                     <div className="lg:col-span-7 space-y-6">
                         <div className="bg-surface border border-whisper rounded-2xl p-6 shadow-sm space-y-5">
@@ -5336,9 +5474,11 @@ function App() {
                         </div>
                     </div>
                 </div>
+                )}
 
                 {/* DAFTAR AKUN DOMPET KAS & EKSKUL (MULTI-KAS 1 KARTU) */}
-                <div className="bg-surface border border-whisper shadow-sm rounded-card overflow-hidden mt-8">
+                {iuranSectionTab === 'akunKas' && (
+                <div className="bg-surface border border-whisper shadow-sm rounded-card overflow-hidden">
                     <div className="p-4 border-b border-whisper/50 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 bg-canvas/40">
                         <div>
                             <h4 className="font-bold text-ink text-sm flex items-center gap-2">
@@ -5365,6 +5505,37 @@ function App() {
                             </button>
                         </div>
                     </div>
+                    {/* Filter & Pencarian Akun Kas */}
+                    <div className="p-3 border-b border-whisper/50 bg-canvas/20 flex flex-wrap items-center justify-between gap-3 text-xs">
+                        <div className="relative w-full sm:w-80">
+                            <Search className="w-3.5 h-3.5 absolute left-3 top-2.5 text-steel" />
+                            <input
+                                type="text"
+                                placeholder="Cari nama kas, ekskul, NIS, UID kartu..."
+                                value={akunKasSearch}
+                                onChange={(e) => {
+                                    setAkunKasSearch(e.target.value);
+                                    setAkunKasPage(1);
+                                }}
+                                className={`${inputBase} pl-8 py-1.5 text-xs w-full`}
+                            />
+                            {akunKasSearch && (
+                                <button
+                                    type="button"
+                                    onClick={() => {
+                                        setAkunKasSearch('');
+                                        setAkunKasPage(1);
+                                    }}
+                                    className="absolute right-2.5 top-2 text-steel hover:text-ink text-xs"
+                                >
+                                    <X className="w-3.5 h-3.5" />
+                                </button>
+                            )}
+                        </div>
+                        <div className="text-steel text-[11px] font-medium">
+                            Menampilkan <span className="font-bold text-ink">{filteredAkunKas.length}</span> akun kas terdaftar
+                        </div>
+                    </div>
                     <div className="overflow-x-auto">
                         <table className="w-full text-sm text-left">
                             <thead className="bg-canvas/60 text-steel border-b border-whisper/50 text-xs">
@@ -5379,14 +5550,14 @@ function App() {
                                 </tr>
                             </thead>
                             <tbody className="divide-y divide-slate-100 text-xs">
-                                {akunKamarTersedia.length === 0 ? (
+                                {filteredAkunKas.length === 0 ? (
                                     <tr>
                                         <td colSpan={7} className="px-6 py-8 text-center text-steel">
-                                            Belum ada akun dompet kas / ekskul. Klik "Tambah Akun Kas / Ekskul" untuk membuatnya.
+                                            {akunKasSearch ? 'Tidak ada akun kas / ekskul yang cocok dengan kata kunci pencarian.' : 'Belum ada akun dompet kas / ekskul. Klik "Tambah Akun Kas / Ekskul" untuk membuatnya.'}
                                         </td>
                                     </tr>
                                 ) : (
-                                    akunKamarTersedia.map(k => {
+                                    pagedAkunKas.map(k => {
                                         const saldo = getSantriSaldoTabungan(k.nis);
                                         const anggotaList = (appConfig?.kasEkskulAnggotaMap || {})[k.nis] || [];
                                         const sharedCardAccounts = k.uid 
@@ -5479,6 +5650,7 @@ function App() {
                                                         type="button"
                                                         onClick={() => {
                                                             setTabunganSubTab('iuran');
+                                                            setIuranSectionTab('tarikIuran');
                                                             setIuranTargetType('Ekskul');
                                                             setIuranKategori('Kas Ekskul');
                                                             setIuranSelectedEkskulNis(k.nis);
@@ -5541,10 +5713,48 @@ function App() {
                             </tbody>
                         </table>
                     </div>
+                    {totalAkunKasPages > 1 && (
+                        <div className="px-6 py-3.5 bg-canvas/40 border-t border-whisper flex flex-col sm:flex-row items-center justify-between gap-3 text-xs">
+                            <div className="text-steel">
+                                Menampilkan <span className="font-semibold text-ink">{((akunKasPage - 1) * akunKasPerPage) + 1}</span> - <span className="font-semibold text-ink">{Math.min(akunKasPage * akunKasPerPage, filteredAkunKas.length)}</span> dari <span className="font-semibold text-ink">{filteredAkunKas.length}</span> akun kas
+                            </div>
+                            <div className="flex items-center gap-1.5">
+                                <button
+                                    type="button"
+                                    disabled={akunKasPage === 1}
+                                    onClick={() => setAkunKasPage(p => Math.max(1, p - 1))}
+                                    className={`px-2.5 py-1.5 rounded-lg border flex items-center gap-1 font-semibold transition-all ${
+                                        akunKasPage === 1 
+                                            ? 'bg-slate-100 text-slate-400 border-whisper cursor-not-allowed' 
+                                            : 'bg-white hover:bg-slate-50 text-ink border-whisper shadow-xs'
+                                    }`}
+                                >
+                                    <ChevronLeft className="w-3.5 h-3.5" /> Sebelumnya
+                                </button>
+                                <span className="px-3 py-1 font-bold text-indigo-700 bg-indigo-50 border border-indigo-200 rounded-lg">
+                                    {akunKasPage} / {totalAkunKasPages}
+                                </span>
+                                <button
+                                    type="button"
+                                    disabled={akunKasPage === totalAkunKasPages}
+                                    onClick={() => setAkunKasPage(p => Math.min(totalAkunKasPages, p + 1))}
+                                    className={`px-2.5 py-1.5 rounded-lg border flex items-center gap-1 font-semibold transition-all ${
+                                        akunKasPage === totalAkunKasPages 
+                                            ? 'bg-slate-100 text-slate-400 border-whisper cursor-not-allowed' 
+                                            : 'bg-white hover:bg-slate-50 text-ink border-whisper shadow-xs'
+                                    }`}
+                                >
+                                    Selanjutnya <ChevronRight className="w-3.5 h-3.5" />
+                                </button>
+                            </div>
+                        </div>
+                    )}
                 </div>
+                )}
 
                 {/* Tabel Riwayat Penarikan Iuran / Kas Insidental */}
-                <div className="bg-surface border border-whisper shadow-sm rounded-card overflow-hidden mt-8">
+                {iuranSectionTab === 'riwayat' && (
+                <div className="bg-surface border border-whisper shadow-sm rounded-card overflow-hidden">
                     <div className="p-4 border-b border-whisper/50 flex flex-col sm:flex-row justify-between items-center gap-3 bg-canvas/40">
                         <div>
                             <h4 className="font-bold text-ink text-sm">Riwayat Pemotongan Kas & Infaq</h4>
@@ -5553,15 +5763,20 @@ function App() {
                         <div className="flex flex-wrap items-center gap-2 w-full sm:w-auto">
                             <select
                                 value={iuranRiwayatFilter}
-                                onChange={(e) => setIuranRiwayatFilter(e.target.value)}
+                                onChange={(e) => {
+                                    setIuranRiwayatFilter(e.target.value);
+                                    setIuranRiwayatPage(1);
+                                }}
                                 className={`${inputBase} py-1.5 text-xs w-auto`}
                             >
                                 <option value="Semua">Semua Kategori</option>
+                                <option value="Kas Ekskul">Kas Ekskul</option>
                                 <option value="Pencairan Tunai">Pencairan Kas Tunai</option>
                                 <option value="Kas Kamar">Kas Kamar</option>
                                 <option value="Infaq">Infaq</option>
                                 <option value="Cukur">Cukur</option>
                                 <option value="Kas Kelas">Kas Kelas</option>
+                                <option value="Kegiatan">Kegiatan / Ekstra</option>
                             </select>
                             <div className="relative w-full sm:w-auto">
                                 <Search className="w-3.5 h-3.5 absolute left-3 top-2.5 text-steel" />
@@ -5569,7 +5784,10 @@ function App() {
                                     type="text"
                                     placeholder="Cari santri / keterangan..."
                                     value={iuranRiwayatSearch}
-                                    onChange={(e) => setIuranRiwayatSearch(e.target.value)}
+                                    onChange={(e) => {
+                                        setIuranRiwayatSearch(e.target.value);
+                                        setIuranRiwayatPage(1);
+                                    }}
                                     className={`${inputBase} pl-8 py-1.5 text-xs w-full sm:w-56`}
                                 />
                             </div>
@@ -5610,7 +5828,7 @@ function App() {
                                         </td>
                                     </tr>
                                 ) : (
-                                    riwayatInsidental.slice(0, 50).map((t, idx) => (
+                                    pagedRiwayatInsidental.map((t, idx) => (
                                         <tr key={t.id || idx} className="hover:bg-canvas/50 transition-colors">
                                             <td className="px-6 py-3 font-mono text-steel">{t.tanggal}</td>
                                             <td className="px-6 py-3">
@@ -5656,7 +5874,44 @@ function App() {
                             </tbody>
                         </table>
                     </div>
+                    {totalRiwayatPages > 1 && (
+                        <div className="px-6 py-3.5 bg-canvas/40 border-t border-whisper flex flex-col sm:flex-row items-center justify-between gap-3 text-xs">
+                            <div className="text-steel">
+                                Menampilkan <span className="font-semibold text-ink">{((iuranRiwayatPage - 1) * iuranRiwayatPerPage) + 1}</span> - <span className="font-semibold text-ink">{Math.min(iuranRiwayatPage * iuranRiwayatPerPage, riwayatInsidental.length)}</span> dari <span className="font-semibold text-ink">{riwayatInsidental.length}</span> transaksi
+                            </div>
+                            <div className="flex items-center gap-1.5">
+                                <button
+                                    type="button"
+                                    disabled={iuranRiwayatPage === 1}
+                                    onClick={() => setIuranRiwayatPage(p => Math.max(1, p - 1))}
+                                    className={`px-2.5 py-1.5 rounded-lg border flex items-center gap-1 font-semibold transition-all ${
+                                        iuranRiwayatPage === 1 
+                                            ? 'bg-slate-100 text-slate-400 border-whisper cursor-not-allowed' 
+                                            : 'bg-white hover:bg-slate-50 text-ink border-whisper shadow-xs'
+                                    }`}
+                                >
+                                    <ChevronLeft className="w-3.5 h-3.5" /> Sebelumnya
+                                </button>
+                                <span className="px-3 py-1 font-bold text-indigo-700 bg-indigo-50 border border-indigo-200 rounded-lg">
+                                    {iuranRiwayatPage} / {totalRiwayatPages}
+                                </span>
+                                <button
+                                    type="button"
+                                    disabled={iuranRiwayatPage === totalRiwayatPages}
+                                    onClick={() => setIuranRiwayatPage(p => Math.min(totalRiwayatPages, p + 1))}
+                                    className={`px-2.5 py-1.5 rounded-lg border flex items-center gap-1 font-semibold transition-all ${
+                                        iuranRiwayatPage === totalRiwayatPages 
+                                            ? 'bg-slate-100 text-slate-400 border-whisper cursor-not-allowed' 
+                                            : 'bg-white hover:bg-slate-50 text-ink border-whisper shadow-xs'
+                                    }`}
+                                >
+                                    Selanjutnya <ChevronRight className="w-3.5 h-3.5" />
+                                </button>
+                            </div>
+                        </div>
+                    )}
                 </div>
+                )}
 
                 {/* Modal Buat Akun Dompet Kas & Ekskul Baru (Mendukung Multi-Kas 1 Kartu) */}
                 {showModalBuatAkunKamar && (
@@ -9878,6 +10133,7 @@ Terima kasih atas kerja samanya.`;
                                         <div>
                                             {(() => {
                                                 if (scanResult.isKamar) {
+                                                    const isUnlocked = scanUnlockedKasNisList.includes(scanResult.santri.nis);
                                                     return (
                                                         <div>
                                                             {/* Selector Tab jika Kartu Multi-Kas */}
@@ -9886,15 +10142,13 @@ Terima kasih atas kerja samanya.`;
                                                                     <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-indigo-700 text-white font-mono text-xs font-bold uppercase tracking-wider mb-2 shadow-xs">
                                                                         <Layers className="w-3.5 h-3.5" /> KARTU MULTI-KAS ({scanResult.multiKasList.length} DOMPET KAS/EKSKUL)
                                                                     </div>
-                                                                    <p className="text-xs text-indigo-900 mb-2 font-mono">
-                                                                        Total Gabungan Saldo: <strong className="text-emerald-700 font-black text-sm">Rp {scanResult.multiKasList.reduce((sum, item) => sum + item.saldo, 0).toLocaleString('id-ID')}</strong>
-                                                                    </p>
                                                                     <p className="text-[11px] text-steel mb-2.5">
-                                                                        Klik tombol di bawah untuk beralih dan melihat rincian saldo sub-kas:
+                                                                        Pilih ekskul di bawah, lalu masukkan PIN akun tersebut untuk membuka rincian saldo:
                                                                     </p>
                                                                     <div className="flex flex-wrap gap-2 justify-center">
                                                                         {scanResult.multiKasList.map((item, idx) => {
                                                                             const isSelected = scanActiveMultiKasIdx === idx;
+                                                                            const isItemUnlocked = scanUnlockedKasNisList.includes(item.nis);
                                                                             return (
                                                                                 <button
                                                                                     key={item.nis}
@@ -9909,6 +10163,8 @@ Terima kasih atas kerja samanya.`;
                                                                                             mutasi: item.mutasi,
                                                                                             isKamar: item.isKamar
                                                                                         }));
+                                                                                        setScanPinInput('');
+                                                                                        setScanPinError(null);
                                                                                     }}
                                                                                     className={`px-3.5 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-2 ${
                                                                                         isSelected 
@@ -9916,9 +10172,13 @@ Terima kasih atas kerja samanya.`;
                                                                                             : 'bg-white hover:bg-slate-50 text-indigo-950 border border-indigo-200 shadow-2xs'
                                                                                     }`}
                                                                                 >
-                                                                                    <Building2 className="w-3.5 h-3.5" />
+                                                                                    {isItemUnlocked ? <Unlock className="w-3.5 h-3.5 text-emerald-300" /> : <Lock className="w-3.5 h-3.5 opacity-60" />}
                                                                                     <span>{item.nama}</span>
-                                                                                    <span className="font-mono text-[10px] opacity-80">(Rp {item.saldo.toLocaleString('id-ID')})</span>
+                                                                                    {isItemUnlocked ? (
+                                                                                        <span className="font-mono text-[10px] text-emerald-200 font-bold">(Rp {item.saldo.toLocaleString('id-ID')})</span>
+                                                                                    ) : (
+                                                                                        <span className="opacity-60 font-normal text-[10px]">(Terkunci)</span>
+                                                                                    )}
                                                                                 </button>
                                                                             );
                                                                         })}
@@ -9927,56 +10187,105 @@ Terima kasih atas kerja samanya.`;
                                                             )}
 
                                                             <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-indigo-600 text-white font-mono text-xs font-bold uppercase tracking-wider mb-3 shadow-sm">
-                                                                <Building2 className="w-3.5 h-3.5" /> {scanResult.isMultiKas ? 'DOMPET KAS AKTIF' : 'KARTU KAS BERSAMA / EKSKUL'}
+                                                                <Building2 className="w-3.5 h-3.5" /> {scanResult.isMultiKas ? 'DOMPET KAS / EKSKUL' : 'KARTU KAS BERSAMA / EKSKUL'}
                                                             </div>
                                                             <h3 className="text-3xl font-black text-indigo-950 tracking-tight">{scanResult.santri.nama}</h3>
                                                             <p className="text-steel font-medium mt-1">
-                                                                Asrama: {scanResult.santri.kelas || 'Asrama'} • Rekening: {scanResult.santri.nis}
+                                                                Asrama: {scanResult.santri.kelas || 'Umum'} • Rekening: {scanResult.santri.nis}
                                                             </p>
-                                                            <div className="mt-4 p-5 rounded-2xl bg-gradient-to-br from-indigo-50 to-indigo-100/60 border border-indigo-200">
-                                                                <div className="text-xs uppercase font-bold text-indigo-700 tracking-wider mb-1">
-                                                                    Sisa Saldo Kas Bersama
-                                                                </div>
-                                                                <div className="text-4xl font-black font-mono text-indigo-900">
-                                                                    Rp {scanResult.saldoTabungan.toLocaleString('id-ID')}
-                                                                </div>
-                                                            </div>
-                                                            <div className="mt-4 p-2.5 rounded-xl bg-indigo-50/80 border border-indigo-200/50 flex items-center gap-2 text-left">
-                                                                <Sparkles className="w-4 h-4 text-indigo-600 shrink-0" />
-                                                                <p className="font-mono text-xs text-indigo-950">
-                                                                    <strong>Bebas Limit Belanja:</strong> Saldo dapat dipakai penuh di kasir POS dengan otorisasi PIN 6 digit.
-                                                                </p>
-                                                            </div>
-                                                            <div className="mt-3 p-2.5 rounded-xl bg-slate-50 border border-slate-200 text-xs text-steel flex items-center justify-center gap-2">
-                                                                <ShieldCheck className="w-4 h-4 text-emerald-600" />
-                                                                <span>Dilindungi PIN 6 Digit: <strong>{scanResult.santri.pin ? '••••••' : 'Default 123456'}</strong> (Wajib saat belanja di Kasir POS)</span>
-                                                            </div>
 
-                                                            {/* Mutasi 3 Transaksi Terakhir Kas Kamar */}
-                                                            {scanResult.mutasi && scanResult.mutasi.length > 0 && (
-                                                                <div className="mt-4 pt-4 border-t border-indigo-200/40 text-left">
-                                                                    <div className="flex items-center gap-1.5 font-mono text-[11px] font-bold uppercase tracking-wider text-indigo-900 mb-2">
-                                                                        <History className="w-3.5 h-3.5 text-indigo-600" /> 3 Transaksi Terakhir:
+                                                            {!isUnlocked ? (
+                                                                <div className="mt-4 p-5 rounded-2xl bg-surface border-2 border-indigo-200 text-center space-y-3">
+                                                                    <div className="w-10 h-10 mx-auto rounded-full bg-indigo-50 text-indigo-600 flex items-center justify-center">
+                                                                        <Lock className="w-5 h-5" />
                                                                     </div>
-                                                                    <div className="space-y-1.5 font-mono text-xs">
-                                                                        {scanResult.mutasi.map((m, idx) => {
-                                                                            const isTarik = String(m.jenis).toLowerCase() === 'tarik';
-                                                                            return (
-                                                                                <div key={idx} className="flex justify-between items-center p-2 rounded-lg bg-surface border border-indigo-200/60 shadow-xs">
-                                                                                    <div className="truncate pr-2">
-                                                                                        <div className="font-semibold text-ink text-xs truncate">
-                                                                                            {m.keterangan || (isTarik ? 'Belanja Kasir POS' : 'Setoran Kas')}
+                                                                    <h4 className="font-bold text-ink text-sm">Saldo Terproteksi PIN</h4>
+                                                                    <p className="text-xs text-steel">
+                                                                        Masukkan PIN 6 Digit untuk melihat saldo kas <strong>{scanResult.santri.nama}</strong>:
+                                                                    </p>
+                                                                    <form onSubmit={(e) => { e.preventDefault(); handleUnlockScanKas(); }} className="space-y-2.5 max-w-xs mx-auto">
+                                                                        <input
+                                                                            type="password"
+                                                                            inputMode="numeric"
+                                                                            maxLength={6}
+                                                                            autoFocus
+                                                                            placeholder="••••••"
+                                                                            value={scanPinInput}
+                                                                            onChange={(e) => {
+                                                                                setScanPinInput(e.target.value.replace(/\D/g, ''));
+                                                                                setScanPinError(null);
+                                                                            }}
+                                                                            className="w-full text-center tracking-[0.5em] font-mono text-lg font-bold py-2 border border-indigo-200 rounded-xl bg-canvas"
+                                                                        />
+                                                                        {scanPinError && (
+                                                                            <p className="text-xs font-semibold text-rose-600">{scanPinError}</p>
+                                                                        )}
+                                                                        <button
+                                                                            type="submit"
+                                                                            disabled={scanPinInput.length < 4}
+                                                                            className="w-full py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-bold transition-all shadow-sm flex items-center justify-center gap-1.5"
+                                                                        >
+                                                                            <Key className="w-3.5 h-3.5" /> Buka Saldo Kas
+                                                                        </button>
+                                                                    </form>
+                                                                </div>
+                                                            ) : (
+                                                                <div>
+                                                                    <div className="mt-4 p-5 rounded-2xl bg-gradient-to-br from-indigo-50 to-indigo-100/60 border border-indigo-200">
+                                                                        <div className="flex items-center justify-center gap-2 mb-1">
+                                                                            <span className="text-xs uppercase font-bold text-indigo-700 tracking-wider">
+                                                                                Sisa Saldo Kas Bersama
+                                                                            </span>
+                                                                            <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-300 flex items-center gap-1">
+                                                                                <CheckCircle2 className="w-3 h-3 text-emerald-600" /> Terverifikasi PIN
+                                                                            </span>
+                                                                        </div>
+                                                                        <div className="text-4xl font-black font-mono text-indigo-900">
+                                                                            Rp {scanResult.saldoTabungan.toLocaleString('id-ID')}
+                                                                        </div>
+                                                                    </div>
+
+                                                                    {/* Mutasi 3 Transaksi Terakhir Kas Kamar */}
+                                                                    {scanResult.mutasi && scanResult.mutasi.length > 0 && (
+                                                                        <div className="mt-4 pt-4 border-t border-indigo-200/40 text-left">
+                                                                            <div className="flex items-center gap-1.5 font-mono text-[11px] font-bold uppercase tracking-wider text-indigo-900 mb-2">
+                                                                                <History className="w-3.5 h-3.5 text-indigo-600" /> 3 Transaksi Terakhir:
+                                                                            </div>
+                                                                            <div className="space-y-1.5 font-mono text-xs">
+                                                                                {scanResult.mutasi.map((m, idx) => {
+                                                                                    const isTarik = String(m.jenis).toLowerCase() === 'tarik';
+                                                                                    return (
+                                                                                        <div key={idx} className="flex justify-between items-center p-2 rounded-lg bg-surface border border-indigo-200/60 shadow-xs">
+                                                                                            <div className="truncate pr-2">
+                                                                                                <div className="font-semibold text-ink text-xs truncate">
+                                                                                                    {m.keterangan || (isTarik ? 'Belanja Kasir POS' : 'Setoran Kas')}
+                                                                                                </div>
+                                                                                                <div className="text-[10px] text-steel">
+                                                                                                    {m.tanggal} • <span className={isTarik ? 'text-rose-600 font-bold' : 'text-emerald-600 font-bold'}>{m.jenis}</span>
+                                                                                                </div>
+                                                                                            </div>
+                                                                                            <div className={`font-bold text-xs shrink-0 ${isTarik ? 'text-rose-600' : 'text-emerald-600'}`}>
+                                                                                                {isTarik ? '-' : '+'} Rp {m.nominal.toLocaleString('id-ID')}
+                                                                                            </div>
                                                                                         </div>
-                                                                                        <div className="text-[10px] text-steel">
-                                                                                            {m.tanggal} • <span className={isTarik ? 'text-rose-600 font-bold' : 'text-emerald-600 font-bold'}>{m.jenis}</span>
-                                                                                        </div>
-                                                                                    </div>
-                                                                                    <div className={`font-bold text-xs shrink-0 ${isTarik ? 'text-rose-600' : 'text-emerald-600'}`}>
-                                                                                        {isTarik ? '-' : '+'} Rp {m.nominal.toLocaleString('id-ID')}
-                                                                                    </div>
-                                                                                </div>
-                                                                            );
-                                                                        })}
+                                                                                    );
+                                                                                })}
+                                                                            </div>
+                                                                        </div>
+                                                                    )}
+
+                                                                    <div className="mt-3 flex justify-center">
+                                                                        <button
+                                                                            type="button"
+                                                                            onClick={() => {
+                                                                                setScanUnlockedKasNisList(prev => prev.filter(n => n !== scanResult.santri.nis));
+                                                                                setScanPinInput('');
+                                                                                setScanPinError(null);
+                                                                            }}
+                                                                            className="px-3 py-1 rounded-lg text-xs font-mono font-semibold text-steel hover:text-rose-600 border border-whisper hover:bg-rose-50 transition-all flex items-center gap-1.5"
+                                                                        >
+                                                                            <Lock className="w-3 h-3" /> Kunci Kembali
+                                                                        </button>
                                                                     </div>
                                                                 </div>
                                                             )}
