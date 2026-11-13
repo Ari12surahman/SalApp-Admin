@@ -2747,11 +2747,19 @@ function App() {
         setScanPinInput('');
         setScanPinError(null);
 
-        // Cari santri/kas berdasarkan uid atau nis (dukung multi-kas)
-        const matchingSantriList = dataSantri.filter(s =>
+        // Cari santri/kas berdasarkan uid atau nis (dukung multi-kas) atau nama jika diketik manual
+        const cleanLower = String(scanInput).trim().toLowerCase();
+        let matchingSantriList = dataSantri.filter(s =>
             String(s.uid || '').trim().replace(/^0+/, '') === code ||
             String(s.nis || '').trim().replace(/^0+/, '') === code
         );
+
+        if (matchingSantriList.length === 0 && cleanLower.length >= 2) {
+            matchingSantriList = dataSantri.filter(s =>
+                (s.nama || '').toLowerCase().includes(cleanLower) ||
+                String(s.nis || '').toLowerCase().includes(cleanLower)
+            );
+        }
 
         if (matchingSantriList.length > 0) {
             setScanActiveMultiKasIdx(0);
@@ -4614,13 +4622,13 @@ function App() {
                 ket.includes('[penerimaan');
             if (!matchesCategory) return false;
             if (iuranRiwayatFilter !== 'Semua') {
-                if (iuranRiwayatFilter === 'Kas Ekskul' && !(ket.includes('[kas ekskul]') || ket.includes('penerimaan kas ekskul'))) return false;
-                if (iuranRiwayatFilter === 'Kas Kamar' && !(ket.includes('[kas kamar]') || ket.includes('penerimaan kas kamar'))) return false;
-                if (iuranRiwayatFilter === 'Infaq' && !(ket.includes('[infaq') || ket.includes('penerimaan infaq'))) return false;
-                if (iuranRiwayatFilter === 'Cukur' && !(ket.includes('[cukur') || ket.includes('penerimaan cukur'))) return false;
-                if (iuranRiwayatFilter === 'Kas Kelas' && !(ket.includes('[kas kelas]') || ket.includes('penerimaan kas kelas'))) return false;
-                if (iuranRiwayatFilter === 'Kegiatan' && !(ket.includes('[kegiatan') || ket.includes('penerimaan kegiatan'))) return false;
-                if (iuranRiwayatFilter === 'Pencairan Tunai' && !(ket.includes('[pencairan') || tid.startsWith('TB-CAIR'))) return false;
+                if (iuranRiwayatFilter === 'Kas Ekskul' && !(ket.includes('kas ekskul') || ket.includes('penerimaan kas ekskul') || ket.includes('ekskul'))) return false;
+                if (iuranRiwayatFilter === 'Kas Kamar' && !(ket.includes('kas kamar') || ket.includes('penerimaan kas kamar'))) return false;
+                if (iuranRiwayatFilter === 'Infaq' && !(ket.includes('infaq') || ket.includes('penerimaan infaq'))) return false;
+                if (iuranRiwayatFilter === 'Cukur' && !(ket.includes('cukur') || ket.includes('penerimaan cukur'))) return false;
+                if (iuranRiwayatFilter === 'Kas Kelas' && !(ket.includes('kas kelas') || ket.includes('penerimaan kas kelas') || ket.includes('kas 5b') || ket.includes('kas 3b'))) return false;
+                if (iuranRiwayatFilter === 'Kegiatan' && !(ket.includes('kegiatan') || ket.includes('penerimaan kegiatan'))) return false;
+                if (iuranRiwayatFilter === 'Pencairan Tunai' && !(ket.includes('pencairan') || tid.startsWith('TB-CAIR'))) return false;
             }
             if (iuranRiwayatSearch) {
                 const s = iuranRiwayatSearch.toLowerCase();
