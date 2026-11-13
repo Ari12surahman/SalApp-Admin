@@ -361,6 +361,29 @@ function calculateSafeDeduction(totalDana, sisaAplikasi, sisaKader, maxPotongPer
     };
 }
 
+// Konversi Angka Rupiah ke Teks Terbilang Bahasa Indonesia
+function terbilangRupiah(angka) {
+    const bilangan = [
+        '', 'Satu', 'Dua', 'Tiga', 'Empat', 'Lima', 'Enam', 'Tujuh', 'Delapan', 'Sembilan', 'Sepuluh', 'Sebelas'
+    ];
+    const n = Math.floor(Math.abs(Number(angka) || 0));
+    if (n === 0) return 'Nol Rupiah';
+
+    function konversi(x) {
+        if (x < 12) return bilangan[x];
+        if (x < 20) return konversi(x - 10) + ' Belas';
+        if (x < 100) return konversi(Math.floor(x / 10)) + ' Puluh ' + konversi(x % 10);
+        if (x < 200) return 'Seratus ' + konversi(x - 100);
+        if (x < 1000) return konversi(Math.floor(x / 100)) + ' Ratus ' + konversi(x % 100);
+        if (x < 2000) return 'Seribu ' + konversi(x - 1000);
+        if (x < 1000000) return konversi(Math.floor(x / 1000)) + ' Ribu ' + konversi(x % 1000);
+        if (x < 1000000000) return konversi(Math.floor(x / 1000000)) + ' Juta ' + konversi(x % 1000000);
+        if (x < 1000000000000) return konversi(Math.floor(x / 1000000000)) + ' Miliar ' + konversi(x % 1000000000);
+        return konversi(Math.floor(x / 1000000000000)) + ' Triliun ' + konversi(x % 1000000000000);
+    }
+    return (konversi(n).replace(/\s+/g, ' ').trim() + ' Rupiah');
+}
+
 import React, { useState, useEffect, useRef, useCallback } from "react";
 
 
@@ -371,7 +394,7 @@ import {
     ArrowUpCircle, Edit, Printer, CheckCircle2, BarChart3, History, Activity, QrCode, Link as LinkIcon,
     Copy, ExternalLink, RefreshCw, Check, Briefcase, BookOpen, DownloadCloud, TrendingDown, Menu, ArrowRight, ArrowLeft, Eye, EyeOff, ChevronRight, Scan, Download,
     SlidersHorizontal, ShieldAlert, ShieldCheck, ShoppingBag, Store, CalendarDays, Package,
-    Coins, Scissors, HandHeart, Building2, Key, Clock, Sparkles
+    Coins, Scissors, HandHeart, Building2, Key, Clock, Sparkles, Banknote, Layers
 } from "lucide-react";
 
 // Import Recharts dengan parameter bundle untuk mencegah error lodash missing modules
@@ -556,6 +579,7 @@ function App() {
     const [iuranRiwayatSearch, setIuranRiwayatSearch] = useState('');
     const [showModalBuatAkunKamar, setShowModalBuatAkunKamar] = useState(false);
     const [namaKamarBaru, setNamaKamarBaru] = useState('');
+    const [kategoriKamarBaru, setKategoriKamarBaru] = useState('Ekskul'); // 'Ekskul' | 'Kas Kamar' | 'Organisasi' | 'Lainnya'
     const [kelasKamarBaru, setKelasKamarBaru] = useState('');
     const [uidKamarBaru, setUidKamarBaru] = useState('');
     const [pinKamarBaru, setPinKamarBaru] = useState('123456');
@@ -564,6 +588,19 @@ function App() {
     const [modalEditRfidKamar, setModalEditRfidKamar] = useState(null); // { nis, nama, uid }
     const [inputRfidEdit, setInputRfidEdit] = useState('');
     const [inputRfidDirect, setInputRfidDirect] = useState('');
+
+    // --- FITUR PENCAIRAN KAS TUNAI (CASH OUT) ---
+    const [modalPencairanKas, setModalPencairanKas] = useState(false);
+    const [formPencairanKas, setFormPencairanKas] = useState({
+        akunNis: '',
+        nominal: '',
+        penerima: '',
+        keperluan: '',
+        tanggal: '',
+        catatBukuKas: true,
+        loading: false
+    });
+    const [modalKuitansiPencairan, setModalKuitansiPencairan] = useState(null); // { noBukti, tanggal, akunNama, akunNis, penerima, keperluan, nominal, terbilang, saldoSebelum, saldoSisa }
     const [tabunganKelasFilter, setTabunganKelasFilter] = useState('Semua');
     const [tabunganLimitStatusFilter, setTabunganLimitStatusFilter] = useState('Semua'); // 'Semua', 'Habis', 'HampirHabis', 'Aman', 'Bebas'
     const [tabunganLimitPeriodeFilter, setTabunganLimitPeriodeFilter] = useState('Semua'); // 'Semua', 'harian', 'mingguan', 'bulanan'
@@ -3850,11 +3887,12 @@ function App() {
     const handleBuatAkunKamar = async (e) => {
         e.preventDefault();
         const nm = (namaKamarBaru || '').trim();
-        if (!nm) return showNotification('Nama kamar / kelompok tidak boleh kosong!', 'error');
+        if (!nm) return showNotification('Nama kas / ekskul tidak boleh kosong!', 'error');
 
         const cleanUid = (uidKamarBaru || '').trim();
         const cleanCode = cleanUid.replace(/^0+/, '').toLowerCase();
         let targetConflict = null;
+        let isMultiKasMerge = false;
 
         if (cleanUid) {
             targetConflict = dataSantri.find(s => {
@@ -3864,27 +3902,53 @@ function App() {
             });
 
             if (targetConflict) {
-                const confirmMove = window.confirm(
-                    `Kartu RFID (${cleanUid}) saat ini sudah terdaftar atas nama: ${targetConflict.nama} (NIS: ${targetConflict.nis}, Kelas: ${targetConflict.kelas || '-'}).\n\nSatu kartu fisik TIDAK BOLEH digunakan ganda agar tidak tertukar di kasir POS.\n\nApakah Anda ingin MENCABUT kartu ini dari ${targetConflict.nama} dan memasangkannya ke akun kamar baru ini?`
-                );
-                if (!confirmMove) return;
+                const isConflictKas = String(targetConflict.nis || '').startsWith('KAS-') || 
+                                      (targetConflict.nama || '').toLowerCase().startsWith('kas ') ||
+                                      (targetConflict.kelas || '').toLowerCase() === 'asrama' ||
+                                      (targetConflict.kelas || '').toLowerCase() === 'ekskul';
 
-                try {
-                    await supabase.from('Data Santri').update({ uid: null }).eq('nis', targetConflict.nis);
-                } catch (err) {
-                    console.error("Gagal cabut UID lama:", err);
+                if (isConflictKas) {
+                    const confirmMerge = window.confirm(
+                        `Kartu RFID (${cleanUid}) sudah digunakan oleh: ${targetConflict.nama} (${targetConflict.nis}).\n\n` +
+                        `Apakah Anda ingin MENAUTKAN kartu ini ke akun baru ini juga (Fitur 1 Kartu Multi-Kas)?\n\n` +
+                        `- Klik 'OK' untuk menggabungkan kartu (Multi-Kas: kasir POS akan menampilkan pilihan ekskul/kas saat kartu ditap).\n` +
+                        `- Klik 'Cancel' untuk membatalkan dan menggunakan kartu lain.`
+                    );
+                    if (!confirmMerge) return;
+                    isMultiKasMerge = true;
+                } else {
+                    const confirmMove = window.confirm(
+                        `Kartu RFID (${cleanUid}) saat ini sudah terdaftar atas nama santri: ${targetConflict.nama} (NIS: ${targetConflict.nis}, Kelas: ${targetConflict.kelas || '-'}).\n\n` +
+                        `Kartu santri pribadi tidak boleh digunakan ganda dengan kas bersama.\n\n` +
+                        `Apakah Anda ingin MENCABUT kartu ini dari santri ${targetConflict.nama} dan memasangkannya ke akun kas baru ini?`
+                    );
+                    if (!confirmMove) return;
+
+                    try {
+                        await supabase.from('Data Santri').update({ uid: null }).eq('nis', targetConflict.nis);
+                    } catch (err) {
+                        console.error("Gagal cabut UID lama:", err);
+                    }
                 }
             }
         }
 
-        const nisKamar = `KAS-${nm.replace(/\s+/g, '-').toUpperCase()}-${Math.floor(100 + Math.random() * 900)}`;
+        const kat = kategoriKamarBaru || 'Ekskul';
+        const prefix = kat === 'Ekskul' ? 'KAS-EKSKUL' : kat === 'Kas Kamar' ? 'KAS-KAMAR' : kat === 'Organisasi' ? 'KAS-ORG' : 'KAS';
+        const cleanSlug = nm.replace(/^kas\s+/i, '').replace(/^ekskul\s+/i, '').replace(/[^a-zA-Z0-9]/g, '-').toUpperCase();
+        const nisKamar = `${prefix}-${cleanSlug}-${Math.floor(100 + Math.random() * 900)}`;
         const pinFinal = (pinKamarBaru || '123456').trim();
+
+        let namaFinal = nm;
+        if (!namaFinal.toLowerCase().startsWith('kas ') && !namaFinal.toLowerCase().startsWith('ekskul ')) {
+            namaFinal = kat === 'Ekskul' ? `Kas Ekskul ${nm}` : `Kas ${nm}`;
+        }
 
         const newSantri = {
             id: Math.floor(Math.random() * 8000000) + (Date.now() % 100000),
             nis: nisKamar,
-            nama: `Kas ${nm}`,
-            kelas: kelasKamarBaru || masterKelasList[0] || 'Asrama',
+            nama: namaFinal,
+            kelas: kelasKamarBaru || (kat === 'Ekskul' ? 'Ekskul' : masterKelasList[0] || 'Asrama'),
             periode: masterPeriodeList[0] || '2024/2025',
             uid: cleanUid || null,
             pin: pinFinal,
@@ -3898,7 +3962,7 @@ function App() {
 
             setDataSantri(prev => {
                 let updated = prev;
-                if (targetConflict) {
+                if (targetConflict && !isMultiKasMerge) {
                     updated = updated.map(s => String(s.nis) === String(targetConflict.nis) ? { ...s, uid: null } : s);
                 }
                 return [newSantri, ...updated];
@@ -3909,7 +3973,10 @@ function App() {
             setNamaKamarBaru('');
             setUidKamarBaru('');
             setPinKamarBaru('123456');
-            showNotification(`Akun Dompet '${newSantri.nama}' (NIS: ${nisKamar}) berhasil dibuat & disimpan permanen!`);
+            showNotification(isMultiKasMerge 
+                ? `Akun '${newSantri.nama}' berhasil dibuat & ditautkan ke Kartu Multi-Kas (${cleanUid})!` 
+                : `Akun Dompet '${newSantri.nama}' (NIS: ${nisKamar}) berhasil dibuat & disimpan permanen!`
+            );
         } catch (err) {
             console.error("Gagal simpan akun kamar:", err);
             showNotification(`Gagal simpan akun kamar: ${err.message || err}`, 'error');
@@ -3924,6 +3991,7 @@ function App() {
         const cleanCode = cleanUid.replace(/^0+/, '').toLowerCase();
 
         let targetConflict = null;
+        let isMultiKasMerge = false;
         if (cleanUid) {
             targetConflict = dataSantri.find(s => {
                 if (String(s.nis) === String(targetNis)) return false;
@@ -3933,15 +4001,33 @@ function App() {
             });
 
             if (targetConflict) {
-                const confirmMove = window.confirm(
-                    `Kartu RFID (${cleanUid}) saat ini terdaftar atas nama: ${targetConflict.nama} (NIS: ${targetConflict.nis}, Kelas: ${targetConflict.kelas || '-'}).\n\nSatu kartu fisik TIDAK BOLEH digunakan ganda!\n\nApakah Anda ingin MENCABUT kartu ini dari ${targetConflict.nama} dan memasangkannya ke ${modalEditRfidKamar.nama}?`
-                );
-                if (!confirmMove) return;
+                const isConflictKas = String(targetConflict.nis || '').startsWith('KAS-') || 
+                                      (targetConflict.nama || '').toLowerCase().startsWith('kas ') ||
+                                      (targetConflict.kelas || '').toLowerCase() === 'asrama' ||
+                                      (targetConflict.kelas || '').toLowerCase() === 'ekskul';
 
-                try {
-                    await supabase.from('Data Santri').update({ uid: null }).eq('nis', targetConflict.nis);
-                } catch (err) {
-                    console.error("Gagal cabut UID lama:", err);
+                if (isConflictKas) {
+                    const confirmMerge = window.confirm(
+                        `Kartu RFID (${cleanUid}) saat ini sudah digunakan oleh akun kas: ${targetConflict.nama} (${targetConflict.nis}).\n\n` +
+                        `Apakah Anda ingin MENAUTKAN kartu ini ke ${modalEditRfidKamar.nama} juga (1 Kartu Multi-Kas)?\n\n` +
+                        `- Klik 'OK' untuk menggabungkan kartu (Multi-Kas).\n` +
+                        `- Klik 'Cancel' untuk membatalkan.`
+                    );
+                    if (!confirmMerge) return;
+                    isMultiKasMerge = true;
+                } else {
+                    const confirmMove = window.confirm(
+                        `Kartu RFID (${cleanUid}) saat ini terdaftar atas nama santri: ${targetConflict.nama} (NIS: ${targetConflict.nis}, Kelas: ${targetConflict.kelas || '-'}).\n\n` +
+                        `Kartu santri pribadi tidak boleh digunakan bersama akun kas!\n\n` +
+                        `Apakah Anda ingin MENCABUT kartu ini dari ${targetConflict.nama} dan memasangkannya ke ${modalEditRfidKamar.nama}?`
+                    );
+                    if (!confirmMove) return;
+
+                    try {
+                        await supabase.from('Data Santri').update({ uid: null }).eq('nis', targetConflict.nis);
+                    } catch (err) {
+                        console.error("Gagal cabut UID lama:", err);
+                    }
                 }
             }
         }
@@ -3950,12 +4036,15 @@ function App() {
             await supabase.from('Data Santri').update({ uid: cleanUid || null }).eq('nis', targetNis);
             setDataSantri(prev => {
                 let updated = prev;
-                if (targetConflict) {
+                if (targetConflict && !isMultiKasMerge) {
                     updated = updated.map(s => String(s.nis) === String(targetConflict.nis) ? { ...s, uid: null } : s);
                 }
                 return updated.map(s => String(s.nis) === String(targetNis) ? { ...s, uid: cleanUid || null } : s);
             });
-            showNotification(`Kartu RFID untuk ${modalEditRfidKamar.nama} berhasil diperbarui!`);
+            showNotification(isMultiKasMerge 
+                ? `Kartu RFID berhasil ditautkan sebagai Multi-Kas untuk ${modalEditRfidKamar.nama} & ${targetConflict?.nama}!` 
+                : `Kartu RFID untuk ${modalEditRfidKamar.nama} berhasil diperbarui!`
+            );
             setModalEditRfidKamar(null);
             setInputRfidEdit('');
         } catch (err) {
@@ -3986,11 +4075,11 @@ function App() {
     const handleHapusAkunKamar = async (kamar) => {
         const saldo = getSantriSaldoTabungan(kamar.nis);
         if (saldo > 0) {
-            if (!window.confirm(`Akun '${kamar.nama}' masih memiliki sisa saldo kas Rp ${saldo.toLocaleString('id-ID')}!\nYakin ingin tetap menghapus akun dompet kamar ini?`)) {
+            if (!window.confirm(`Akun '${kamar.nama}' masih memiliki sisa saldo kas Rp ${saldo.toLocaleString('id-ID')}!\nYakin ingin tetap menghapus akun dompet kas ini?`)) {
                 return;
             }
         } else {
-            if (!window.confirm(`Hapus akun dompet '${kamar.nama}'?`)) return;
+            if (!window.confirm(`Hapus akun dompet kas '${kamar.nama}'?`)) return;
         }
 
         try {
@@ -4008,23 +4097,42 @@ function App() {
         if (!cleanUid) return showNotification('Tempelkan kartu ke reader atau masukkan nomor UID!', 'error');
         const cleanCode = cleanUid.replace(/^0+/, '').toLowerCase();
 
-        const targetConflict = dataSantri.find(s => {
+        let targetConflict = dataSantri.find(s => {
             if (String(s.nis) === String(targetNis)) return false;
             const exUid = String(s.uid || '').trim().replace(/^0+/, '').toLowerCase();
             const exRfid = String(s.rfid || '').trim().replace(/^0+/, '').toLowerCase();
             return cleanCode && (exUid === cleanCode || exRfid === cleanCode);
         });
 
+        let isMultiKasMerge = false;
         if (targetConflict) {
-            const confirmMove = window.confirm(
-                `Kartu RFID (${cleanUid}) saat ini terdaftar atas nama: ${targetConflict.nama} (NIS: ${targetConflict.nis}, Kelas: ${targetConflict.kelas || '-'}).\n\nSatu kartu fisik TIDAK BOLEH digunakan ganda!\n\nApakah Anda ingin MENCABUT kartu ini dari ${targetConflict.nama} dan memasangkannya ke ${targetNama}?`
-            );
-            if (!confirmMove) return;
+            const isConflictKas = String(targetConflict.nis || '').startsWith('KAS-') || 
+                                  (targetConflict.nama || '').toLowerCase().startsWith('kas ') ||
+                                  (targetConflict.kelas || '').toLowerCase() === 'asrama' ||
+                                  (targetConflict.kelas || '').toLowerCase() === 'ekskul';
 
-            try {
-                await supabase.from('Data Santri').update({ uid: null }).eq('nis', targetConflict.nis);
-            } catch (err) {
-                console.error("Gagal cabut UID lama:", err);
+            if (isConflictKas) {
+                const confirmMerge = window.confirm(
+                    `Kartu RFID (${cleanUid}) saat ini sudah digunakan oleh akun kas: ${targetConflict.nama} (${targetConflict.nis}).\n\n` +
+                    `Apakah Anda ingin MENAUTKAN kartu ini ke ${targetNama} juga (Multi-Kas 1 Kartu)?\n\n` +
+                    `- Klik 'OK' untuk menggabungkan kartu (Multi-Kas).\n` +
+                    `- Klik 'Cancel' untuk membatalkan.`
+                );
+                if (!confirmMerge) return;
+                isMultiKasMerge = true;
+            } else {
+                const confirmMove = window.confirm(
+                    `Kartu RFID (${cleanUid}) saat ini terdaftar atas nama santri: ${targetConflict.nama} (NIS: ${targetConflict.nis}, Kelas: ${targetConflict.kelas || '-'}).\n\n` +
+                    `Satu kartu fisik tidak boleh digunakan ganda dengan santri pribadi!\n\n` +
+                    `Apakah Anda ingin MENCABUT kartu ini dari ${targetConflict.nama} dan memasangkannya ke ${targetNama}?`
+                );
+                if (!confirmMove) return;
+
+                try {
+                    await supabase.from('Data Santri').update({ uid: null }).eq('nis', targetConflict.nis);
+                } catch (err) {
+                    console.error("Gagal cabut UID lama:", err);
+                }
             }
         }
 
@@ -4032,15 +4140,123 @@ function App() {
             await supabase.from('Data Santri').update({ uid: cleanUid }).eq('nis', targetNis);
             setDataSantri(prev => {
                 let updated = prev;
-                if (targetConflict) {
+                if (targetConflict && !isMultiKasMerge) {
                     updated = updated.map(s => String(s.nis) === String(targetConflict.nis) ? { ...s, uid: null } : s);
                 }
                 return updated.map(s => String(s.nis) === String(targetNis) ? { ...s, uid: cleanUid } : s);
             });
-            showNotification(`Kartu RFID (UID: ${cleanUid}) berhasil dihubungkan ke ${targetNama}!`);
+            showNotification(isMultiKasMerge 
+                ? `Kartu RFID (UID: ${cleanUid}) berhasil ditautkan sebagai Multi-Kas ke ${targetNama}!` 
+                : `Kartu RFID (UID: ${cleanUid}) berhasil dihubungkan ke ${targetNama}!`
+            );
             setInputRfidDirect('');
         } catch (err) {
             showNotification(`Gagal hubungkan RFID: ${err.message || err}`, 'error');
+        }
+    };
+
+    // --- LOGIKA PENCAIRAN KAS TUNAI (CASH OUT) & CETAK KUITANSI ---
+    const handleBukaModalPencairan = (akun = null) => {
+        const availableKas = dataSantri.filter(s => 
+            (s.nama || '').toLowerCase().includes('kas') || 
+            (s.nama || '').toLowerCase().includes('kamar') || 
+            (s.nama || '').toLowerCase().includes('ekskul') || 
+            String(s.nis || '').startsWith('KAS-')
+        );
+        const defaultAkunNis = akun ? akun.nis : (availableKas[0]?.nis || '');
+        const today = new Date().toISOString().split('T')[0];
+        setFormPencairanKas({
+            akunNis: defaultAkunNis,
+            nominal: '',
+            penerima: '',
+            keperluan: '',
+            tanggal: today,
+            catatBukuKas: true,
+            loading: false
+        });
+        setModalPencairanKas(true);
+    };
+
+    const handleProsesPencairanKas = async (e) => {
+        e.preventDefault();
+        const { akunNis, nominal, penerima, keperluan, tanggal, catatBukuKas } = formPencairanKas;
+        const numNominal = Number(String(nominal).replace(/[^0-9]/g, '')) || 0;
+
+        if (!akunNis) return showNotification('Pilih akun kas / ekskul terlebih dahulu!', 'error');
+        if (numNominal <= 0) return showNotification('Nominal pencairan harus lebih dari Rp 0!', 'error');
+        if (!penerima.trim()) return showNotification('Nama penerima uang cash wajib diisi!', 'error');
+        if (!keperluan.trim()) return showNotification('Keperluan pencairan dana kas wajib diisi!', 'error');
+
+        const selectedAkun = dataSantri.find(s => String(s.nis) === String(akunNis));
+        if (!selectedAkun) return showNotification('Akun kas tidak ditemukan!', 'error');
+
+        const saldoSaatIni = getSantriSaldoTabungan(akunNis);
+        if (numNominal > saldoSaatIni) {
+            return showNotification(`Saldo kas tidak mencukupi! Saldo ${selectedAkun.nama} saat ini Rp ${saldoSaatIni.toLocaleString('id-ID')}, pencairan Rp ${numNominal.toLocaleString('id-ID')}`, 'error');
+        }
+
+        const tglTrans = tanggal || new Date().toISOString().split('T')[0];
+        const noBukti = `BKK-${Date.now().toString().slice(-6)}`;
+
+        setFormPencairanKas(prev => ({ ...prev, loading: true }));
+
+        try {
+            // 1. Simpan Transaksi Tarik Tunai di Tabel Tabungan
+            const tabEntry = {
+                id: `TB-CAIR-${Date.now()}`,
+                tanggal: tglTrans,
+                nis: selectedAkun.nis,
+                nama: selectedAkun.nama,
+                jenis: 'Tarik',
+                nominal: numNominal,
+                keterangan: `[Pencairan Tunai: ${selectedAkun.nama}] No. ${noBukti} | Penerima: ${penerima.trim()} | Keperluan: ${keperluan.trim()}`
+            };
+
+            const { error: tabErr } = await supabase.from('Tabungan').insert([tabEntry]);
+            if (tabErr) throw tabErr;
+
+            setDataTabungan(prev => [tabEntry, ...prev]);
+
+            // 2. Jika catat otomatis di Buku Kas Pondok (Cashflow Keluar)
+            let kasEntry = null;
+            if (catatBukuKas) {
+                kasEntry = {
+                    id: `KAS-CAIR-${Date.now()}`,
+                    tanggal: tglTrans,
+                    tipeKas: 'Pengeluaran',
+                    sumberTujuan: 'Kas Tunai Pondok',
+                    nominal: numNominal,
+                    keterangan: `[Pencairan Tunai: ${selectedAkun.nama}] No. ${noBukti} | Penerima: ${penerima.trim()} (${keperluan.trim()})`
+                };
+                const { error: kasErr } = await supabase.from('Kas').insert([kasEntry]);
+                if (kasErr) console.warn("Gagal simpan ke Buku Kas (non-fatal):", kasErr);
+                else setDataKas(prev => [kasEntry, ...prev]);
+            }
+
+            addLog('CREATE', 'PENCAIRAN_KAS', `Cairkan Kas Tunai ${selectedAkun.nama}: Rp ${numNominal.toLocaleString('id-ID')} kepada ${penerima.trim()} (${noBukti})`);
+            showNotification(`Pencairan dana Rp ${numNominal.toLocaleString('id-ID')} untuk ${selectedAkun.nama} berhasil!`, 'success');
+
+            // 3. Tampilkan Voucher / Kuitansi Pencairan Tunai Siap Cetak
+            setModalKuitansiPencairan({
+                noBukti,
+                tanggal: tglTrans,
+                akunNama: selectedAkun.nama,
+                akunNis: selectedAkun.nis,
+                penerima: penerima.trim(),
+                keperluan: keperluan.trim(),
+                nominal: numNominal,
+                terbilang: terbilangRupiah(numNominal),
+                saldoSebelum: saldoSaatIni,
+                saldoSisa: saldoSaatIni - numNominal,
+                catatBukuKas
+            });
+
+            setModalPencairanKas(false);
+        } catch (err) {
+            console.error("Gagal proses pencairan kas:", err);
+            showNotification(`Gagal proses pencairan: ${err.message || err}`, 'error');
+        } finally {
+            setFormPencairanKas(prev => ({ ...prev, loading: false }));
         }
     };
 
@@ -4172,6 +4388,9 @@ function App() {
         const akunKamarTersedia = dataSantri.filter(s => 
             (s.nama || '').toLowerCase().includes('kas') || 
             (s.nama || '').toLowerCase().includes('kamar') || 
+            (s.nama || '').toLowerCase().includes('ekskul') || 
+            (s.kelas || '').toLowerCase() === 'asrama' ||
+            (s.kelas || '').toLowerCase() === 'ekskul' ||
             String(s.nis || '').startsWith('KAS-')
         );
 
@@ -4182,13 +4401,15 @@ function App() {
                 ket.includes('[infaq') || 
                 ket.includes('[cukur') || 
                 ket.includes('[kas kelas]') || 
-                ket.includes('[iuran');
+                ket.includes('[iuran') ||
+                ket.includes('[pencairan tunai');
             if (!matchesCategory) return false;
             if (iuranRiwayatFilter !== 'Semua') {
                 if (iuranRiwayatFilter === 'Kas Kamar' && !ket.includes('[kas kamar]')) return false;
                 if (iuranRiwayatFilter === 'Infaq' && !ket.includes('[infaq')) return false;
                 if (iuranRiwayatFilter === 'Cukur' && !ket.includes('[cukur')) return false;
                 if (iuranRiwayatFilter === 'Kas Kelas' && !ket.includes('[kas kelas]')) return false;
+                if (iuranRiwayatFilter === 'Pencairan Tunai' && !ket.includes('[pencairan tunai')) return false;
             }
             if (iuranRiwayatSearch) {
                 const s = iuranRiwayatSearch.toLowerCase();
@@ -4853,29 +5074,40 @@ function App() {
                     </div>
                 </div>
 
-                {/* DAFTAR AKUN DOMPET KAMAR / ASRAMA */}
+                {/* DAFTAR AKUN DOMPET KAS & EKSKUL (MULTI-KAS 1 KARTU) */}
                 <div className="bg-surface border border-whisper shadow-sm rounded-card overflow-hidden mt-8">
                     <div className="p-4 border-b border-whisper/50 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 bg-canvas/40">
                         <div>
                             <h4 className="font-bold text-ink text-sm flex items-center gap-2">
-                                <Building2 className="w-4 h-4 text-indigo-600" /> Daftar Akun Dompet Kamar & Asrama
+                                <Building2 className="w-4 h-4 text-indigo-600" /> Daftar Akun Kas & Dompet Bersama (Kamar, Ekskul, Organisasi)
                             </h4>
-                            <p className="text-xs text-steel">Rekening bersama per kamar untuk menampung kas dan belanja di kasir POS.</p>
+                            <p className="text-xs text-steel">
+                                Satu kartu fisik RFID dapat menampung beberapa akun kas (Multi-Kas). Kasir POS dapat memilih dompet & Bendahara dapat mencairkan tunai sewaktu-waktu.
+                            </p>
                         </div>
-                        <button
-                            type="button"
-                            onClick={() => setShowModalBuatAkunKamar(true)}
-                            className="px-3.5 py-1.5 bg-indigo-600 hover:bg-indigo-700 active:scale-95 text-white rounded-xl text-xs font-bold shadow-sm flex items-center gap-1.5 transition-all"
-                        >
-                            <Plus className="w-4 h-4" /> Tambah Akun Kamar
-                        </button>
+                        <div className="flex flex-wrap items-center gap-2 w-full sm:w-auto">
+                            <button
+                                type="button"
+                                onClick={() => handleBukaModalPencairan()}
+                                className="px-3.5 py-1.5 bg-emerald-600 hover:bg-emerald-700 active:scale-95 text-white rounded-xl text-xs font-bold shadow-sm flex items-center gap-1.5 transition-all"
+                            >
+                                <Banknote className="w-4 h-4" /> Cairkan Kas Tunai
+                            </button>
+                            <button
+                                type="button"
+                                onClick={() => setShowModalBuatAkunKamar(true)}
+                                className="px-3.5 py-1.5 bg-indigo-600 hover:bg-indigo-700 active:scale-95 text-white rounded-xl text-xs font-bold shadow-sm flex items-center gap-1.5 transition-all"
+                            >
+                                <Plus className="w-4 h-4" /> Tambah Akun Kas / Ekskul
+                            </button>
+                        </div>
                     </div>
                     <div className="overflow-x-auto">
                         <table className="w-full text-sm text-left">
                             <thead className="bg-canvas/60 text-steel border-b border-whisper/50 text-xs">
                                 <tr>
-                                    <th className="px-6 py-3">Nama Kamar / Akun</th>
-                                    <th className="px-6 py-3">Asrama / Kelas</th>
+                                    <th className="px-6 py-3">Nama Kas / Ekskul</th>
+                                    <th className="px-6 py-3">Kategori / Asrama</th>
                                     <th className="px-6 py-3 text-right">Saldo Kas</th>
                                     <th className="px-6 py-3 text-center">Kartu RFID (UID)</th>
                                     <th className="px-6 py-3 text-center">PIN Kasir POS</th>
@@ -4886,34 +5118,55 @@ function App() {
                                 {akunKamarTersedia.length === 0 ? (
                                     <tr>
                                         <td colSpan={6} className="px-6 py-8 text-center text-steel">
-                                            Belum ada akun dompet kamar. Klik "Tambah Akun Kamar" untuk membuatnya.
+                                            Belum ada akun dompet kas / ekskul. Klik "Tambah Akun Kas / Ekskul" untuk membuatnya.
                                         </td>
                                     </tr>
                                 ) : (
                                     akunKamarTersedia.map(k => {
                                         const saldo = getSantriSaldoTabungan(k.nis);
+                                        const sharedCardAccounts = k.uid 
+                                            ? akunKamarTersedia.filter(other => String(other.uid || '').trim().toLowerCase() === String(k.uid).trim().toLowerCase()) 
+                                            : [];
+                                        const isMultiKas = sharedCardAccounts.length > 1;
+
                                         return (
                                             <tr key={k.nis} className="hover:bg-canvas/50 transition-colors">
                                                 <td className="px-6 py-3 font-semibold text-ink">
                                                     <div className="flex items-center gap-2">
-                                                        <Building2 className="w-4 h-4 text-indigo-500 shrink-0" />
+                                                        <div className="p-1.5 rounded-lg bg-indigo-50 text-indigo-600 shrink-0">
+                                                            <Building2 className="w-4 h-4" />
+                                                        </div>
                                                         <div>
-                                                            <div>{k.nama}</div>
+                                                            <div className="font-bold flex items-center gap-1.5">
+                                                                {k.nama}
+                                                            </div>
                                                             <div className="text-[10px] text-steel font-mono">{k.nis}</div>
                                                         </div>
                                                     </div>
                                                 </td>
                                                 <td className="px-6 py-3 text-steel">
-                                                    {k.kelas || 'Asrama'}
+                                                    <span className="inline-block px-2 py-0.5 rounded text-[11px] font-semibold bg-slate-100 text-slate-800 border border-slate-200">
+                                                        {k.kelas || 'Umum'}
+                                                    </span>
                                                 </td>
                                                 <td className="px-6 py-3 text-right font-bold font-mono text-emerald-700 text-sm">
                                                     Rp {saldo.toLocaleString('id-ID')}
                                                 </td>
                                                 <td className="px-6 py-3 text-center">
                                                     {k.uid ? (
-                                                        <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-mono font-bold bg-emerald-50 text-emerald-800 border border-emerald-200">
-                                                            <Scan className="w-3 h-3 text-emerald-600" /> {k.uid}
-                                                        </span>
+                                                        <div className="flex flex-col items-center gap-1">
+                                                            <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-mono font-bold bg-emerald-50 text-emerald-800 border border-emerald-200">
+                                                                <Scan className="w-3 h-3 text-emerald-600" /> {k.uid}
+                                                            </span>
+                                                            {isMultiKas && (
+                                                                <span 
+                                                                    className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-indigo-100 text-indigo-700 border border-indigo-200 shadow-2xs"
+                                                                    title={`Kartu RFID ini dipakai bersama oleh ${sharedCardAccounts.length} akun kas:\n${sharedCardAccounts.map(s => '• ' + s.nama).join('\n')}`}
+                                                                >
+                                                                    <Layers className="w-3 h-3 text-indigo-600" /> Multi-Kas ({sharedCardAccounts.length})
+                                                                </span>
+                                                            )}
+                                                        </div>
                                                     ) : (
                                                         <span className="inline-block px-2 py-0.5 rounded text-[10px] bg-amber-50 text-amber-700 border border-amber-200 font-semibold">
                                                             Belum Ada Kartu
@@ -4925,7 +5178,15 @@ function App() {
                                                         <Key className="w-3 h-3 text-slate-500" /> {k.pin || '123456'}
                                                     </span>
                                                 </td>
-                                                <td className="px-6 py-3 text-right space-x-2">
+                                                <td className="px-6 py-3 text-right space-x-1.5 whitespace-nowrap">
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => handleBukaModalPencairan(k)}
+                                                        className="px-2.5 py-1 bg-emerald-600 hover:bg-emerald-700 active:scale-95 text-white rounded-lg text-xs font-semibold shadow-xs inline-flex items-center gap-1 transition-all"
+                                                        title="Cairkan Uang Cash / Tarik Tunai"
+                                                    >
+                                                        <Banknote className="w-3.5 h-3.5" /> Cairkan
+                                                    </button>
                                                     <button
                                                         type="button"
                                                         onClick={() => {
@@ -4952,7 +5213,7 @@ function App() {
                                                         type="button"
                                                         onClick={() => handleHapusAkunKamar(k)}
                                                         className="px-2 py-1 bg-white hover:bg-rose-50 text-rose-600 border border-rose-200 rounded-lg text-xs font-semibold shadow-xs"
-                                                        title="Hapus Akun Kamar"
+                                                        title="Hapus Akun Kas"
                                                     >
                                                         <Trash2 className="w-3 h-3 inline" />
                                                     </button>
@@ -4980,6 +5241,7 @@ function App() {
                                 className={`${inputBase} py-1.5 text-xs w-auto`}
                             >
                                 <option value="Semua">Semua Kategori</option>
+                                <option value="Pencairan Tunai">Pencairan Kas Tunai</option>
                                 <option value="Kas Kamar">Kas Kamar</option>
                                 <option value="Infaq">Infaq</option>
                                 <option value="Cukur">Cukur</option>
@@ -5080,12 +5342,17 @@ function App() {
                     </div>
                 </div>
 
-                {/* Modal Buat Akun Dompet Kamar Baru */}
+                {/* Modal Buat Akun Dompet Kas & Ekskul Baru (Mendukung Multi-Kas 1 Kartu) */}
                 {showModalBuatAkunKamar && (
                     <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-ink/20 backdrop-blur-[3px]">
-                        <div className="bg-surface rounded-2xl border border-whisper w-full max-w-md p-6 shadow-diffused space-y-4">
+                        <div className="bg-surface rounded-2xl border border-whisper w-full max-w-lg p-6 shadow-diffused space-y-4 max-h-[90vh] overflow-y-auto">
                             <div className="flex justify-between items-center pb-3 border-b border-whisper">
-                                <h3 className="font-bold text-ink text-base">Buat Akun Dompet Kamar Baru</h3>
+                                <div>
+                                    <h3 className="font-bold text-ink text-base flex items-center gap-2">
+                                        <Building2 className="w-5 h-5 text-indigo-600" /> Tambah Akun Kas & Dompet Bersama
+                                    </h3>
+                                    <p className="text-xs text-steel">Buat rekening kas kamar, ekskul, atau organisasi (bisa 1 kartu multi-kas).</p>
+                                </div>
                                 <button 
                                     type="button" 
                                     onClick={() => setShowModalBuatAkunKamar(false)}
@@ -5096,24 +5363,54 @@ function App() {
                             </div>
                             <form onSubmit={handleBuatAkunKamar} className="space-y-4 text-xs">
                                 <div>
-                                    <label className="block font-semibold text-ink mb-1">Nama Kamar / Kelompok:</label>
+                                    <label className="block font-semibold text-ink mb-1">Kategori Akun Kas:</label>
+                                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                                        {[
+                                            { id: 'Ekskul', label: 'Ekskul', desc: 'Futsal, Pramuka, dll' },
+                                            { id: 'Kas Kamar', label: 'Kas Kamar', desc: 'Asrama / Kamar' },
+                                            { id: 'Organisasi', label: 'Organisasi', desc: 'OSIS, Panitia' },
+                                            { id: 'Lainnya', label: 'Lainnya', desc: 'Kas Umum' }
+                                        ].map(kat => (
+                                            <button
+                                                key={kat.id}
+                                                type="button"
+                                                onClick={() => setKategoriKamarBaru(kat.id)}
+                                                className={`p-2.5 rounded-xl border text-left transition-all ${
+                                                    kategoriKamarBaru === kat.id 
+                                                        ? 'bg-indigo-50 border-indigo-500 text-indigo-900 font-bold ring-2 ring-indigo-500/20' 
+                                                        : 'bg-white border-whisper text-steel hover:border-slate-300'
+                                                }`}
+                                            >
+                                                <div className="text-xs">{kat.label}</div>
+                                                <div className="text-[10px] font-normal opacity-75">{kat.desc}</div>
+                                            </button>
+                                        ))}
+                                    </div>
+                                </div>
+                                <div>
+                                    <label className="block font-semibold text-ink mb-1">Nama Kas / Kelompok:</label>
                                     <input
                                         type="text"
                                         required
-                                        placeholder="Misal: Kamar Al-Fatih 1 atau Kamar 2B"
+                                        placeholder={kategoriKamarBaru === 'Ekskul' ? 'Misal: Futsal, Pramuka, Hadroh' : 'Misal: Kamar Al-Fatih 1, Kamar 2B, OSIS'}
                                         value={namaKamarBaru}
                                         onChange={(e) => setNamaKamarBaru(e.target.value)}
                                         className={inputBase}
                                     />
+                                    <p className="text-[10px] text-steel mt-1">
+                                        Otomatis tersimpan dengan nama: <strong className="text-ink">{kategoriKamarBaru === 'Ekskul' ? `Kas Ekskul ${namaKamarBaru || '...'}` : `Kas ${namaKamarBaru || '...'}`}</strong>
+                                    </p>
                                 </div>
                                 <div>
-                                    <label className="block font-semibold text-ink mb-1">Kelas / Asrama:</label>
+                                    <label className="block font-semibold text-ink mb-1">Penanggung Jawab / Asrama:</label>
                                     <select
                                         value={kelasKamarBaru}
                                         onChange={(e) => setKelasKamarBaru(e.target.value)}
                                         className={inputBase}
                                     >
-                                        <option value="">Pilih Asrama / Kelas</option>
+                                        <option value="">Pilih Asrama / Kelas / Bagian</option>
+                                        <option value="Ekskul">Bidang Ekskul</option>
+                                        <option value="Organisasi">Organisasi / OSIS</option>
                                         {masterKelasList.map(k => (
                                             <option key={k} value={k}>{k}</option>
                                         ))}
@@ -5122,7 +5419,7 @@ function App() {
                                 <div>
                                     <label className="block font-semibold text-ink mb-1 flex justify-between items-center">
                                         <span>Tempelkan Kartu RFID (Opsional):</span>
-                                        <span className="text-[10px] text-steel font-normal">Tap kartu ke reader</span>
+                                        <span className="text-[10px] text-indigo-600 font-bold">Mendukung 1 Kartu Multi-Kas</span>
                                     </label>
                                     <input
                                         type="text"
@@ -5139,43 +5436,58 @@ function App() {
                                             return cleanCode && (exUid === cleanCode || exRfid === cleanCode);
                                         });
                                         if (conflict) {
-                                            return (
-                                                <div className="p-2.5 rounded-xl bg-amber-50 border border-amber-300 text-amber-900 text-[11px] mt-1.5 space-y-1">
-                                                    <div className="font-bold flex items-center gap-1 text-amber-800">
-                                                        <AlertCircle className="w-3.5 h-3.5 text-amber-600" /> Kartu RFID ini sudah terdaftar:
+                                            const isConflictKas = String(conflict.nis || '').startsWith('KAS-') || 
+                                                                  (conflict.nama || '').toLowerCase().startsWith('kas ') ||
+                                                                  (conflict.kelas || '').toLowerCase() === 'asrama' ||
+                                                                  (conflict.kelas || '').toLowerCase() === 'ekskul';
+                                            if (isConflictKas) {
+                                                return (
+                                                    <div className="p-3 rounded-xl bg-indigo-50 border border-indigo-200 text-indigo-950 text-[11px] mt-1.5 space-y-1">
+                                                        <div className="font-bold flex items-center gap-1.5 text-indigo-800">
+                                                            <Layers className="w-4 h-4 text-indigo-600" /> Mode Multi-Kas (1 Kartu Banyak Kas) Terdeteksi!
+                                                        </div>
+                                                        <div>Kartu RFID ini sudah dipakai oleh: <strong>{conflict.nama}</strong> ({conflict.nis}).</div>
+                                                        <div className="text-[10px] text-indigo-700 leading-relaxed">
+                                                            Kartu ini akan <strong>digunakan bersama (Multi-Kas)</strong> tanpa perlu beli kartu fisik baru! Saat ditap di kasir POS, sistem akan memunculkan pilihan sub-kas.
+                                                        </div>
                                                     </div>
-                                                    <div>Milik: <strong>{conflict.nama}</strong> (NIS: {conflict.nis}, Kelas: {conflict.kelas || '-'}).</div>
-                                                    <div className="text-[10px] text-amber-700">Saat disimpan, sistem akan meminta konfirmasi pemindahan kartu dari {conflict.nama}.</div>
-                                                </div>
-                                            );
+                                                );
+                                            } else {
+                                                return (
+                                                    <div className="p-2.5 rounded-xl bg-amber-50 border border-amber-300 text-amber-900 text-[11px] mt-1.5 space-y-1">
+                                                        <div className="font-bold flex items-center gap-1 text-amber-800">
+                                                            <AlertCircle className="w-3.5 h-3.5 text-amber-600" /> Kartu RFID ini milik santri:
+                                                        </div>
+                                                        <div>Milik: <strong>{conflict.nama}</strong> (NIS: {conflict.nis}, Kelas: {conflict.kelas || '-'}).</div>
+                                                        <div className="text-[10px] text-amber-700">Kartu santri pribadi tidak boleh dipakai kas. Menyimpan akan memindahkan kartu ini ke akun kas baru.</div>
+                                                    </div>
+                                                );
+                                            }
                                         }
                                         return null;
                                     })()}
                                     <p className="text-[10px] text-steel mt-1">
-                                        Kartu fisik ini yang nantinya dipegang ketua kamar untuk ditap saat belanja di kasir POS. (Bisa diisi nanti).
+                                        Kartu fisik ini yang nantinya dipegang koordinator/pembina untuk belanja di POS atau cek saldo.
                                     </p>
                                 </div>
                                 <div>
                                     <label className="block font-semibold text-ink mb-1 flex justify-between items-center">
-                                        <span>PIN Transaksi Kasir POS (6 Digit):</span>
+                                        <span>PIN Transaksi Kasir POS (4 - 6 Digit):</span>
                                         <span className="text-[10px] text-indigo-600 font-bold">Wajib di Kasir POS</span>
                                     </label>
                                     <input
                                         type="password"
                                         maxLength={6}
                                         required
-                                        placeholder="6 Digit angka, misal: 123456"
+                                        placeholder="4-6 Digit angka, misal: 123456"
                                         value={pinKamarBaru}
                                         onChange={(e) => setPinKamarBaru(e.target.value.replace(/\D/g, ''))}
                                         className={`${inputBase} font-mono text-center tracking-widest font-bold text-sm`}
                                     />
                                     <p className="text-[10px] text-steel mt-1">
-                                        PIN keamanan 6 digit yang wajib dimasukkan bendahara/ketua kamar saat belanja di kasir POS. Default: 123456.
+                                        PIN keamanan yang wajib dimasukkan pembina/ketua saat belanja di kasir POS. Default: 123456.
                                     </p>
                                 </div>
-                                <p className="text-[11px] text-steel">
-                                    Akun ini didaftarkan sebagai dompet bersama. Saat bendahara kamar belanja di POS koperasi, kasir tinggal tap kartu dan memasukkan PIN ini.
-                                </p>
                                 <div className="flex justify-end gap-2 pt-3 border-t border-whisper">
                                     <button 
                                         type="button" 
@@ -5185,7 +5497,7 @@ function App() {
                                         Batal
                                     </button>
                                     <button type="submit" className={btnPrimary}>
-                                        Simpan Akun Kamar
+                                        Simpan Akun Kas
                                     </button>
                                 </div>
                             </form>
@@ -5193,13 +5505,13 @@ function App() {
                     </div>
                 )}
 
-                {/* Modal Edit Kartu RFID Kamar */}
+                {/* Modal Edit Kartu RFID Kamar / Ekskul */}
                 {modalEditRfidKamar && (
                     <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-ink/20 backdrop-blur-[3px]">
                         <div className="bg-surface rounded-2xl border border-whisper w-full max-w-md p-6 shadow-diffused space-y-4">
                             <div className="flex justify-between items-center pb-3 border-b border-whisper">
                                 <h3 className="font-bold text-ink text-base flex items-center gap-2">
-                                    <Scan className="w-5 h-5 text-indigo-600" /> Hubungkan Kartu RFID Kamar
+                                    <Scan className="w-5 h-5 text-indigo-600" /> Hubungkan Kartu RFID Kas
                                 </h3>
                                 <button 
                                     type="button" 
@@ -5211,15 +5523,24 @@ function App() {
                             </div>
                             <form onSubmit={handleSimpanRfidKamar} className="space-y-4 text-xs">
                                 <div>
-                                    <label className="block font-semibold text-ink mb-1">Akun Kamar:</label>
-                                    <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl font-bold text-ink">
-                                        {modalEditRfidKamar.nama} ({modalEditRfidKamar.nis})
+                                    <label className="block font-semibold text-ink mb-1">Akun Kas / Ekskul:</label>
+                                    <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl font-bold text-ink flex items-center justify-between">
+                                        <div>
+                                            <div>{modalEditRfidKamar.nama}</div>
+                                            <div className="text-[10px] text-steel font-mono">{modalEditRfidKamar.nis}</div>
+                                        </div>
+                                        <div className="text-right">
+                                            <div className="text-[10px] text-steel">Saldo Saat Ini:</div>
+                                            <div className="font-mono text-emerald-700 font-bold">
+                                                Rp {getSantriSaldoTabungan(modalEditRfidKamar.nis).toLocaleString('id-ID')}
+                                            </div>
+                                        </div>
                                     </div>
                                 </div>
                                 <div>
                                     <label className="block font-semibold text-ink mb-1 flex justify-between items-center">
                                         <span>Nomor UID Kartu RFID:</span>
-                                        <span className="text-[10px] text-steel font-normal">Tap kartu ke reader</span>
+                                        <span className="text-[10px] text-indigo-600 font-bold">Bisa 1 Kartu Multi-Kas</span>
                                     </label>
                                     <input
                                         type="text"
@@ -5238,15 +5559,33 @@ function App() {
                                             return cleanCode && (exUid === cleanCode || exRfid === cleanCode);
                                         });
                                         if (conflict) {
-                                            return (
-                                                <div className="p-2.5 rounded-xl bg-amber-50 border border-amber-300 text-amber-900 text-[11px] mt-2 space-y-1">
-                                                    <div className="font-bold flex items-center gap-1 text-amber-800">
-                                                        <AlertCircle className="w-3.5 h-3.5 text-amber-600" /> Kartu RFID ini sudah terdaftar:
+                                            const isConflictKas = String(conflict.nis || '').startsWith('KAS-') || 
+                                                                  (conflict.nama || '').toLowerCase().startsWith('kas ') ||
+                                                                  (conflict.kelas || '').toLowerCase() === 'asrama' ||
+                                                                  (conflict.kelas || '').toLowerCase() === 'ekskul';
+                                            if (isConflictKas) {
+                                                return (
+                                                    <div className="p-3 rounded-xl bg-indigo-50 border border-indigo-200 text-indigo-950 text-[11px] mt-2 space-y-1">
+                                                        <div className="font-bold flex items-center gap-1.5 text-indigo-800">
+                                                            <Layers className="w-4 h-4 text-indigo-600" /> Tautkan sebagai Multi-Kas (1 Kartu):
+                                                        </div>
+                                                        <div>Kartu ini sudah dipakai oleh akun kas: <strong>{conflict.nama}</strong> ({conflict.nis}).</div>
+                                                        <div className="text-[10px] text-indigo-700 leading-relaxed">
+                                                            Menyimpan akan <strong>menggabungkan kartu ini</strong> untuk kedua akun kas. Saat belanja di POS, kasir dapat memilih kas yang ditransaksikan.
+                                                        </div>
                                                     </div>
-                                                    <div>Milik: <strong>{conflict.nama}</strong> (NIS: {conflict.nis}, Kelas: {conflict.kelas || '-'}).</div>
-                                                    <div className="text-[10px] text-amber-700">Menyimpan akan otomatis memindahkan kartu dari {conflict.nama} ke {modalEditRfidKamar.nama}.</div>
-                                                </div>
-                                            );
+                                                );
+                                            } else {
+                                                return (
+                                                    <div className="p-2.5 rounded-xl bg-amber-50 border border-amber-300 text-amber-900 text-[11px] mt-2 space-y-1">
+                                                        <div className="font-bold flex items-center gap-1 text-amber-800">
+                                                            <AlertCircle className="w-3.5 h-3.5 text-amber-600" /> Kartu RFID ini milik santri:
+                                                        </div>
+                                                        <div>Milik: <strong>{conflict.nama}</strong> (NIS: {conflict.nis}, Kelas: {conflict.kelas || '-'}).</div>
+                                                        <div className="text-[10px] text-amber-700">Menyimpan akan memindahkan kartu dari santri tersebut ke {modalEditRfidKamar.nama}.</div>
+                                                    </div>
+                                                );
+                                            }
                                         }
                                         return null;
                                     })()}
@@ -5284,6 +5623,337 @@ function App() {
                                     </button>
                                 </div>
                             </form>
+                        </div>
+                    </div>
+                )}
+
+                {/* MODAL PENCAIRAN KAS TUNAI (CASH OUT) */}
+                {modalPencairanKas && (
+                    <div className="fixed inset-0 z-[110] flex items-center justify-center p-4 bg-ink/40 backdrop-blur-sm animate-in fade-in duration-200">
+                        <div className="bg-surface rounded-2xl border border-whisper w-full max-w-lg p-6 shadow-2xl space-y-4 max-h-[92vh] overflow-y-auto">
+                            <div className="flex justify-between items-center pb-3 border-b border-whisper">
+                                <div className="flex items-center gap-2.5">
+                                    <div className="p-2 rounded-xl bg-emerald-50 text-emerald-600">
+                                        <Banknote className="w-5 h-5" />
+                                    </div>
+                                    <div>
+                                        <h3 className="font-bold text-ink text-base">Pencairan Dana Kas Tunai (Cash Out)</h3>
+                                        <p className="text-xs text-steel">Tarik dana tunai untuk operasional ekskul / kamar & otomatis cetak kuitansi.</p>
+                                    </div>
+                                </div>
+                                <button 
+                                    type="button" 
+                                    onClick={() => setModalPencairanKas(false)}
+                                    className="text-steel hover:text-ink p-1"
+                                >
+                                    <X className="w-5 h-5" />
+                                </button>
+                            </div>
+
+                            <form onSubmit={handleProsesPencairanKas} className="space-y-4 text-xs">
+                                {/* Pilihan Akun Kas */}
+                                <div>
+                                    <label className="block font-semibold text-ink mb-1">Pilih Akun Kas / Ekskul:</label>
+                                    <select
+                                        required
+                                        value={formPencairanKas.akunNis}
+                                        onChange={(e) => setFormPencairanKas(prev => ({ ...prev, akunNis: e.target.value }))}
+                                        className={inputBase}
+                                    >
+                                        <option value="">Pilih Sumber Dana Kas...</option>
+                                        {akunKamarTersedia.map(a => {
+                                            const s = getSantriSaldoTabungan(a.nis);
+                                            return (
+                                                <option key={a.nis} value={a.nis}>
+                                                    {a.nama} ({a.nis}) — Saldo: Rp {s.toLocaleString('id-ID')}
+                                                </option>
+                                            );
+                                        })}
+                                    </select>
+                                </div>
+
+                                {/* Ringkasan Saldo Akun Terpilih */}
+                                {formPencairanKas.akunNis && (() => {
+                                    const acc = dataSantri.find(s => String(s.nis) === String(formPencairanKas.akunNis));
+                                    const saldoKas = getSantriSaldoTabungan(formPencairanKas.akunNis);
+                                    if (!acc) return null;
+                                    return (
+                                        <div className="p-3 rounded-xl bg-emerald-50/70 border border-emerald-200 flex justify-between items-center">
+                                            <div>
+                                                <div className="font-bold text-emerald-950 text-xs">{acc.nama}</div>
+                                                <div className="text-[10px] text-emerald-700 font-mono">
+                                                    NIS: {acc.nis} {acc.uid ? `• RFID: ${acc.uid}` : ''}
+                                                </div>
+                                            </div>
+                                            <div className="text-right">
+                                                <div className="text-[10px] text-emerald-700 uppercase font-semibold">Saldo Tersedia</div>
+                                                <div className="text-lg font-mono font-black text-emerald-700">
+                                                    Rp {saldoKas.toLocaleString('id-ID')}
+                                                </div>
+                                            </div>
+                                        </div>
+                                    );
+                                })()}
+
+                                {/* Input Nominal Pencairan */}
+                                <div>
+                                    <div className="flex justify-between items-center mb-1">
+                                        <label className="font-semibold text-ink">Nominal Pencairan Tunai (Rp):</label>
+                                        {formPencairanKas.akunNis && (
+                                            <button
+                                                type="button"
+                                                onClick={() => {
+                                                    const s = getSantriSaldoTabungan(formPencairanKas.akunNis);
+                                                    setFormPencairanKas(prev => ({ ...prev, nominal: String(s) }));
+                                                }}
+                                                className="text-[10px] text-indigo-600 font-bold hover:underline"
+                                            >
+                                                Tarik Semua Saldo
+                                            </button>
+                                        )}
+                                    </div>
+                                    <div className="relative">
+                                        <span className="absolute left-3.5 top-2.5 font-bold text-steel text-sm">Rp</span>
+                                        <input
+                                            type="text"
+                                            required
+                                            placeholder="0"
+                                            value={formPencairanKas.nominal ? Number(String(formPencairanKas.nominal).replace(/\D/g, '')).toLocaleString('id-ID') : ''}
+                                            onChange={(e) => {
+                                                const raw = e.target.value.replace(/\D/g, '');
+                                                setFormPencairanKas(prev => ({ ...prev, nominal: raw }));
+                                            }}
+                                            className={`${inputBase} pl-10 font-mono text-base font-bold text-emerald-800`}
+                                        />
+                                    </div>
+
+                                    {/* Quick Amount Chips */}
+                                    <div className="flex flex-wrap gap-1.5 mt-2">
+                                        {[50000, 100000, 200000, 500000, 1000000].map(amt => (
+                                            <button
+                                                key={amt}
+                                                type="button"
+                                                onClick={() => setFormPencairanKas(prev => ({ ...prev, nominal: String(amt) }))}
+                                                className="px-2 py-1 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 text-[10px] font-mono font-semibold transition-colors"
+                                            >
+                                                +Rp {(amt / 1000).toLocaleString('id-ID')}rb
+                                            </button>
+                                        ))}
+                                    </div>
+
+                                    {/* Terbilang Preview */}
+                                    {Number(formPencairanKas.nominal) > 0 && (
+                                        <div className="mt-2 p-2 bg-slate-50 border border-slate-200 rounded-lg text-[11px] text-slate-700 italic">
+                                            Terbilang: <span className="font-semibold text-ink">"{terbilangRupiah(formPencairanKas.nominal)}"</span>
+                                        </div>
+                                    )}
+                                </div>
+
+                                {/* Form Nama Penerima Cash */}
+                                <div>
+                                    <label className="block font-semibold text-ink mb-1">Nama Penerima Uang Tunai:</label>
+                                    <input
+                                        type="text"
+                                        required
+                                        placeholder="Misal: Ust. Rahmat (Pembina Futsal) atau Ahmad Fauzi (Ketua Kamar)"
+                                        value={formPencairanKas.penerima}
+                                        onChange={(e) => setFormPencairanKas(prev => ({ ...prev, penerima: e.target.value }))}
+                                        className={inputBase}
+                                    />
+                                    <p className="text-[10px] text-steel mt-0.5">Nama yang bertanda tangan sebagai penerima dana fisik.</p>
+                                </div>
+
+                                {/* Form Keperluan / LPJ */}
+                                <div>
+                                    <label className="block font-semibold text-ink mb-1">Keperluan Pengeluaran Dana:</label>
+                                    <textarea
+                                        rows={2}
+                                        required
+                                        placeholder="Misal: Sewa lapangan futsal, beli air mineral latihan resmi, & beli perlengkapan bambu pramuka"
+                                        value={formPencairanKas.keperluan}
+                                        onChange={(e) => setFormPencairanKas(prev => ({ ...prev, keperluan: e.target.value }))}
+                                        className={inputBase}
+                                    />
+                                </div>
+
+                                {/* Tanggal Transaksi & Opsi Catat Buku Kas */}
+                                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
+                                    <div>
+                                        <label className="block font-semibold text-ink mb-1">Tanggal Transaksi:</label>
+                                        <input
+                                            type="date"
+                                            required
+                                            value={formPencairanKas.tanggal}
+                                            onChange={(e) => setFormPencairanKas(prev => ({ ...prev, tanggal: e.target.value }))}
+                                            className={inputBase}
+                                        />
+                                    </div>
+                                    <div className="flex items-center pt-5">
+                                        <label className="flex items-start gap-2 cursor-pointer select-none">
+                                            <input
+                                                type="checkbox"
+                                                checked={formPencairanKas.catatBukuKas}
+                                                onChange={(e) => setFormPencairanKas(prev => ({ ...prev, catatBukuKas: e.target.checked }))}
+                                                className="mt-0.5 rounded text-emerald-600 focus:ring-emerald-500 w-4 h-4"
+                                            />
+                                            <span className="text-[11px] text-ink font-medium leading-tight">
+                                                Catat otomatis di Buku Kas Pondok (Cashflow Keluar)
+                                            </span>
+                                        </label>
+                                    </div>
+                                </div>
+
+                                <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl text-[11px] text-amber-900 space-y-1">
+                                    <div className="font-bold flex items-center gap-1.5 text-amber-800">
+                                        <AlertCircle className="w-4 h-4 text-amber-600" /> Mekanisme Pencairan:
+                                    </div>
+                                    <p className="text-[10px] leading-relaxed text-amber-800">
+                                        Saldo akun kas akan langsung dipotong. Setelah klik konfirmasi, sistem akan otomatis menerbitkan <strong>Bukti Kas Keluar / Kuitansi Fisik</strong> yang bisa langsung dicetak untuk ditandatangani penerima.
+                                    </p>
+                                </div>
+
+                                <div className="flex justify-end gap-2 pt-3 border-t border-whisper">
+                                    <button 
+                                        type="button" 
+                                        onClick={() => setModalPencairanKas(false)}
+                                        className={btnOutline}
+                                        disabled={formPencairanKas.loading}
+                                    >
+                                        Batal
+                                    </button>
+                                    <button 
+                                        type="submit" 
+                                        className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 active:scale-95 text-white text-xs font-bold rounded-xl shadow-sm flex items-center gap-1.5 transition-all"
+                                        disabled={formPencairanKas.loading}
+                                    >
+                                        {formPencairanKas.loading ? (
+                                            <>
+                                                <RefreshCw className="w-4 h-4 animate-spin" /> Memproses...
+                                            </>
+                                        ) : (
+                                            <>
+                                                <Banknote className="w-4 h-4" /> Konfirmasi & Cairkan Cash
+                                            </>
+                                        )}
+                                    </button>
+                                </div>
+                            </form>
+                        </div>
+                    </div>
+                )}
+
+                {/* MODAL KUITANSI / BUKTI PENGELUARAN KAS SIAP CETAK */}
+                {modalKuitansiPencairan && (
+                    <div className="fixed inset-0 z-[120] flex items-center justify-center p-4 bg-ink/50 backdrop-blur-sm animate-in fade-in duration-200">
+                        <div className="bg-white rounded-2xl border border-whisper w-full max-w-xl p-6 shadow-2xl space-y-4 max-h-[92vh] overflow-y-auto text-slate-800">
+                            {/* Header Voucher */}
+                            <div className="flex justify-between items-start border-b-2 border-slate-900 pb-3">
+                                <div>
+                                    <h3 className="font-black text-lg text-slate-900 tracking-tight uppercase">
+                                        BUKTI PENGELUARAN KAS / KUITANSI
+                                    </h3>
+                                    <p className="text-xs text-slate-500 font-mono">
+                                        Sistem Keuangan Terpadu Pondok Pesantren
+                                    </p>
+                                </div>
+                                <div className="text-right">
+                                    <div className="px-2.5 py-1 bg-slate-100 rounded-md font-mono text-xs font-bold text-slate-900 border border-slate-300">
+                                        NO: {modalKuitansiPencairan.noBukti}
+                                    </div>
+                                    <div className="text-[10px] text-slate-500 font-mono mt-0.5">
+                                        {modalKuitansiPencairan.tanggal}
+                                    </div>
+                                </div>
+                            </div>
+
+                            {/* Isi Rincian Kuitansi */}
+                            <div className="space-y-3 text-xs">
+                                <div className="grid grid-cols-3 gap-2 py-1.5 border-b border-slate-100">
+                                    <span className="text-slate-500 font-medium">Akun / Sumber Dana</span>
+                                    <span className="col-span-2 font-bold text-slate-900">
+                                        {modalKuitansiPencairan.akunNama} <span className="font-mono font-normal text-slate-500">({modalKuitansiPencairan.akunNis})</span>
+                                    </span>
+                                </div>
+                                <div className="grid grid-cols-3 gap-2 py-1.5 border-b border-slate-100">
+                                    <span className="text-slate-500 font-medium">Diterima Dari</span>
+                                    <span className="col-span-2 font-semibold text-slate-900">
+                                        Bendahara / Kas Utama Pondok Pesantren
+                                    </span>
+                                </div>
+                                <div className="grid grid-cols-3 gap-2 py-1.5 border-b border-slate-100">
+                                    <span className="text-slate-500 font-medium">Diserahkan Kepada</span>
+                                    <span className="col-span-2 font-bold text-emerald-800 text-sm">
+                                        {modalKuitansiPencairan.penerima}
+                                    </span>
+                                </div>
+                                <div className="grid grid-cols-3 gap-2 py-2 border-b border-slate-100 bg-slate-50/70 p-2 rounded-xl">
+                                    <span className="text-slate-500 font-medium self-center">Jumlah Uang Cash</span>
+                                    <div className="col-span-2">
+                                        <div className="text-2xl font-black font-mono text-emerald-700">
+                                            Rp {modalKuitansiPencairan.nominal.toLocaleString('id-ID')}
+                                        </div>
+                                    </div>
+                                </div>
+                                <div className="grid grid-cols-3 gap-2 py-1.5 border-b border-slate-100">
+                                    <span className="text-slate-500 font-medium">Terbilang</span>
+                                    <span className="col-span-2 italic font-semibold text-slate-800 bg-slate-50 p-2 rounded-lg border border-slate-200">
+                                        "{modalKuitansiPencairan.terbilang}"
+                                    </span>
+                                </div>
+                                <div className="grid grid-cols-3 gap-2 py-1.5 border-b border-slate-100">
+                                    <span className="text-slate-500 font-medium">Untuk Keperluan</span>
+                                    <span className="col-span-2 text-slate-900 font-medium leading-relaxed">
+                                        {modalKuitansiPencairan.keperluan}
+                                    </span>
+                                </div>
+                                <div className="grid grid-cols-3 gap-2 py-1 text-[11px] text-slate-500">
+                                    <span>Sisa Saldo Kas Terkini</span>
+                                    <span className="col-span-2 font-mono font-bold text-slate-700">
+                                        Rp {modalKuitansiPencairan.saldoSisa.toLocaleString('id-ID')}
+                                    </span>
+                                </div>
+                            </div>
+
+                            {/* Kolom Tanda Tangan */}
+                            <div className="pt-6 grid grid-cols-2 gap-8 text-center text-xs">
+                                <div className="space-y-12">
+                                    <div className="text-slate-500">Yang Menerima Uang,</div>
+                                    <div>
+                                        <div className="font-bold underline text-slate-900">{modalKuitansiPencairan.penerima}</div>
+                                        <div className="text-[10px] text-slate-500">Penerima Dana</div>
+                                    </div>
+                                </div>
+                                <div className="space-y-12">
+                                    <div className="text-slate-500">Yang Menyerahkan,</div>
+                                    <div>
+                                        <div className="font-bold underline text-slate-900">Bendahara Pondok</div>
+                                        <div className="text-[10px] text-slate-500">Kasir / Pengelola Kas</div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            {/* Tombol Aksi */}
+                            <div className="flex justify-between items-center pt-4 border-t border-slate-200">
+                                <span className="text-[10px] text-slate-400 font-mono">
+                                    Dicetak otomatis pada {new Date().toLocaleString('id-ID')}
+                                </span>
+                                <div className="flex gap-2">
+                                    <button
+                                        type="button"
+                                        onClick={() => setModalKuitansiPencairan(null)}
+                                        className={btnOutline}
+                                    >
+                                        Tutup
+                                    </button>
+                                    <button
+                                        type="button"
+                                        onClick={() => window.print()}
+                                        className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-bold shadow-sm flex items-center gap-1.5 transition-all"
+                                    >
+                                        <Printer className="w-4 h-4" /> Cetak Kuitansi
+                                    </button>
+                                </div>
+                            </div>
                         </div>
                     </div>
                 )}
