@@ -3961,9 +3961,9 @@ function App() {
             const todayStr = new Date().toISOString().split('T')[0];
             const newTabunganRecords = [];
 
-            santriToProcess.forEach(s => {
+            santriToProcess.forEach((s, idx) => {
                 newTabunganRecords.push({
-                    id: `TB-IRN-${Date.now()}-${Math.floor(1000 + Math.random() * 9000)}`,
+                    id: `TB-IRN-${Date.now()}-${idx}-${Math.floor(1000 + Math.random() * 9000)}`,
                     tanggal: todayStr,
                     nis: s.nis,
                     nama: s.nama,
@@ -3977,7 +3977,7 @@ function App() {
             if (iuranAlokasi === 'KasKamar' && iuranTujuanAkunNis) {
                 const targetAkun = dataSantri.find(s => String(s.nis) === String(iuranTujuanAkunNis)) || { nama: 'Kas Kamar' };
                 newTabunganRecords.push({
-                    id: `TB-IRN-IN-${Date.now()}-${Math.floor(1000 + Math.random() * 9000)}`,
+                    id: `TB-IRN-IN-${Date.now()}-dest-${Math.floor(1000 + Math.random() * 9000)}`,
                     tanggal: todayStr,
                     nis: iuranTujuanAkunNis,
                     nama: targetAkun.nama,
@@ -3987,26 +3987,32 @@ function App() {
                 });
             }
 
-            // Simpan ke state Tabungan (otomatis auto-sync ke Supabase Tabungan)
-            setDataTabungan(prev => [...newTabunganRecords, ...prev]);
-
             // Simpan instan ke Supabase Tabungan
             try {
                 if (newTabunganRecords.length > 0) {
                     const { error: insErr } = await supabase.from('Tabungan').insert(newTabunganRecords);
                     if (insErr) {
                         console.error("Gagal simpan tabungan ke Supabase:", insErr);
+                        showNotification(`Gagal menyimpan transaksi ke database server: ${insErr.message || 'Error'}. Silakan coba lagi.`, 'error');
+                        setIuranProcessing(false);
+                        return;
                     }
                 }
             } catch (tabInsertErr) {
-                console.warn("Fallback auto-sync tabungan:", tabInsertErr);
+                console.error("Fallback insert tabungan err:", tabInsertErr);
+                showNotification("Gagal menyimpan transaksi ke database!", "error");
+                setIuranProcessing(false);
+                return;
             }
+
+            // Simpan ke state Tabungan
+            setDataTabungan(prev => [...newTabunganRecords, ...prev]);
 
             // Jika dialokasikan ke Buku Kas Pondok (Tabel Kas)
             if (iuranAlokasi === 'BukuKas') {
                 const katKas = iuranKategori === 'Infaq / Sedekah' ? 'Infaq / Sedekah' : iuranKategori === 'Cukur' ? 'Jasa Cukur' : 'Kas Kamar/Asrama';
                 const newKas = {
-                    id: `KAS-IRN-${Date.now()}`,
+                    id: `KAS-IRN-${Date.now()}-${Math.floor(1000 + Math.random() * 9000)}`,
                     tanggal: todayStr,
                     tipeKas: 'MASUK',
                     kategori: katKas,
@@ -4014,6 +4020,12 @@ function App() {
                     nominal: totalDitarik,
                     keterangan: `[${iuranKategori}] ${iuranKeterangan || ''} (Target: ${iuranTargetType === 'Kelas' ? 'Kelas ' + currentKelas : iuranTargetType})`
                 };
+                try {
+                    const { error: kasErr } = await supabase.from('Kas').insert([newKas]);
+                    if (kasErr) console.error("Gagal simpan kas ke Supabase:", kasErr);
+                } catch (kasErr) {
+                    console.warn("Fallback kas insert err:", kasErr);
+                }
                 setDataKas(prev => [newKas, ...prev]);
             }
 
@@ -4838,7 +4850,17 @@ function App() {
                                                             setIuranKeterangan(`Kas ${firstKamar.nama}`);
                                                         }
                                                     } else if (item.id === 'Kas Kelas' || item.targetDefault === 'Kelas') {
-                                                        setIuranKeterangan(`Kas Kelas ${currentKelas || ''}`);
+                                                        setIuranTargetType('Kelas');
+                                                        const targetK = currentKelas || masterKelasList[0] || '';
+                                                        const matchingKas = akunKamarTersedia.find(a => 
+                                                            (a.nama || '').toLowerCase().includes(targetK.toLowerCase()) || 
+                                                            String(a.kelas || '').toLowerCase() === targetK.toLowerCase()
+                                                        );
+                                                        if (matchingKas) {
+                                                            setIuranAlokasi('KasKamar');
+                                                            setIuranTujuanAkunNis(matchingKas.nis);
+                                                        }
+                                                        setIuranKeterangan(`Kas Kelas ${targetK}`);
                                                     } else {
                                                         setIuranKeterangan(item.desc || item.label);
                                                     }
@@ -5066,7 +5088,21 @@ function App() {
                                         <label className="text-xs font-semibold text-ink">Pilih Kelas / Asrama:</label>
                                         <select
                                             value={currentKelas}
-                                            onChange={(e) => setIuranSelectedKelas(e.target.value)}
+                                            onChange={(e) => {
+                                                const kVal = e.target.value;
+                                                setIuranSelectedKelas(kVal);
+                                                const matchingKas = akunKamarTersedia.find(a => 
+                                                    (a.nama || '').toLowerCase().includes(kVal.toLowerCase()) || 
+                                                    String(a.kelas || '').toLowerCase() === kVal.toLowerCase()
+                                                );
+                                                if (matchingKas) {
+                                                    setIuranAlokasi('KasKamar');
+                                                    setIuranTujuanAkunNis(matchingKas.nis);
+                                                }
+                                                if (iuranKategori === 'Kas Kelas') {
+                                                    setIuranKeterangan(`Kas Kelas ${kVal}`);
+                                                }
+                                            }}
                                             className={`${inputBase} text-xs py-2`}
                                         >
                                             {masterKelasList.map(k => {
