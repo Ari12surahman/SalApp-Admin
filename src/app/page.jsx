@@ -663,6 +663,7 @@ function App() {
     
     const [notification, setNotification] = useState(null);
     const [scanResult, setScanResult] = useState(null);
+    const [scanActiveMultiKasIdx, setScanActiveMultiKasIdx] = useState(0);
     const [scanInput, setScanInput] = useState('');
     const scanInputRef = useRef(null);
 
@@ -2696,50 +2697,109 @@ function App() {
         const code = String(scanInput).trim().replace(/^0+/, '');
         if (!code) return;
 
-        // Cari santri berdasarkan uid atau nis
-        const santri = dataSantri.find(s =>
+        // Cari santri/kas berdasarkan uid atau nis (dukung multi-kas)
+        const matchingSantriList = dataSantri.filter(s =>
             String(s.uid || '').trim().replace(/^0+/, '') === code ||
             String(s.nis || '').trim().replace(/^0+/, '') === code
         );
 
-        if (santri) {
-            const isKamar = String(santri.nis || '').startsWith('KAS-') || (santri.nama || '').toLowerCase().startsWith('kas ') || String(santri.kelas || '').toLowerCase() === 'asrama';
-            const saldoTabungan = getSantriSaldoTabungan(santri.nis);
-            const totalTunggakan = dataTagihan
-                .filter(t => String(t.nis).replace(/^0+/, '') === String(santri.nis).replace(/^0+/, '') && t.status !== 'Lunas')
-                .reduce((sum, item) => sum + (Number(item.nominal || 0) - Number(item.terbayar || 0)), 0);
+        if (matchingSantriList.length > 0) {
+            setScanActiveMultiKasIdx(0);
 
-            const limitCfg = !isKamar ? getSantriLimitConfig(santri) : { limit: 0, periode: 'mingguan', isCustom: false };
-            const usedInPeriod = (!isKamar && limitCfg.limit > 0) ? getUsageInPeriod(santri.nis, limitCfg.periode) : 0;
-            const sisaLimit = (!isKamar && limitCfg.limit > 0) ? Math.max(0, limitCfg.limit - usedInPeriod) : null;
-            const percentageUsed = (!isKamar && limitCfg.limit > 0) ? Math.min(100, Math.round((usedInPeriod / limitCfg.limit) * 100)) : 0;
-            const periodeLabel = limitCfg.periode === 'mingguan' ? 'Minggu Ini (Reset Senin)' : limitCfg.periode === 'bulanan' ? 'Bulan Ini' : 'Hari Ini';
+            if (matchingSantriList.length > 1) {
+                // Kartu Multi-Kas
+                const enrichedMulti = matchingSantriList.map(item => {
+                    const sNis = String(item.nis || '').trim();
+                    const sNisClean = sNis.replace(/^0+/, '');
+                    const saldo = getSantriSaldoTabungan(item.nis);
+                    const isK = String(item.nis || '').startsWith('KAS-') || 
+                                (item.nama || '').toLowerCase().startsWith('kas ') || 
+                                String(item.kelas || '').toLowerCase() === 'asrama' ||
+                                String(item.kelas || '').toLowerCase() === 'ekskul';
 
-            // Ambil 3 transaksi mutasi tabungan terakhir
-            const santriRows = (dataTabungan || []).filter(t => 
-                String(t.nis || t.NIS || '').trim().replace(/^0+/, '') === String(santri.nis).replace(/^0+/, '')
-            );
-            const sortedRows = [...santriRows].reverse();
-            const recentMutasi = sortedRows.slice(0, 3).map(t => ({
-                tanggal: t.tanggal || t.Tanggal || '-',
-                jenis: t.jenis || t.Jenis || 'Setor',
-                nominal: Number(t.nominal || t.Nominal || 0),
-                keterangan: t.keterangan || t.Keterangan || ''
-            }));
+                    const santriRows = (dataTabungan || []).filter(t => 
+                        String(t.nis || t.NIS || '').trim().replace(/^0+/, '') === sNisClean
+                    );
+                    const sortedRows = [...santriRows].reverse();
+                    const recentMutasi = sortedRows.slice(0, 3).map(t => ({
+                        tanggal: t.tanggal || t.Tanggal || '-',
+                        jenis: t.jenis || t.Jenis || 'Setor',
+                        nominal: Number(t.nominal || t.Nominal || 0),
+                        keterangan: t.keterangan || t.Keterangan || ''
+                    }));
 
-            setScanResult({
-                found: true,
-                santri: santri,
-                isKamar: isKamar,
-                saldoTabungan: saldoTabungan,
-                totalTunggakan: totalTunggakan,
-                limitCfg: limitCfg,
-                usedInPeriod: usedInPeriod,
-                sisaLimit: sisaLimit,
-                percentageUsed: percentageUsed,
-                periodeLabel: periodeLabel,
-                mutasi: recentMutasi
-            });
+                    return {
+                        santri: item,
+                        nama: item.nama,
+                        nis: item.nis,
+                        kelas: item.kelas,
+                        pin: item.pin,
+                        saldo: saldo,
+                        isKamar: isK,
+                        mutasi: recentMutasi
+                    };
+                });
+
+                const activeOne = enrichedMulti[0];
+                setScanResult({
+                    found: true,
+                    isMultiKas: true,
+                    multiKasList: enrichedMulti,
+                    santri: activeOne.santri,
+                    isKamar: activeOne.isKamar,
+                    saldoTabungan: activeOne.saldo,
+                    mutasi: activeOne.mutasi,
+                    totalTunggakan: 0,
+                    limitCfg: { limit: 0, periode: 'mingguan', isCustom: false },
+                    usedInPeriod: 0,
+                    sisaLimit: null,
+                    percentageUsed: 0,
+                    periodeLabel: 'Hari Ini'
+                });
+            } else {
+                // Single Santri / Kas
+                const santri = matchingSantriList[0];
+                const isKamar = String(santri.nis || '').startsWith('KAS-') || 
+                                (santri.nama || '').toLowerCase().startsWith('kas ') || 
+                                String(santri.kelas || '').toLowerCase() === 'asrama' ||
+                                String(santri.kelas || '').toLowerCase() === 'ekskul';
+                const saldoTabungan = getSantriSaldoTabungan(santri.nis);
+                const totalTunggakan = dataTagihan
+                    .filter(t => String(t.nis).replace(/^0+/, '') === String(santri.nis).replace(/^0+/, '') && t.status !== 'Lunas')
+                    .reduce((sum, item) => sum + (Number(item.nominal || 0) - Number(item.terbayar || 0)), 0);
+
+                const limitCfg = !isKamar ? getSantriLimitConfig(santri) : { limit: 0, periode: 'mingguan', isCustom: false };
+                const usedInPeriod = (!isKamar && limitCfg.limit > 0) ? getUsageInPeriod(santri.nis, limitCfg.periode) : 0;
+                const sisaLimit = (!isKamar && limitCfg.limit > 0) ? Math.max(0, limitCfg.limit - usedInPeriod) : null;
+                const percentageUsed = (!isKamar && limitCfg.limit > 0) ? Math.min(100, Math.round((usedInPeriod / limitCfg.limit) * 100)) : 0;
+                const periodeLabel = limitCfg.periode === 'mingguan' ? 'Minggu Ini (Reset Senin)' : limitCfg.periode === 'bulanan' ? 'Bulan Ini' : 'Hari Ini';
+
+                const santriRows = (dataTabungan || []).filter(t => 
+                    String(t.nis || t.NIS || '').trim().replace(/^0+/, '') === String(santri.nis).replace(/^0+/, '')
+                );
+                const sortedRows = [...santriRows].reverse();
+                const recentMutasi = sortedRows.slice(0, 3).map(t => ({
+                    tanggal: t.tanggal || t.Tanggal || '-',
+                    jenis: t.jenis || t.Jenis || 'Setor',
+                    nominal: Number(t.nominal || t.Nominal || 0),
+                    keterangan: t.keterangan || t.Keterangan || ''
+                }));
+
+                setScanResult({
+                    found: true,
+                    isMultiKas: false,
+                    santri: santri,
+                    isKamar: isKamar,
+                    saldoTabungan: saldoTabungan,
+                    totalTunggakan: totalTunggakan,
+                    limitCfg: limitCfg,
+                    usedInPeriod: usedInPeriod,
+                    sisaLimit: sisaLimit,
+                    percentageUsed: percentageUsed,
+                    periodeLabel: periodeLabel,
+                    mutasi: recentMutasi
+                });
+            }
         } else {
             setScanResult({ found: false, code: scanInput });
         }
@@ -9820,8 +9880,54 @@ Terima kasih atas kerja samanya.`;
                                                 if (scanResult.isKamar) {
                                                     return (
                                                         <div>
+                                                            {/* Selector Tab jika Kartu Multi-Kas */}
+                                                            {scanResult.isMultiKas && scanResult.multiKasList && scanResult.multiKasList.length > 1 && (
+                                                                <div className="w-full mb-5 pb-4 border-b-2 border-indigo-200">
+                                                                    <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-indigo-700 text-white font-mono text-xs font-bold uppercase tracking-wider mb-2 shadow-xs">
+                                                                        <Layers className="w-3.5 h-3.5" /> KARTU MULTI-KAS ({scanResult.multiKasList.length} DOMPET KAS/EKSKUL)
+                                                                    </div>
+                                                                    <p className="text-xs text-indigo-900 mb-2 font-mono">
+                                                                        Total Gabungan Saldo: <strong className="text-emerald-700 font-black text-sm">Rp {scanResult.multiKasList.reduce((sum, item) => sum + item.saldo, 0).toLocaleString('id-ID')}</strong>
+                                                                    </p>
+                                                                    <p className="text-[11px] text-steel mb-2.5">
+                                                                        Klik tombol di bawah untuk beralih dan melihat rincian saldo sub-kas:
+                                                                    </p>
+                                                                    <div className="flex flex-wrap gap-2 justify-center">
+                                                                        {scanResult.multiKasList.map((item, idx) => {
+                                                                            const isSelected = scanActiveMultiKasIdx === idx;
+                                                                            return (
+                                                                                <button
+                                                                                    key={item.nis}
+                                                                                    type="button"
+                                                                                    onClick={() => {
+                                                                                        setScanActiveMultiKasIdx(idx);
+                                                                                        setScanResult(prev => ({
+                                                                                            ...prev,
+                                                                                            santri: item.santri,
+                                                                                            nama: item.nama,
+                                                                                            saldoTabungan: item.saldo,
+                                                                                            mutasi: item.mutasi,
+                                                                                            isKamar: item.isKamar
+                                                                                        }));
+                                                                                    }}
+                                                                                    className={`px-3.5 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-2 ${
+                                                                                        isSelected 
+                                                                                            ? 'bg-indigo-600 text-white shadow-md scale-105 ring-2 ring-indigo-400' 
+                                                                                            : 'bg-white hover:bg-slate-50 text-indigo-950 border border-indigo-200 shadow-2xs'
+                                                                                    }`}
+                                                                                >
+                                                                                    <Building2 className="w-3.5 h-3.5" />
+                                                                                    <span>{item.nama}</span>
+                                                                                    <span className="font-mono text-[10px] opacity-80">(Rp {item.saldo.toLocaleString('id-ID')})</span>
+                                                                                </button>
+                                                                            );
+                                                                        })}
+                                                                    </div>
+                                                                </div>
+                                                            )}
+
                                                             <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-indigo-600 text-white font-mono text-xs font-bold uppercase tracking-wider mb-3 shadow-sm">
-                                                                <Building2 className="w-3.5 h-3.5" /> KARTU KAS KAMAR / ASRAMA
+                                                                <Building2 className="w-3.5 h-3.5" /> {scanResult.isMultiKas ? 'DOMPET KAS AKTIF' : 'KARTU KAS BERSAMA / EKSKUL'}
                                                             </div>
                                                             <h3 className="text-3xl font-black text-indigo-950 tracking-tight">{scanResult.santri.nama}</h3>
                                                             <p className="text-steel font-medium mt-1">
