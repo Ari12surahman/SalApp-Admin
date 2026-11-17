@@ -641,6 +641,9 @@ function App() {
     const [kaderAppPeriode, setKaderAppPeriode] = useState(() => new Date().toISOString().slice(0, 7)); // '2026-11'
     const [kaderAppWarungFilter, setKaderAppWarungFilter] = useState('Semua');
     const [kaderAppSearch, setKaderAppSearch] = useState('');
+    const [kaderAppPage, setKaderAppPage] = useState(1);
+    const [kaderAppPerPage, setKaderAppPerPage] = useState(10);
+    const [warungStatusPage, setWarungStatusPage] = useState(1);
     const [rekapPeriode, setRekapPeriode] = useState('harian'); // 'harian' | 'mingguan' | 'bulanan' | 'custom'
     const [rekapStartDate, setRekapStartDate] = useState(() => {
         const d = new Date();
@@ -8762,6 +8765,13 @@ Terima kasih atas kerja samanya.`;
         const totKotorBulanIni = kaderFilteredEntries.reduce((s, x) => s + Number(x.totalKotor || 0), 0);
         const lunasCount = warungStatusList.filter(w => w.isLunas).length;
 
+        const totalKaderPages = Math.max(1, Math.ceil(kaderFilteredEntries.length / kaderAppPerPage));
+        const paginatedKaderEntries = kaderFilteredEntries.slice((kaderAppPage - 1) * kaderAppPerPage, kaderAppPage * kaderAppPerPage);
+
+        const warungStatusPerPage = 10;
+        const totalWarungPages = Math.max(1, Math.ceil(warungStatusList.length / warungStatusPerPage));
+        const paginatedWarungStatus = warungStatusList.slice((warungStatusPage - 1) * warungStatusPerPage, warungStatusPage * warungStatusPerPage);
+
         return (
             <div className="space-y-6 animate-fade-in-up">
                 <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4">
@@ -10167,7 +10177,11 @@ Terima kasih atas kerja samanya.`;
                                     <span className="text-steel font-medium">Bulan:</span>
                                     <select 
                                         value={selectedPeriodeKey}
-                                        onChange={(e) => setKaderAppPeriode(e.target.value)}
+                                        onChange={(e) => {
+                                            setKaderAppPeriode(e.target.value);
+                                            setKaderAppPage(1);
+                                            setWarungStatusPage(1);
+                                        }}
                                         className="bg-surface border border-whisper rounded-lg px-2 py-1 text-ink text-xs font-semibold focus:outline-none focus:border-emerald-600 cursor-pointer"
                                     >
                                         {allAvailableMonths.map(m => (
@@ -10183,7 +10197,11 @@ Terima kasih atas kerja samanya.`;
                                     <Store className="w-4 h-4 text-steel" />
                                     <select 
                                         value={kaderAppWarungFilter}
-                                        onChange={(e) => setKaderAppWarungFilter(e.target.value)}
+                                        onChange={(e) => {
+                                            setKaderAppWarungFilter(e.target.value);
+                                            setKaderAppPage(1);
+                                            setWarungStatusPage(1);
+                                        }}
                                         className="bg-surface border border-whisper rounded-lg px-2 py-1 text-ink text-xs font-semibold focus:outline-none focus:border-emerald-600 cursor-pointer"
                                     >
                                         <option value="Semua">Semua Warung</option>
@@ -10322,11 +10340,11 @@ Terima kasih atas kerja samanya.`;
                                         </tr>
                                     </thead>
                                     <tbody className="divide-y divide-whisper">
-                                        {warungStatusList.map((w, idx) => (
+                                        {paginatedWarungStatus.map((w, idx) => (
                                             <tr key={w.warungId} className="hover:bg-canvas/40 transition-colors">
                                                 <td className="px-4 py-3 font-bold text-ink">
                                                     <div className="flex items-center gap-2">
-                                                        <span className="w-5 h-5 rounded-full bg-slate-100 text-steel flex items-center justify-center text-[10px]">{idx + 1}</span>
+                                                        <span className="w-5 h-5 rounded-full bg-slate-100 text-steel flex items-center justify-center text-[10px]">{((warungStatusPage - 1) * warungStatusPerPage) + idx + 1}</span>
                                                         <span>{w.warungName}</span>
                                                     </div>
                                                 </td>
@@ -10368,6 +10386,42 @@ Terima kasih atas kerja samanya.`;
                                     </tfoot>
                                 </table>
                             </div>
+                            {totalWarungPages > 1 && (
+                                <div className="px-4 py-3 bg-canvas/40 border-t border-whisper flex flex-col sm:flex-row items-center justify-between gap-3 text-xs">
+                                    <div className="text-steel">
+                                        Menampilkan <span className="font-semibold text-ink">{((warungStatusPage - 1) * warungStatusPerPage) + 1}</span> - <span className="font-semibold text-ink">{Math.min(warungStatusPage * warungStatusPerPage, warungStatusList.length)}</span> dari <span className="font-semibold text-ink">{warungStatusList.length}</span> warung
+                                    </div>
+                                    <div className="flex items-center gap-1.5">
+                                        <button
+                                            type="button"
+                                            disabled={warungStatusPage === 1}
+                                            onClick={() => setWarungStatusPage(p => Math.max(1, p - 1))}
+                                            className={`px-2.5 py-1.5 rounded-lg border flex items-center gap-1 font-semibold transition-all ${
+                                                warungStatusPage === 1 
+                                                    ? 'bg-slate-100 text-slate-400 border-whisper cursor-not-allowed' 
+                                                    : 'bg-white hover:bg-slate-50 text-ink border-whisper shadow-xs'
+                                            }`}
+                                        >
+                                            <ChevronLeft className="w-3.5 h-3.5" /> Sebelumnya
+                                        </button>
+                                        <span className="px-3 py-1 font-bold text-primary bg-primary/10 border border-primary/20 rounded-lg">
+                                            {warungStatusPage} / {totalWarungPages}
+                                        </span>
+                                        <button
+                                            type="button"
+                                            disabled={warungStatusPage === totalWarungPages}
+                                            onClick={() => setWarungStatusPage(p => Math.min(totalWarungPages, p + 1))}
+                                            className={`px-2.5 py-1.5 rounded-lg border flex items-center gap-1 font-semibold transition-all ${
+                                                warungStatusPage === totalWarungPages 
+                                                    ? 'bg-slate-100 text-slate-400 border-whisper cursor-not-allowed' 
+                                                    : 'bg-white hover:bg-slate-50 text-ink border-whisper shadow-xs'
+                                            }`}
+                                        >
+                                            Selanjutnya <ChevronRight className="w-3.5 h-3.5" />
+                                        </button>
+                                    </div>
+                                </div>
+                            )}
                         </div>
 
                         {/* Section 2: Tabel Rincian Transaksi Masuk per Pencairan Warung */}
@@ -10379,15 +10433,36 @@ Terima kasih atas kerja samanya.`;
                                     </h4>
                                     <p className="text-xs text-steel">Detail setiap pencairan dana warung, nominal honor kader, dan potongan sewa aplikasi yang masuk.</p>
                                 </div>
-                                <div className="relative w-full sm:w-64">
-                                    <Search className="w-3.5 h-3.5 absolute left-3 top-2.5 text-steel" />
-                                    <input
-                                        type="text"
-                                        placeholder="Cari ID / warung..."
-                                        value={kaderAppSearch}
-                                        onChange={(e) => setKaderAppSearch(e.target.value)}
-                                        className={`${inputBase} text-xs pl-8 py-1.5`}
-                                    />
+                                <div className="flex items-center gap-2 w-full sm:w-auto">
+                                    <div className="relative flex-1 sm:w-64">
+                                        <Search className="w-3.5 h-3.5 absolute left-3 top-2.5 text-steel" />
+                                        <input
+                                            type="text"
+                                            placeholder="Cari ID / warung..."
+                                            value={kaderAppSearch}
+                                            onChange={(e) => {
+                                                setKaderAppSearch(e.target.value);
+                                                setKaderAppPage(1);
+                                            }}
+                                            className={`${inputBase} text-xs pl-8 py-1.5`}
+                                        />
+                                    </div>
+                                    <div className="flex items-center gap-1 text-xs text-steel shrink-0 bg-surface border border-whisper rounded-lg px-2 py-1">
+                                        <span>Baris:</span>
+                                        <select
+                                            value={kaderAppPerPage}
+                                            onChange={(e) => {
+                                                setKaderAppPerPage(Number(e.target.value));
+                                                setKaderAppPage(1);
+                                            }}
+                                            className="bg-transparent text-ink text-xs font-bold focus:outline-none cursor-pointer"
+                                        >
+                                            <option value={10}>10</option>
+                                            <option value={20}>20</option>
+                                            <option value={50}>50</option>
+                                            <option value={100}>100</option>
+                                        </select>
+                                    </div>
                                 </div>
                             </div>
 
@@ -10409,16 +10484,16 @@ Terima kasih atas kerja samanya.`;
                                         </tr>
                                     </thead>
                                     <tbody className="divide-y divide-whisper">
-                                        {kaderFilteredEntries.length === 0 ? (
+                                        {paginatedKaderEntries.length === 0 ? (
                                             <tr>
                                                 <td colSpan={11} className="px-4 py-8 text-center text-steel">
                                                     Tidak ada data transaksi pemotongan pada periode {selectedPeriodeLabel}.
                                                 </td>
                                             </tr>
                                         ) : (
-                                            kaderFilteredEntries.map((e, idx) => (
+                                            paginatedKaderEntries.map((e, idx) => (
                                                 <tr key={e.idPencairan} className="hover:bg-canvas/40 transition-colors">
-                                                    <td className="px-4 py-3 text-center text-steel">{idx + 1}</td>
+                                                    <td className="px-4 py-3 text-center text-steel">{((kaderAppPage - 1) * kaderAppPerPage) + idx + 1}</td>
                                                     <td className="px-4 py-3 text-steel">
                                                         {e.waktuSelesai ? new Date(e.waktuSelesai).toLocaleDateString('id-ID', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : (e.waktuPengajuan ? new Date(e.waktuPengajuan).toLocaleDateString('id-ID', { day: '2-digit', month: 'short', year: 'numeric' }) : '-')}
                                                     </td>
@@ -10497,6 +10572,99 @@ Terima kasih atas kerja samanya.`;
                                     )}
                                 </table>
                             </div>
+
+                            {/* Pagination Controls Table 2 */}
+                            {kaderFilteredEntries.length > 0 && (
+                                <div className="px-4 py-3 bg-canvas/40 border-t border-whisper flex flex-col sm:flex-row items-center justify-between gap-3 text-xs">
+                                    <div className="text-steel">
+                                        Menampilkan <span className="font-semibold text-ink">{((kaderAppPage - 1) * kaderAppPerPage) + 1}</span> - <span className="font-semibold text-ink">{Math.min(kaderAppPage * kaderAppPerPage, kaderFilteredEntries.length)}</span> dari <span className="font-semibold text-ink">{kaderFilteredEntries.length}</span> transaksi
+                                    </div>
+                                    <div className="flex items-center gap-1.5 flex-wrap justify-center">
+                                        <button
+                                            type="button"
+                                            disabled={kaderAppPage === 1}
+                                            onClick={() => setKaderAppPage(1)}
+                                            className={`px-2 py-1 rounded-lg border font-semibold text-xs transition-all ${
+                                                kaderAppPage === 1 
+                                                    ? 'bg-slate-100 text-slate-400 border-whisper cursor-not-allowed' 
+                                                    : 'bg-white hover:bg-slate-50 text-ink border-whisper shadow-xs'
+                                            }`}
+                                            title="Halaman Pertama"
+                                        >
+                                            «
+                                        </button>
+                                        <button
+                                            type="button"
+                                            disabled={kaderAppPage === 1}
+                                            onClick={() => setKaderAppPage(p => Math.max(1, p - 1))}
+                                            className={`px-2.5 py-1 rounded-lg border flex items-center gap-1 font-semibold transition-all ${
+                                                kaderAppPage === 1 
+                                                    ? 'bg-slate-100 text-slate-400 border-whisper cursor-not-allowed' 
+                                                    : 'bg-white hover:bg-slate-50 text-ink border-whisper shadow-xs'
+                                            }`}
+                                        >
+                                            <ChevronLeft className="w-3.5 h-3.5" /> Prev
+                                        </button>
+                                        
+                                        {Array.from({ length: totalKaderPages }, (_, i) => i + 1)
+                                            .filter(p => p === 1 || p === totalKaderPages || Math.abs(p - kaderAppPage) <= 1)
+                                            .reduce((acc, p, i, arr) => {
+                                                if (i > 0 && p - arr[i - 1] > 1) {
+                                                    acc.push(-1 * arr[i - 1]);
+                                                }
+                                                acc.push(p);
+                                                return acc;
+                                            }, [])
+                                            .map((p, idx) => {
+                                                if (p < 0) {
+                                                    return <span key={`ellipsis-${idx}`} className="px-1 text-steel">...</span>;
+                                                }
+                                                const isCurrent = p === kaderAppPage;
+                                                return (
+                                                    <button
+                                                        key={p}
+                                                        type="button"
+                                                        onClick={() => setKaderAppPage(p)}
+                                                        className={`min-w-[28px] h-7 px-2 rounded-lg font-bold text-xs transition-all ${
+                                                            isCurrent 
+                                                                ? 'bg-emerald-600 text-white shadow-xs' 
+                                                                : 'bg-white hover:bg-slate-50 text-ink border border-whisper'
+                                                        }`}
+                                                    >
+                                                        {p}
+                                                    </button>
+                                                );
+                                            })
+                                        }
+
+                                        <button
+                                            type="button"
+                                            disabled={kaderAppPage === totalKaderPages}
+                                            onClick={() => setKaderAppPage(p => Math.min(totalKaderPages, p + 1))}
+                                            className={`px-2.5 py-1 rounded-lg border flex items-center gap-1 font-semibold transition-all ${
+                                                kaderAppPage === totalKaderPages 
+                                                    ? 'bg-slate-100 text-slate-400 border-whisper cursor-not-allowed' 
+                                                    : 'bg-white hover:bg-slate-50 text-ink border-whisper shadow-xs'
+                                            }`}
+                                        >
+                                            Next <ChevronRight className="w-3.5 h-3.5" />
+                                        </button>
+                                        <button
+                                            type="button"
+                                            disabled={kaderAppPage === totalKaderPages}
+                                            onClick={() => setKaderAppPage(totalKaderPages)}
+                                            className={`px-2 py-1 rounded-lg border font-semibold text-xs transition-all ${
+                                                kaderAppPage === totalKaderPages 
+                                                    ? 'bg-slate-100 text-slate-400 border-whisper cursor-not-allowed' 
+                                                    : 'bg-white hover:bg-slate-50 text-ink border-whisper shadow-xs'
+                                            }`}
+                                            title="Halaman Terakhir"
+                                        >
+                                            »
+                                        </button>
+                                    </div>
+                                </div>
+                            )}
                         </div>
                     </div>
                 )}
