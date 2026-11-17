@@ -8339,38 +8339,12 @@ Terima kasih atas kerja samanya.`;
         }
     };
 
-    // === EXPORT EXCEL KHUSUS LAPORAN HONOR KADER & SEWA APLIKASI ===
+    // === EXPORT EXCEL KHUSUS LAPORAN HONOR KADER & SEWA APLIKASI (RAPIH & ELEGAN) ===
     const handleExportKaderAppExcel = (filteredEntries, warungStatusList, periodeKey) => {
         try {
             const periodeLabel = new Date(periodeKey + '-01').toLocaleDateString('id-ID', { month: 'long', year: 'numeric' });
+            const tanggalUnduh = new Date().toLocaleDateString('id-ID', { day: 'numeric', month: 'long', year: 'numeric', hour: '2-digit', minute: '2-digit' });
             const wb = XLSX.utils.book_new();
-
-            // SHEET 1: Rincian Pemotongan per Transaksi
-            const headers1 = [
-                'No',
-                'Tanggal & Waktu Selesai',
-                'ID Pencairan',
-                'Nama Warung / Merchant',
-                'Omset Kotor (Rp)',
-                'Potongan Honor Kader (Rp)',
-                'Potongan Sewa Aplikasi (Rp)',
-                'Total Potongan (Rp)',
-                'Dana Bersih Dicairkan (Rp)',
-                'Catatan / Buku Kas'
-            ];
-
-            const rows1 = filteredEntries.map((e, idx) => [
-                idx + 1,
-                e.waktuSelesai ? new Date(e.waktuSelesai).toLocaleString('id-ID') : (e.waktuPengajuan ? new Date(e.waktuPengajuan).toLocaleString('id-ID') : '-'),
-                e.idPencairan,
-                e.warungName || e.warungId,
-                Number(e.totalKotor || 0),
-                Number(e.potonganKader || 0),
-                Number(e.potonganAplikasi || 0),
-                Number(e.totalPotongan || 0),
-                Number(e.totalBersih || 0),
-                e.catatan || (e.catatBukuKas ? 'Masuk Buku Kas' : '-')
-            ]);
 
             const totKotor = filteredEntries.reduce((s, x) => s + Number(x.totalKotor || 0), 0);
             const totKader = filteredEntries.reduce((s, x) => s + Number(x.potonganKader || 0), 0);
@@ -8378,68 +8352,48 @@ Terima kasih atas kerja samanya.`;
             const totPot = filteredEntries.reduce((s, x) => s + Number(x.totalPotongan || 0), 0);
             const totBersih = filteredEntries.reduce((s, x) => s + Number(x.totalBersih || 0), 0);
 
-            rows1.push([
-                '',
-                'TOTAL KESELURUHAN',
-                '',
-                '',
-                totKotor,
-                totKader,
-                totApp,
-                totPot,
-                totBersih,
-                ''
-            ]);
+            const lunasCount = warungStatusList.filter(w => w.isLunas).length;
+            const totalWarungCount = warungStatusList.length;
 
-            const headerAoa1 = [
-                [`LAPORAN PENERIMAAN HONOR KADER & SEWA APLIKASI KANTIN`],
-                [`${appConfig.appName || 'SalApp Bendahara'} — Periode: ${periodeLabel} (Diunduh: ${formatDateID(new Date())})`],
-                [],
-                headers1
-            ];
+            const formatCurrencyCells = (ws, startRow, endRow, cols) => {
+                for (let r = startRow; r <= endRow; r++) {
+                    for (const c of cols) {
+                        const cellAddr = XLSX.utils.encode_cell({ r, c });
+                        if (ws[cellAddr] && typeof ws[cellAddr].v === 'number') {
+                            ws[cellAddr].z = '"Rp "#,##0';
+                        }
+                    }
+                }
+            };
 
-            const ws1 = XLSX.utils.aoa_to_sheet([...headerAoa1, ...rows1]);
-            ws1['!cols'] = [
-                { wch: 6 },
-                { wch: 22 },
-                { wch: 20 },
-                { wch: 26 },
-                { wch: 20 },
-                { wch: 22 },
-                { wch: 22 },
-                { wch: 18 },
-                { wch: 22 },
-                { wch: 25 }
-            ];
-
-            XLSX.utils.book_append_sheet(wb, ws1, 'Rincian Transaksi Masuk');
-
-            // SHEET 2: Status Kewajiban per Warung
-            const headers2 = [
+            // -------------------------------------------------------------
+            // SHEET 1: RINGKASAN EKSEKUTIF & STATUS KEWAJIBAN WARUNG (MOU)
+            // -------------------------------------------------------------
+            const headers1 = [
                 'No',
                 'Nama Warung / Merchant',
-                'Target Kader (Rp)',
-                'Terbayar Kader (Rp)',
-                'Sisa Kader (Rp)',
-                'Target Aplikasi (Rp)',
-                'Terbayar Aplikasi (Rp)',
-                'Sisa Aplikasi (Rp)',
-                'Total Terbayar (Rp)',
-                'Total Sisa Tanggungan (Rp)',
+                'Target Kader',
+                'Terbayar Kader',
+                'Sisa Kader',
+                'Target Aplikasi',
+                'Terbayar Aplikasi',
+                'Sisa Aplikasi',
+                'Total Terbayar',
+                'Sisa Tanggungan',
                 'Status'
             ];
 
-            const rows2 = warungStatusList.map((w, idx) => [
+            const rows1 = warungStatusList.map((w, idx) => [
                 idx + 1,
                 w.warungName,
-                w.targetKader,
-                w.terbayarKader,
-                w.sisaKader,
-                w.targetAplikasi,
-                w.terbayarAplikasi,
-                w.sisaAplikasi,
-                w.totalTerbayar,
-                w.totalSisa,
+                Number(w.targetKader || 0),
+                Number(w.terbayarKader || 0),
+                Number(w.sisaKader || 0),
+                Number(w.targetAplikasi || 0),
+                Number(w.terbayarAplikasi || 0),
+                Number(w.sisaAplikasi || 0),
+                Number(w.totalTerbayar || 0),
+                Number(w.totalSisa || 0),
                 w.isLunas ? 'LUNAS' : 'BELUM LUNAS'
             ]);
 
@@ -8452,43 +8406,148 @@ Terima kasih atas kerja samanya.`;
             const totSemuaTer = warungStatusList.reduce((s, x) => s + x.totalTerbayar, 0);
             const totSemuaSis = warungStatusList.reduce((s, x) => s + x.totalSisa, 0);
 
-            rows2.push([
-                '',
-                'TOTAL',
-                totTarKdr,
-                totTerKdr,
-                totSisKdr,
-                totTarApp,
-                totTerApp,
-                totSisApp,
-                totSemuaTer,
-                totSemuaSis,
-                ''
+            const aoaSheet1 = [
+                [appConfig.appName || 'SISTEM KEUANGAN PONDOK PESANTREN'],
+                ['LAPORAN KAS HONOR KADER & SEWA APLIKASI KANTIN / WARUNG'],
+                [`Periode: ${periodeLabel}`, '', '', '', '', '', '', '', '', '', `Diunduh: ${tanggalUnduh}`],
+                [],
+                ['RINGKASAN EKSEKUTIF (KEY PERFORMANCE INDICATORS)'],
+                ['', 'Kas Masuk Honor Kader', '', 'Kas Masuk Sewa Aplikasi', '', 'Total Potongan MOU', '', 'Total Omset Kotor', '', 'Total Bersih Dicairkan', 'Status Pelunasan'],
+                ['', totKader, '', totApp, '', totPot, '', totKotor, '', totBersih, `${lunasCount} / ${totalWarungCount} Warung Lunas`],
+                [],
+                ['1. STATUS KEWAJIBAN BULANAN PER WARUNG (MOU)'],
+                headers1,
+                ...rows1,
+                [
+                    '',
+                    'TOTAL KEWAJIBAN WARUNG',
+                    totTarKdr,
+                    totTerKdr,
+                    totSisKdr,
+                    totTarApp,
+                    totTerApp,
+                    totSisApp,
+                    totSemuaTer,
+                    totSemuaSis,
+                    `${lunasCount} / ${totalWarungCount} Lunas`
+                ],
+                [],
+                [],
+                ['', 'Mengetahui,', '', '', '', '', '', 'Dibuat oleh,'],
+                ['', 'Pimpinan / Pengasuh Pondok', '', '', '', '', '', 'Bendahara / Petugas Keuangan'],
+                [],
+                [],
+                ['', '( ......................................... )', '', '', '', '', '', '( ......................................... )']
+            ];
+
+            const ws1 = XLSX.utils.aoa_to_sheet(aoaSheet1);
+
+            ws1['!merges'] = [
+                { s: { r: 0, c: 0 }, e: { r: 0, c: 10 } },
+                { s: { r: 1, c: 0 }, e: { r: 1, c: 10 } },
+                { s: { r: 4, c: 0 }, e: { r: 4, c: 10 } },
+                { s: { r: 8, c: 0 }, e: { r: 8, c: 10 } }
+            ];
+
+            formatCurrencyCells(ws1, 6, 6, [1, 3, 5, 7, 9]);
+            formatCurrencyCells(ws1, 10, 10 + rows1.length, [2, 3, 4, 5, 6, 7, 8, 9]);
+
+            ws1['!cols'] = [
+                { wch: 6 },
+                { wch: 26 },
+                { wch: 18 },
+                { wch: 18 },
+                { wch: 16 },
+                { wch: 16 },
+                { wch: 16 },
+                { wch: 16 },
+                { wch: 18 },
+                { wch: 20 },
+                { wch: 18 }
+            ];
+
+            XLSX.utils.book_append_sheet(wb, ws1, 'Ringkasan & Status Warung');
+
+            // -------------------------------------------------------------
+            // SHEET 2: RINCIAN PENERIMAAN KAS PER PENCAIRAN WARUNG
+            // -------------------------------------------------------------
+            const headers2 = [
+                'No',
+                'Tanggal & Waktu Selesai',
+                'ID Pencairan',
+                'Nama Warung / Merchant',
+                'Omset Kotor',
+                'Potongan Kader',
+                'Potongan Aplikasi',
+                'Total Potongan',
+                'Bersih Dicairkan',
+                'Buku Kas / Keterangan'
+            ];
+
+            const rows2 = filteredEntries.map((e, idx) => [
+                idx + 1,
+                e.waktuSelesai ? new Date(e.waktuSelesai).toLocaleString('id-ID') : (e.waktuPengajuan ? new Date(e.waktuPengajuan).toLocaleString('id-ID') : '-'),
+                e.idPencairan,
+                e.warungName || e.warungId,
+                Number(e.totalKotor || 0),
+                Number(e.potonganKader || 0),
+                Number(e.potonganAplikasi || 0),
+                Number(e.totalPotongan || 0),
+                Number(e.totalBersih || 0),
+                e.catatan || (e.catatBukuKas ? 'Masuk Buku Kas' : '-')
             ]);
 
-            const headerAoa2 = [
-                [`REKAP STATUS KEWAJIBAN WARUNG (MOU)`],
-                [`Periode: ${periodeLabel} — Diunduh: ${formatDateID(new Date())}`],
+            const aoaSheet2 = [
+                [appConfig.appName || 'SISTEM KEUANGAN PONDOK PESANTREN'],
+                ['RINCIAN PENERIMAAN KAS PER PENCAIRAN WARUNG'],
+                [`Periode: ${periodeLabel}`, '', '', `Total Transaksi: ${filteredEntries.length} Transaksi`, '', '', '', '', `Diunduh: ${tanggalUnduh}`],
                 [],
-                headers2
+                headers2,
+                ...rows2,
+                [
+                    '',
+                    'TOTAL KESELURUHAN',
+                    '',
+                    `${filteredEntries.length} Transaksi`,
+                    totKotor,
+                    totKader,
+                    totApp,
+                    totPot,
+                    totBersih,
+                    ''
+                ],
+                [],
+                [],
+                ['', 'Mengetahui,', '', '', '', '', 'Dibuat oleh,'],
+                ['', 'Pimpinan / Pengasuh Pondok', '', '', '', '', 'Bendahara / Petugas Keuangan'],
+                [],
+                [],
+                ['', '( ......................................... )', '', '', '', '', '( ......................................... )']
             ];
 
-            const ws2 = XLSX.utils.aoa_to_sheet([...headerAoa2, ...rows2]);
+            const ws2 = XLSX.utils.aoa_to_sheet(aoaSheet2);
+
+            ws2['!merges'] = [
+                { s: { r: 0, c: 0 }, e: { r: 0, c: 9 } },
+                { s: { r: 1, c: 0 }, e: { r: 1, c: 9 } }
+            ];
+
+            formatCurrencyCells(ws2, 5, 5 + rows2.length, [4, 5, 6, 7, 8]);
+
             ws2['!cols'] = [
                 { wch: 6 },
-                { wch: 25 },
+                { wch: 24 },
+                { wch: 18 },
+                { wch: 26 },
                 { wch: 18 },
                 { wch: 18 },
                 { wch: 18 },
                 { wch: 18 },
-                { wch: 18 },
-                { wch: 18 },
-                { wch: 18 },
-                { wch: 22 },
-                { wch: 15 }
+                { wch: 20 },
+                { wch: 26 }
             ];
 
-            XLSX.utils.book_append_sheet(wb, ws2, 'Status Kewajiban Warung');
+            XLSX.utils.book_append_sheet(wb, ws2, 'Rincian Pencairan Warung');
 
             XLSX.writeFile(wb, `Laporan_Kader_Aplikasi_${periodeKey}.xlsx`);
             showNotification(`Laporan Excel Kader & Aplikasi bulan ${periodeLabel} berhasil diunduh!`, 'success');
@@ -8499,8 +8558,8 @@ Terima kasih atas kerja samanya.`;
         }
     };
 
-    // === CETAK PDF RESMI LAPORAN HONOR KADER & SEWA APLIKASI ===
-    const handlePrintKaderAppPDF = (filteredEntries, warungStatusList, periodeKey) => {
+    // Helper membuat template dokumen laporan untuk cetak maupun download langsung PDF
+    const getKaderAppReportHTML = (filteredEntries, warungStatusList, periodeKey) => {
         const periodeLabel = new Date(periodeKey + '-01').toLocaleDateString('id-ID', { month: 'long', year: 'numeric' });
         const tanggalCetak = new Date().toLocaleDateString('id-ID', { day: 'numeric', month: 'long', year: 'numeric', hour: '2-digit', minute: '2-digit' });
         
@@ -8513,53 +8572,53 @@ Terima kasih atas kerja samanya.`;
         const lunasCount = warungStatusList.filter(w => w.isLunas).length;
         const totalWarungCount = warungStatusList.length;
 
-        const htmlContent = `<!DOCTYPE html>
+        return `<!DOCTYPE html>
 <html>
 <head>
     <meta charset="utf-8">
     <title>Laporan Penerimaan Kader & Aplikasi - ${periodeLabel}</title>
     <style>
-        @page { size: A4 landscape; margin: 10mm; }
-        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; color: #0f172a; font-size: 11px; margin: 0; padding: 12px; }
+        @page { size: A4 landscape; margin: 8mm; }
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; color: #0f172a; font-size: 10.5px; margin: 0; padding: 12px; background: #ffffff; }
         .kop { display: flex; align-items: center; justify-content: space-between; border-bottom: 2.5px solid #0f172a; padding-bottom: 10px; margin-bottom: 12px; }
         .kop-left { display: flex; align-items: center; gap: 12px; }
         .kop-logo { width: 48px; height: 48px; object-fit: contain; }
         .kop-title { font-size: 15px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.5px; margin: 0; color: #0f172a; }
-        .kop-sub { font-size: 10.5px; color: #475569; margin: 2px 0 0; }
-        .kop-meta { text-align: right; font-size: 10px; color: #64748b; line-height: 1.4; }
+        .kop-sub { font-size: 10px; color: #475569; margin: 2px 0 0; }
+        .kop-meta { text-align: right; font-size: 9.5px; color: #64748b; line-height: 1.4; }
         
         .doc-header { text-align: center; margin: 10px 0 14px; }
-        .doc-header h2 { font-size: 14px; font-weight: 800; text-transform: uppercase; color: #1e1b4b; margin: 0; letter-spacing: 0.5px; }
+        .doc-header h2 { font-size: 13.5px; font-weight: 800; text-transform: uppercase; color: #1e1b4b; margin: 0; letter-spacing: 0.5px; }
         .doc-header p { font-size: 11px; color: #475569; margin: 2px 0 0; font-weight: 600; }
 
         .kpi-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-bottom: 14px; }
         .kpi-box { border: 1px solid #cbd5e1; border-radius: 8px; padding: 8px 12px; background: #f8fafc; }
-        .kpi-lbl { font-size: 9.5px; text-transform: uppercase; font-weight: 700; color: #64748b; }
-        .kpi-val { font-size: 14px; font-weight: 800; margin-top: 2px; }
+        .kpi-lbl { font-size: 9px; text-transform: uppercase; font-weight: 700; color: #64748b; }
+        .kpi-val { font-size: 13.5px; font-weight: 800; margin-top: 2px; }
         .c-emerald { color: #059669; }
         .c-indigo { color: #4338ca; }
         .c-purple { color: #7c3aed; }
         .c-blue { color: #2563eb; }
 
-        .sec-title { font-size: 11px; font-weight: 800; color: #0f172a; margin: 12px 0 5px; text-transform: uppercase; }
+        .sec-title { font-size: 10.5px; font-weight: 800; color: #0f172a; margin: 12px 0 5px; text-transform: uppercase; }
 
-        table { width: 100%; border-collapse: collapse; margin-bottom: 12px; font-size: 10px; }
-        th, td { border: 1px solid #cbd5e1; padding: 5px 7px; text-align: left; }
-        th { background: #f1f5f9; color: #1e293b; font-weight: 700; text-transform: uppercase; font-size: 9px; }
+        table { width: 100%; border-collapse: collapse; margin-bottom: 14px; font-size: 9.5px; }
+        th, td { border: 1px solid #cbd5e1; padding: 5px 6px; text-align: left; }
+        th { background: #f1f5f9; color: #1e293b; font-weight: 700; text-transform: uppercase; font-size: 8.5px; }
         .ar { text-align: right; }
         .ac { text-align: center; }
         tr:nth-child(even) td { background: #fafbfc; }
         .tr-total td { background: #e2e8f0; font-weight: 800; border-top: 2px solid #64748b; }
-        .badge { display: inline-block; padding: 2px 6px; border-radius: 4px; font-size: 8.5px; font-weight: 800; text-transform: uppercase; }
+        .badge { display: inline-block; padding: 2px 6px; border-radius: 4px; font-size: 8px; font-weight: 800; text-transform: uppercase; }
         .badge-lunas { background: #dcfce7; color: #15803d; border: 1px solid #86efac; }
         .badge-sisa { background: #fef3c7; color: #b45309; border: 1px solid #fde68a; }
 
-        .sig-container { margin-top: 22px; display: flex; justify-content: space-between; page-break-inside: avoid; }
-        .sig-box { text-align: center; width: 220px; font-size: 10.5px; }
-        .sig-line { border-bottom: 1px solid #0f172a; width: 160px; margin: 48px auto 3px; }
+        .sig-container { margin-top: 24px; display: flex; justify-content: space-between; page-break-inside: avoid; }
+        .sig-box { text-align: center; width: 220px; font-size: 10px; }
+        .sig-line { border-bottom: 1px solid #0f172a; width: 160px; margin: 44px auto 3px; }
 
         @media print {
-            body { padding: 0; }
+            body { padding: 0; background: #ffffff; }
             .no-print { display: none; }
         }
     </style>
@@ -8700,7 +8759,70 @@ Terima kasih atas kerja samanya.`;
     </div>
 </body>
 </html>`;
+    };
 
+    // === DOWNLOAD LANGSUNG PDF KE KOMPUTER (TANPA DIALOG PRINT) ===
+    const handleDownloadKaderAppPDF = async (filteredEntries, warungStatusList, periodeKey) => {
+        showNotification("Sedang membuat file PDF...", "info");
+        try {
+            if (!window.html2pdf) {
+                await new Promise((resolve, reject) => {
+                    const existing = document.querySelector('script[data-lib="html2pdf"]');
+                    if (existing) {
+                        existing.onload = resolve;
+                        existing.onerror = reject;
+                        return;
+                    }
+                    const s = document.createElement('script');
+                    s.setAttribute('data-lib', 'html2pdf');
+                    s.src = '/html2pdf.bundle.min.js';
+                    s.onload = resolve;
+                    s.onerror = () => reject(new Error('Gagal memuat library PDF'));
+                    document.head.appendChild(s);
+                });
+            }
+
+            if (!window.html2pdf) {
+                throw new Error("html2pdf library tidak dapat diinisialisasi");
+            }
+
+            const periodeLabel = new Date(periodeKey + '-01').toLocaleDateString('id-ID', { month: 'long', year: 'numeric' });
+            const htmlString = getKaderAppReportHTML(filteredEntries, warungStatusList, periodeKey);
+
+            // Buat container tersembunyi untuk perenderan PDF
+            const container = document.createElement('div');
+            container.style.position = 'fixed';
+            container.style.top = '-9999px';
+            container.style.left = '-9999px';
+            container.style.width = '1120px';
+            container.style.background = '#ffffff';
+            container.innerHTML = htmlString;
+            document.body.appendChild(container);
+
+            const opt = {
+                margin: [6, 6, 6, 6],
+                filename: `Laporan_Honor_Kader_dan_Aplikasi_${periodeKey}.pdf`,
+                image: { type: 'jpeg', quality: 0.98 },
+                html2canvas: { scale: 2, useCORS: true, letterRendering: true, logging: false },
+                jsPDF: { unit: 'mm', format: 'a4', orientation: 'landscape' },
+                pagebreak: { mode: ['avoid-all', 'css', 'legacy'] }
+            };
+
+            await window.html2pdf().set(opt).from(container).save();
+            document.body.removeChild(container);
+
+            showNotification(`Laporan PDF bulan ${periodeLabel} berhasil diunduh ke folder Downloads!`, 'success');
+            addLog('DOWNLOAD', 'EXPORT', `Download Langsung PDF: ${periodeKey}`);
+        } catch (err) {
+            console.error("Download PDF langsung gagal, beralih ke print view:", err);
+            showNotification("Mengalihkan ke jendela cetak dokumen...", "info");
+            handlePrintKaderAppPDF(filteredEntries, warungStatusList, periodeKey);
+        }
+    };
+
+    // === CETAK PDF RESMI LAPORAN HONOR KADER & SEWA APLIKASI ===
+    const handlePrintKaderAppPDF = (filteredEntries, warungStatusList, periodeKey) => {
+        const htmlContent = getKaderAppReportHTML(filteredEntries, warungStatusList, periodeKey);
         executePrint(htmlContent);
     };
 
@@ -10222,14 +10344,24 @@ Terima kasih atas kerja samanya.`;
                                     <FileSpreadsheet className="w-4 h-4" /> Download Excel
                                 </button>
 
-                                {/* Download PDF / Print Button */}
+                                {/* Direct Download PDF Button */}
+                                <button
+                                    type="button"
+                                    onClick={() => handleDownloadKaderAppPDF(kaderFilteredEntries, warungStatusList, selectedPeriodeKey)}
+                                    className="px-3.5 py-2 bg-rose-600 hover:bg-rose-700 active:scale-95 text-white rounded-xl text-xs font-bold shadow-sm flex items-center gap-1.5 transition-all cursor-pointer"
+                                    title="Download File PDF Langsung ke Komputer"
+                                >
+                                    <Download className="w-4 h-4" /> Download PDF
+                                </button>
+
+                                {/* Cetak / Print Button */}
                                 <button
                                     type="button"
                                     onClick={() => handlePrintKaderAppPDF(kaderFilteredEntries, warungStatusList, selectedPeriodeKey)}
                                     className="px-3.5 py-2 bg-indigo-600 hover:bg-indigo-700 active:scale-95 text-white rounded-xl text-xs font-bold shadow-sm flex items-center gap-1.5 transition-all cursor-pointer"
-                                    title="Cetak Laporan / Simpan PDF dengan Header Resmi"
+                                    title="Cetak Laporan ke Printer / Dialog Cetak"
                                 >
-                                    <Printer className="w-4 h-4" /> Download PDF / Cetak
+                                    <Printer className="w-4 h-4" /> Cetak
                                 </button>
                             </div>
                         </div>
