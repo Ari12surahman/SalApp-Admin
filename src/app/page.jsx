@@ -395,7 +395,7 @@ import {
     Copy, ExternalLink, RefreshCw, Check, Briefcase, BookOpen, DownloadCloud, TrendingDown, Menu, ArrowRight, ArrowLeft, Eye, EyeOff, ChevronLeft, ChevronRight, Scan, Download,
     SlidersHorizontal, ShieldAlert, ShieldCheck, ShoppingBag, Store, CalendarDays, Package,
     Coins, Scissors, HandHeart, Building2, Key, Clock, Sparkles, Banknote, Layers,
-    Trophy, UserPlus, UserCheck, Lock, Unlock
+    Trophy, UserPlus, UserCheck, Lock, Unlock, Receipt, Award
 } from "lucide-react";
 
 // Import Recharts dengan parameter bundle untuk mencegah error lodash missing modules
@@ -637,7 +637,10 @@ function App() {
     // --- DETAIL TABUNGAN POS ---
     const [detailTabunganModal, setDetailTabunganModal] = useState(null); // { trx, detailItems, warungName, loading }
     // --- REKAP PENCAIRAN PER WARUNG ---
-    const [pencairanSubTab, setPencairanSubTab] = useState('daftar'); // 'daftar' | 'rekap'
+    const [pencairanSubTab, setPencairanSubTab] = useState('daftar'); // 'daftar' | 'rekap' | 'kader_app'
+    const [kaderAppPeriode, setKaderAppPeriode] = useState(() => new Date().toISOString().slice(0, 7)); // '2026-11'
+    const [kaderAppWarungFilter, setKaderAppWarungFilter] = useState('Semua');
+    const [kaderAppSearch, setKaderAppSearch] = useState('');
     const [rekapPeriode, setRekapPeriode] = useState('harian'); // 'harian' | 'mingguan' | 'bulanan' | 'custom'
     const [rekapStartDate, setRekapStartDate] = useState(() => {
         const d = new Date();
@@ -8132,30 +8135,33 @@ function App() {
                 
                 if (totalBersih > 0) {
                     newKasEntries.push({
-                        id: `KAS-${Date.now()}-1`,
+                        id: `KAS-PENC-${item.IDPencairan}-OUT`,
                         tanggal: todayStr,
-                        tipeKas: 'Pengeluaran',
-                        sumberTujuan: 'Pencairan Warung',
+                        tipeKas: 'KELUAR',
+                        kategori: 'Pencairan Warung',
+                        sumber: warungName,
                         nominal: totalBersih,
                         keterangan: `Pencairan Bersih Warung ${warungName} [${item.IDPencairan}]`
                     });
                 }
                 if (numPotongAplikasi > 0) {
                     newKasEntries.push({
-                        id: `KAS-${Date.now()}-2`,
+                        id: `KAS-PENC-${item.IDPencairan}-APP`,
                         tanggal: todayStr,
-                        tipeKas: 'Pemasukan',
-                        sumberTujuan: 'Sewa Aplikasi Kantin',
+                        tipeKas: 'MASUK',
+                        kategori: 'Sewa Aplikasi',
+                        sumber: warungName,
                         nominal: numPotongAplikasi,
                         keterangan: `Potongan Sewa Aplikasi Warung ${warungName} (Bulan ${periodeBulan}) [${item.IDPencairan}]`
                     });
                 }
                 if (numPotongKader > 0) {
                     newKasEntries.push({
-                        id: `KAS-${Date.now()}-3`,
+                        id: `KAS-PENC-${item.IDPencairan}-KDR`,
                         tanggal: todayStr,
-                        tipeKas: 'Pemasukan',
-                        sumberTujuan: 'Titipan Honor Kader',
+                        tipeKas: 'MASUK',
+                        kategori: 'Honor Kader',
+                        sumber: warungName,
                         nominal: numPotongKader,
                         keterangan: `Potongan Iuran Kader Warung ${warungName} (Bulan ${periodeBulan}) [${item.IDPencairan}]`
                     });
@@ -8164,7 +8170,12 @@ function App() {
                 if (newKasEntries.length > 0) {
                     setDataKas(prev => [...newKasEntries, ...prev]);
                     for (const ke of newKasEntries) {
-                        await supabase.from('Kas').insert(ke);
+                        try {
+                            const { error: kErr } = await supabase.from('Kas').upsert([ke], { onConflict: 'id' });
+                            if (kErr) console.error("Gagal simpan ke Kas:", kErr);
+                        } catch (e) {
+                            console.warn("Kas insert err:", e);
+                        }
                     }
                 }
             }
@@ -8325,6 +8336,372 @@ Terima kasih atas kerja samanya.`;
         }
     };
 
+    // === EXPORT EXCEL KHUSUS LAPORAN HONOR KADER & SEWA APLIKASI ===
+    const handleExportKaderAppExcel = (filteredEntries, warungStatusList, periodeKey) => {
+        try {
+            const periodeLabel = new Date(periodeKey + '-01').toLocaleDateString('id-ID', { month: 'long', year: 'numeric' });
+            const wb = XLSX.utils.book_new();
+
+            // SHEET 1: Rincian Pemotongan per Transaksi
+            const headers1 = [
+                'No',
+                'Tanggal & Waktu Selesai',
+                'ID Pencairan',
+                'Nama Warung / Merchant',
+                'Omset Kotor (Rp)',
+                'Potongan Honor Kader (Rp)',
+                'Potongan Sewa Aplikasi (Rp)',
+                'Total Potongan (Rp)',
+                'Dana Bersih Dicairkan (Rp)',
+                'Catatan / Buku Kas'
+            ];
+
+            const rows1 = filteredEntries.map((e, idx) => [
+                idx + 1,
+                e.waktuSelesai ? new Date(e.waktuSelesai).toLocaleString('id-ID') : (e.waktuPengajuan ? new Date(e.waktuPengajuan).toLocaleString('id-ID') : '-'),
+                e.idPencairan,
+                e.warungName || e.warungId,
+                Number(e.totalKotor || 0),
+                Number(e.potonganKader || 0),
+                Number(e.potonganAplikasi || 0),
+                Number(e.totalPotongan || 0),
+                Number(e.totalBersih || 0),
+                e.catatan || (e.catatBukuKas ? 'Masuk Buku Kas' : '-')
+            ]);
+
+            const totKotor = filteredEntries.reduce((s, x) => s + Number(x.totalKotor || 0), 0);
+            const totKader = filteredEntries.reduce((s, x) => s + Number(x.potonganKader || 0), 0);
+            const totApp = filteredEntries.reduce((s, x) => s + Number(x.potonganAplikasi || 0), 0);
+            const totPot = filteredEntries.reduce((s, x) => s + Number(x.totalPotongan || 0), 0);
+            const totBersih = filteredEntries.reduce((s, x) => s + Number(x.totalBersih || 0), 0);
+
+            rows1.push([
+                '',
+                'TOTAL KESELURUHAN',
+                '',
+                '',
+                totKotor,
+                totKader,
+                totApp,
+                totPot,
+                totBersih,
+                ''
+            ]);
+
+            const headerAoa1 = [
+                [`LAPORAN PENERIMAAN HONOR KADER & SEWA APLIKASI KANTIN`],
+                [`${appConfig.appName || 'SalApp Bendahara'} — Periode: ${periodeLabel} (Diunduh: ${formatDateID(new Date())})`],
+                [],
+                headers1
+            ];
+
+            const ws1 = XLSX.utils.aoa_to_sheet([...headerAoa1, ...rows1]);
+            ws1['!cols'] = [
+                { wch: 6 },
+                { wch: 22 },
+                { wch: 20 },
+                { wch: 26 },
+                { wch: 20 },
+                { wch: 22 },
+                { wch: 22 },
+                { wch: 18 },
+                { wch: 22 },
+                { wch: 25 }
+            ];
+
+            XLSX.utils.book_append_sheet(wb, ws1, 'Rincian Transaksi Masuk');
+
+            // SHEET 2: Status Kewajiban per Warung
+            const headers2 = [
+                'No',
+                'Nama Warung / Merchant',
+                'Target Kader (Rp)',
+                'Terbayar Kader (Rp)',
+                'Sisa Kader (Rp)',
+                'Target Aplikasi (Rp)',
+                'Terbayar Aplikasi (Rp)',
+                'Sisa Aplikasi (Rp)',
+                'Total Terbayar (Rp)',
+                'Total Sisa Tanggungan (Rp)',
+                'Status'
+            ];
+
+            const rows2 = warungStatusList.map((w, idx) => [
+                idx + 1,
+                w.warungName,
+                w.targetKader,
+                w.terbayarKader,
+                w.sisaKader,
+                w.targetAplikasi,
+                w.terbayarAplikasi,
+                w.sisaAplikasi,
+                w.totalTerbayar,
+                w.totalSisa,
+                w.isLunas ? 'LUNAS' : 'BELUM LUNAS'
+            ]);
+
+            const totTarKdr = warungStatusList.reduce((s, x) => s + x.targetKader, 0);
+            const totTerKdr = warungStatusList.reduce((s, x) => s + x.terbayarKader, 0);
+            const totSisKdr = warungStatusList.reduce((s, x) => s + x.sisaKader, 0);
+            const totTarApp = warungStatusList.reduce((s, x) => s + x.targetAplikasi, 0);
+            const totTerApp = warungStatusList.reduce((s, x) => s + x.terbayarAplikasi, 0);
+            const totSisApp = warungStatusList.reduce((s, x) => s + x.sisaAplikasi, 0);
+            const totSemuaTer = warungStatusList.reduce((s, x) => s + x.totalTerbayar, 0);
+            const totSemuaSis = warungStatusList.reduce((s, x) => s + x.totalSisa, 0);
+
+            rows2.push([
+                '',
+                'TOTAL',
+                totTarKdr,
+                totTerKdr,
+                totSisKdr,
+                totTarApp,
+                totTerApp,
+                totSisApp,
+                totSemuaTer,
+                totSemuaSis,
+                ''
+            ]);
+
+            const headerAoa2 = [
+                [`REKAP STATUS KEWAJIBAN WARUNG (MOU)`],
+                [`Periode: ${periodeLabel} — Diunduh: ${formatDateID(new Date())}`],
+                [],
+                headers2
+            ];
+
+            const ws2 = XLSX.utils.aoa_to_sheet([...headerAoa2, ...rows2]);
+            ws2['!cols'] = [
+                { wch: 6 },
+                { wch: 25 },
+                { wch: 18 },
+                { wch: 18 },
+                { wch: 18 },
+                { wch: 18 },
+                { wch: 18 },
+                { wch: 18 },
+                { wch: 18 },
+                { wch: 22 },
+                { wch: 15 }
+            ];
+
+            XLSX.utils.book_append_sheet(wb, ws2, 'Status Kewajiban Warung');
+
+            XLSX.writeFile(wb, `Laporan_Kader_Aplikasi_${periodeKey}.xlsx`);
+            showNotification(`Laporan Excel Kader & Aplikasi bulan ${periodeLabel} berhasil diunduh!`, 'success');
+            addLog('DOWNLOAD', 'EXPORT', `Download Excel Kader & Aplikasi: ${periodeKey}`);
+        } catch (e) {
+            console.error("Excel Export Error:", e);
+            showNotification("Gagal mengunduh Excel.", "error");
+        }
+    };
+
+    // === CETAK PDF RESMI LAPORAN HONOR KADER & SEWA APLIKASI ===
+    const handlePrintKaderAppPDF = (filteredEntries, warungStatusList, periodeKey) => {
+        const periodeLabel = new Date(periodeKey + '-01').toLocaleDateString('id-ID', { month: 'long', year: 'numeric' });
+        const tanggalCetak = new Date().toLocaleDateString('id-ID', { day: 'numeric', month: 'long', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+        
+        const totKotor = filteredEntries.reduce((s, x) => s + Number(x.totalKotor || 0), 0);
+        const totKader = filteredEntries.reduce((s, x) => s + Number(x.potonganKader || 0), 0);
+        const totApp = filteredEntries.reduce((s, x) => s + Number(x.potonganAplikasi || 0), 0);
+        const totPot = filteredEntries.reduce((s, x) => s + Number(x.totalPotongan || 0), 0);
+        const totBersih = filteredEntries.reduce((s, x) => s + Number(x.totalBersih || 0), 0);
+
+        const lunasCount = warungStatusList.filter(w => w.isLunas).length;
+        const totalWarungCount = warungStatusList.length;
+
+        const htmlContent = `<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>Laporan Penerimaan Kader & Aplikasi - ${periodeLabel}</title>
+    <style>
+        @page { size: A4 landscape; margin: 10mm; }
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; color: #0f172a; font-size: 11px; margin: 0; padding: 12px; }
+        .kop { display: flex; align-items: center; justify-content: space-between; border-bottom: 2.5px solid #0f172a; padding-bottom: 10px; margin-bottom: 12px; }
+        .kop-left { display: flex; align-items: center; gap: 12px; }
+        .kop-logo { width: 48px; height: 48px; object-fit: contain; }
+        .kop-title { font-size: 15px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.5px; margin: 0; color: #0f172a; }
+        .kop-sub { font-size: 10.5px; color: #475569; margin: 2px 0 0; }
+        .kop-meta { text-align: right; font-size: 10px; color: #64748b; line-height: 1.4; }
+        
+        .doc-header { text-align: center; margin: 10px 0 14px; }
+        .doc-header h2 { font-size: 14px; font-weight: 800; text-transform: uppercase; color: #1e1b4b; margin: 0; letter-spacing: 0.5px; }
+        .doc-header p { font-size: 11px; color: #475569; margin: 2px 0 0; font-weight: 600; }
+
+        .kpi-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-bottom: 14px; }
+        .kpi-box { border: 1px solid #cbd5e1; border-radius: 8px; padding: 8px 12px; background: #f8fafc; }
+        .kpi-lbl { font-size: 9.5px; text-transform: uppercase; font-weight: 700; color: #64748b; }
+        .kpi-val { font-size: 14px; font-weight: 800; margin-top: 2px; }
+        .c-emerald { color: #059669; }
+        .c-indigo { color: #4338ca; }
+        .c-purple { color: #7c3aed; }
+        .c-blue { color: #2563eb; }
+
+        .sec-title { font-size: 11px; font-weight: 800; color: #0f172a; margin: 12px 0 5px; text-transform: uppercase; }
+
+        table { width: 100%; border-collapse: collapse; margin-bottom: 12px; font-size: 10px; }
+        th, td { border: 1px solid #cbd5e1; padding: 5px 7px; text-align: left; }
+        th { background: #f1f5f9; color: #1e293b; font-weight: 700; text-transform: uppercase; font-size: 9px; }
+        .ar { text-align: right; }
+        .ac { text-align: center; }
+        tr:nth-child(even) td { background: #fafbfc; }
+        .tr-total td { background: #e2e8f0; font-weight: 800; border-top: 2px solid #64748b; }
+        .badge { display: inline-block; padding: 2px 6px; border-radius: 4px; font-size: 8.5px; font-weight: 800; text-transform: uppercase; }
+        .badge-lunas { background: #dcfce7; color: #15803d; border: 1px solid #86efac; }
+        .badge-sisa { background: #fef3c7; color: #b45309; border: 1px solid #fde68a; }
+
+        .sig-container { margin-top: 22px; display: flex; justify-content: space-between; page-break-inside: avoid; }
+        .sig-box { text-align: center; width: 220px; font-size: 10.5px; }
+        .sig-line { border-bottom: 1px solid #0f172a; width: 160px; margin: 48px auto 3px; }
+
+        @media print {
+            body { padding: 0; }
+            .no-print { display: none; }
+        }
+    </style>
+</head>
+<body>
+    <div class="kop">
+        <div class="kop-left">
+            <img src="${appConfig.appLogo || '/logo.png'}" class="kop-logo" onerror="this.style.display='none'" />
+            <div>
+                <h1 class="kop-title">${appConfig.appName || 'Sistem Keuangan Pondok Pesantren'}</h1>
+                <p class="kop-sub">Pengelolaan Kas Unit Usaha Kantin / Warung Pesantren • Laporan Bagi Hasil MOU</p>
+            </div>
+        </div>
+        <div class="kop-meta">
+            <div>Dokumen Resmi Bendahara</div>
+            <div>Dicetak: ${tanggalCetak}</div>
+        </div>
+    </div>
+
+    <div class="doc-header">
+        <h2>Laporan Penerimaan Kas Honor Kader & Sewa Aplikasi Warung</h2>
+        <p>Periode: ${periodeLabel}</p>
+    </div>
+
+    <div class="kpi-row">
+        <div class="kpi-box">
+            <div class="kpi-lbl">Kas Masuk Honor Kader</div>
+            <div class="kpi-val c-emerald">Rp ${totKader.toLocaleString('id-ID')}</div>
+        </div>
+        <div class="kpi-box">
+            <div class="kpi-lbl">Kas Masuk Sewa Aplikasi</div>
+            <div class="kpi-val c-indigo">Rp ${totApp.toLocaleString('id-ID')}</div>
+        </div>
+        <div class="kpi-box">
+            <div class="kpi-lbl">Total Potongan MOU</div>
+            <div class="kpi-val c-purple">Rp ${totPot.toLocaleString('id-ID')}</div>
+        </div>
+        <div class="kpi-box">
+            <div class="kpi-lbl">Status Pelunasan Warung</div>
+            <div class="kpi-val c-blue">${lunasCount} / ${totalWarungCount} Warung Lunas</div>
+        </div>
+    </div>
+
+    <div class="sec-title">1. Status Kewajiban Bulanan per Warung (MOU)</div>
+    <table>
+        <thead>
+            <tr>
+                <th class="ac" style="width: 25px;">No</th>
+                <th>Nama Warung</th>
+                <th class="ar">Target Kader</th>
+                <th class="ar">Terbayar Kader</th>
+                <th class="ar">Sisa Kader</th>
+                <th class="ar">Target App</th>
+                <th class="ar">Terbayar App</th>
+                <th class="ar">Sisa App</th>
+                <th class="ar">Total Terbayar</th>
+                <th class="ar">Sisa Tanggungan</th>
+                <th class="ac">Status</th>
+            </tr>
+        </thead>
+        <tbody>
+            ${warungStatusList.map((w, idx) => `
+                <tr>
+                    <td class="ac">${idx + 1}</td>
+                    <td><strong>${w.warungName}</strong></td>
+                    <td class="ar">Rp ${w.targetKader.toLocaleString('id-ID')}</td>
+                    <td class="ar c-emerald" style="font-weight: 700;">Rp ${w.terbayarKader.toLocaleString('id-ID')}</td>
+                    <td class="ar ${w.sisaKader > 0 ? 'c-purple' : ''}">Rp ${w.sisaKader.toLocaleString('id-ID')}</td>
+                    <td class="ar">Rp ${w.targetAplikasi.toLocaleString('id-ID')}</td>
+                    <td class="ar c-indigo" style="font-weight: 700;">Rp ${w.terbayarAplikasi.toLocaleString('id-ID')}</td>
+                    <td class="ar ${w.sisaAplikasi > 0 ? 'c-purple' : ''}">Rp ${w.sisaAplikasi.toLocaleString('id-ID')}</td>
+                    <td class="ar" style="font-weight: 800;">Rp ${w.totalTerbayar.toLocaleString('id-ID')}</td>
+                    <td class="ar" style="font-weight: 800; color: ${w.totalSisa > 0 ? '#b91c1c' : '#15803d'};">Rp ${w.totalSisa.toLocaleString('id-ID')}</td>
+                    <td class="ac"><span class="badge ${w.isLunas ? 'badge-lunas' : 'badge-sisa'}">${w.isLunas ? 'LUNAS' : 'BELUM LUNAS'}</span></td>
+                </tr>
+            `).join('')}
+        </tbody>
+    </table>
+
+    <div class="sec-title">2. Rincian Transaksi Masuk per Pencairan Warung</div>
+    <table>
+        <thead>
+            <tr>
+                <th class="ac" style="width: 25px;">No</th>
+                <th>Waktu Selesai</th>
+                <th>ID Pencairan</th>
+                <th>Nama Warung</th>
+                <th class="ar">Omset Kotor</th>
+                <th class="ar">Potongan Kader</th>
+                <th class="ar">Potongan App</th>
+                <th class="ar">Total Potong</th>
+                <th class="ar">Bersih Dicairkan</th>
+                <th>Catatan / Keterangan</th>
+            </tr>
+        </thead>
+        <tbody>
+            ${filteredEntries.length === 0 ? `
+                <tr><td colspan="10" class="ac" style="padding: 15px; color: #94a3b8;">Tidak ada data transaksi pencairan pada periode ini.</td></tr>
+            ` : filteredEntries.map((e, idx) => `
+                <tr>
+                    <td class="ac">${idx + 1}</td>
+                    <td>${e.waktuSelesai ? new Date(e.waktuSelesai).toLocaleDateString('id-ID', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : '-'}</td>
+                    <td style="font-family: monospace; font-weight: 700;">${e.idPencairan}</td>
+                    <td><strong>${e.warungName || e.warungId}</strong></td>
+                    <td class="ar">Rp ${Number(e.totalKotor || 0).toLocaleString('id-ID')}</td>
+                    <td class="ar c-emerald" style="font-weight: 800;">${Number(e.potonganKader || 0) > 0 ? '+Rp ' + Number(e.potonganKader).toLocaleString('id-ID') : '-'}</td>
+                    <td class="ar c-indigo" style="font-weight: 800;">${Number(e.potonganAplikasi || 0) > 0 ? '+Rp ' + Number(e.potonganAplikasi).toLocaleString('id-ID') : '-'}</td>
+                    <td class="ar c-purple" style="font-weight: 800;">Rp ${Number(e.totalPotongan || 0).toLocaleString('id-ID')}</td>
+                    <td class="ar">Rp ${Number(e.totalBersih || 0).toLocaleString('id-ID')}</td>
+                    <td>${e.catatan || (e.catatBukuKas ? 'Masuk Buku Kas' : '-')}</td>
+                </tr>
+            `).join('')}
+            <tr class="tr-total">
+                <td colspan="4" class="ac">TOTAL KESELURUHAN (${filteredEntries.length} TRANSAKSI)</td>
+                <td class="ar">Rp ${totKotor.toLocaleString('id-ID')}</td>
+                <td class="ar c-emerald">Rp ${totKader.toLocaleString('id-ID')}</td>
+                <td class="ar c-indigo">Rp ${totApp.toLocaleString('id-ID')}</td>
+                <td class="ar c-purple">Rp ${totPot.toLocaleString('id-ID')}</td>
+                <td class="ar">Rp ${totBersih.toLocaleString('id-ID')}</td>
+                <td></td>
+            </tr>
+        </tbody>
+    </table>
+
+    <div class="sig-container">
+        <div class="sig-box">
+            <div>Mengetahui,</div>
+            <div style="font-weight: bold; margin-top: 2px;">Pimpinan / Pengasuh Pondok</div>
+            <div class="sig-line"></div>
+            <div style="color: #64748b; font-size: 10px;">( ......................................... )</div>
+        </div>
+        <div class="sig-box">
+            <div>Dibuat oleh,</div>
+            <div style="font-weight: bold; margin-top: 2px;">Bendahara / Petugas Keuangan</div>
+            <div class="sig-line"></div>
+            <div style="font-weight: bold;">${currentUser?.nama || 'Bendahara'}</div>
+            <div style="color: #64748b; font-size: 9.5px;">NIP / ID: ${currentUser?.username || 'ADM-01'}</div>
+        </div>
+    </div>
+</body>
+</html>`;
+
+        executePrint(htmlContent);
+    };
+
     const renderPencairanWarung = () => {
         const filtered = dataPencairan.filter(item => {
             const warungNama = getNamaWarung(item.WarungID).toLowerCase();
@@ -8343,6 +8720,47 @@ Terima kasih atas kerja samanya.`;
         const itemsPerPage = 10;
         const totalPages = Math.ceil(filtered.length / itemsPerPage);
         const paginatedPencairan = filtered.slice((currentPage - 1) * itemsPerPage, currentPage * itemsPerPage);
+
+        // === DATA & CALCULATIONS UNTUK REKAP KADER & SEWA APLIKASI ===
+        const allAvailableMonths = Array.from(new Set([
+            currentPeriodeKey,
+            ...Object.values(appConfig.pencairanFeeHistory || {}).map(h => h.periodeBulan).filter(Boolean)
+        ])).sort().reverse();
+
+        const selectedPeriodeKey = kaderAppPeriode || currentPeriodeKey;
+        const selectedPeriodeLabel = new Date(selectedPeriodeKey + '-01').toLocaleDateString('id-ID', { month: 'long', year: 'numeric' });
+
+        const allFeeHistoryEntries = Object.values(appConfig.pencairanFeeHistory || {}).filter(h => h.status === 'Selesai' || !h.status);
+        const kaderFilteredEntries = allFeeHistoryEntries.filter(e => {
+            const matchPeriode = (e.periodeBulan || '') === selectedPeriodeKey;
+            const matchWarung = kaderAppWarungFilter === 'Semua' || String(e.warungId) === String(kaderAppWarungFilter) || (e.warungName || '').toLowerCase() === kaderAppWarungFilter.toLowerCase();
+            const s = (kaderAppSearch || '').toLowerCase();
+            const matchSearch = !s || 
+                (e.idPencairan || '').toLowerCase().includes(s) || 
+                (e.warungName || '').toLowerCase().includes(s) || 
+                (e.catatan || '').toLowerCase().includes(s);
+            return matchPeriode && matchWarung && matchSearch;
+        }).sort((a, b) => new Date(b.waktuSelesai || b.waktuPengajuan || 0) - new Date(a.waktuSelesai || a.waktuPengajuan || 0));
+
+        const warungStatusList = (dataWarung || [])
+            .filter(w => kaderAppWarungFilter === 'Semua' || String(w.ID || w.id) === String(kaderAppWarungFilter))
+            .map(w => {
+                const wId = String(w.ID || w.id);
+                const wName = w.Nama || w.nama || wId;
+                const status = getWarungMonthlyFeeStatus(wId, selectedPeriodeKey, appConfig.pencairanFeeHistory, appConfig.pencairanFeeConfig);
+                return {
+                    warungId: wId,
+                    warungName: wName,
+                    ...status
+                };
+            });
+
+        const totKaderBulanIni = kaderFilteredEntries.reduce((s, x) => s + Number(x.potonganKader || 0), 0);
+        const totAppBulanIni = kaderFilteredEntries.reduce((s, x) => s + Number(x.potonganAplikasi || 0), 0);
+        const totPotonganBulanIni = kaderFilteredEntries.reduce((s, x) => s + Number(x.totalPotongan || 0), 0);
+        const totBersihBulanIni = kaderFilteredEntries.reduce((s, x) => s + Number(x.totalBersih || 0), 0);
+        const totKotorBulanIni = kaderFilteredEntries.reduce((s, x) => s + Number(x.totalKotor || 0), 0);
+        const lunasCount = warungStatusList.filter(w => w.isLunas).length;
 
         return (
             <div className="space-y-6 animate-fade-in-up">
@@ -8365,19 +8783,28 @@ Terima kasih atas kerja samanya.`;
                     </div>
                 </div>
 
-                {/* Sub-tab Navigation: Daftar Pencairan | Rekap per Warung */}
-                <div className="flex border-b border-whisper gap-2">
+                {/* Sub-tab Navigation: Daftar Pencairan | Rekap per Warung | Rekap Honor Kader & Aplikasi */}
+                <div className="flex border-b border-whisper gap-2 overflow-x-auto">
                     <button 
                         onClick={() => setPencairanSubTab('daftar')} 
-                        className={`px-4 py-2.5 font-semibold text-sm border-b-2 transition-all flex items-center gap-2 ${pencairanSubTab === 'daftar' ? 'border-accent text-accent' : 'border-transparent text-steel hover:text-ink'}`}
+                        className={`px-4 py-2.5 font-semibold text-sm border-b-2 transition-all flex items-center gap-2 shrink-0 ${pencairanSubTab === 'daftar' ? 'border-accent text-accent' : 'border-transparent text-steel hover:text-ink'}`}
                     >
                         <Wallet className="w-4 h-4" /> Daftar Pencairan ({dataPencairan.length})
                     </button>
                     <button 
                         onClick={() => { setPencairanSubTab('rekap'); fetchRekapPerWarung(rekapPeriode); }} 
-                        className={`px-4 py-2.5 font-semibold text-sm border-b-2 transition-all flex items-center gap-2 ${pencairanSubTab === 'rekap' ? 'border-accent text-accent' : 'border-transparent text-steel hover:text-ink'}`}
+                        className={`px-4 py-2.5 font-semibold text-sm border-b-2 transition-all flex items-center gap-2 shrink-0 ${pencairanSubTab === 'rekap' ? 'border-accent text-accent' : 'border-transparent text-steel hover:text-ink'}`}
                     >
-                        <BarChart3 className="w-4 h-4" /> Rekap Transaksi per Warung
+                        <BarChart3 className="w-4 h-4" /> Rekap Penjualan Warung
+                    </button>
+                    <button 
+                        onClick={() => setPencairanSubTab('kader_app')} 
+                        className={`px-4 py-2.5 font-semibold text-sm border-b-2 transition-all flex items-center gap-2 shrink-0 ${pencairanSubTab === 'kader_app' ? 'border-emerald-600 text-emerald-700 font-bold' : 'border-transparent text-steel hover:text-ink'}`}
+                    >
+                        <Award className="w-4 h-4 text-emerald-600" /> Rekap Honor Kader & Aplikasi
+                        <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-200">
+                            {allFeeHistoryEntries.filter(h => (h.periodeBulan || '') === selectedPeriodeKey).length} Trx
+                        </span>
                     </button>
                 </div>
 
@@ -8397,13 +8824,22 @@ Terima kasih atas kerja samanya.`;
                                 <p className="text-xs text-steel">Aplikasi: Rp 30.000 • Kader: Standar Rp {(appConfig.pencairanFeeConfig?.biayaKader ?? 200000).toLocaleString('id-ID')} (atau sesuai pengaturan khusus per warung). Dipotong bertahap maks. 50% per pencairan.</p>
                             </div>
                         </div>
-                        <button 
-                            type="button" 
-                            onClick={() => setModalConfigMOU(appConfig.pencairanFeeConfig || { biayaAplikasi: 30000, biayaKader: 200000, maxPotongPersen: 50 })}
-                            className="text-xs font-semibold text-accent hover:text-accent/80 flex items-center gap-1.5 self-start sm:self-auto bg-surface hover:bg-canvas px-3 py-1.5 rounded-lg border border-whisper shadow-xs"
-                        >
-                            <SlidersHorizontal className="w-3.5 h-3.5" /> Sesuaikan Nilai MOU
-                        </button>
+                        <div className="flex items-center gap-2 self-start sm:self-auto">
+                            <button 
+                                type="button" 
+                                onClick={() => setPencairanSubTab('kader_app')}
+                                className="text-xs font-semibold text-emerald-700 hover:text-emerald-800 flex items-center gap-1.5 bg-emerald-50 hover:bg-emerald-100 px-3 py-1.5 rounded-lg border border-emerald-300 shadow-xs"
+                            >
+                                <Award className="w-3.5 h-3.5 text-emerald-600" /> Rekap Kader & Cetak
+                            </button>
+                            <button 
+                                type="button" 
+                                onClick={() => setModalConfigMOU(appConfig.pencairanFeeConfig || { biayaAplikasi: 30000, biayaKader: 200000, maxPotongPersen: 50 })}
+                                className="text-xs font-semibold text-accent hover:text-accent/80 flex items-center gap-1.5 bg-surface hover:bg-canvas px-3 py-1.5 rounded-lg border border-whisper shadow-xs"
+                            >
+                                <SlidersHorizontal className="w-3.5 h-3.5" /> Sesuaikan Nilai MOU
+                            </button>
+                        </div>
                     </div>
                     
                     <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-2.5 pt-2 border-t border-blue-100/60">
@@ -9299,7 +9735,7 @@ Terima kasih atas kerja samanya.`;
                         </div>
                     </FormWrapper>
                 )}
-                </>) : (
+                </>) : pencairanSubTab === 'rekap' ? (
                     /* Sub-tab: Rekap Transaksi per Warung */
                     <div className="space-y-4">
                         {/* Periode Filter */}
@@ -9700,6 +10136,368 @@ Terima kasih atas kerja samanya.`;
                                 </div>
                             </>
                         )}
+                    </div>
+                ) : (
+                    /* Sub-tab 3: Rekap Kas / Honor Kader & Pembayaran Sewa Aplikasi */
+                    <div className="space-y-5 animate-fade-in-up">
+                        {/* Filter Header & Actions */}
+                        <div className="bg-surface border border-whisper rounded-card p-4 sm:p-5 shadow-sm flex flex-col lg:flex-row items-start lg:items-center justify-between gap-4">
+                            <div className="flex items-center gap-3">
+                                <div className="w-11 h-11 rounded-xl bg-gradient-to-br from-emerald-500 to-teal-600 text-white flex items-center justify-center shrink-0 shadow-sm">
+                                    <BadgePercent className="w-6 h-6" />
+                                </div>
+                                <div>
+                                    <h3 className="text-base sm:text-lg font-bold text-ink flex items-center gap-2">
+                                        Laporan Honor Kader & Sewa Aplikasi
+                                        <span className="text-xs px-2.5 py-0.5 rounded-full bg-emerald-100 text-emerald-800 font-semibold border border-emerald-200">
+                                            {selectedPeriodeLabel}
+                                        </span>
+                                    </h3>
+                                    <p className="text-xs text-steel mt-0.5">
+                                        Rincian penerimaan kas titipan honor kader dan sewa aplikasi dari pemotongan pencairan omset warung/kantin.
+                                    </p>
+                                </div>
+                            </div>
+
+                            {/* Filter & Action Buttons */}
+                            <div className="flex flex-wrap items-center gap-2.5 w-full lg:w-auto">
+                                {/* Periode Bulan Selector */}
+                                <div className="flex items-center gap-2 bg-canvas px-3 py-1.5 border border-whisper rounded-xl text-xs">
+                                    <CalendarDays className="w-4 h-4 text-steel" />
+                                    <span className="text-steel font-medium">Bulan:</span>
+                                    <select 
+                                        value={selectedPeriodeKey}
+                                        onChange={(e) => setKaderAppPeriode(e.target.value)}
+                                        className="bg-surface border border-whisper rounded-lg px-2 py-1 text-ink text-xs font-semibold focus:outline-none focus:border-emerald-600 cursor-pointer"
+                                    >
+                                        {allAvailableMonths.map(m => (
+                                            <option key={m} value={m}>
+                                                {new Date(m + '-01').toLocaleDateString('id-ID', { month: 'long', year: 'numeric' })}
+                                            </option>
+                                        ))}
+                                    </select>
+                                </div>
+
+                                {/* Warung Filter */}
+                                <div className="flex items-center gap-2 bg-canvas px-3 py-1.5 border border-whisper rounded-xl text-xs">
+                                    <Store className="w-4 h-4 text-steel" />
+                                    <select 
+                                        value={kaderAppWarungFilter}
+                                        onChange={(e) => setKaderAppWarungFilter(e.target.value)}
+                                        className="bg-surface border border-whisper rounded-lg px-2 py-1 text-ink text-xs font-semibold focus:outline-none focus:border-emerald-600 cursor-pointer"
+                                    >
+                                        <option value="Semua">Semua Warung</option>
+                                        {(dataWarung || []).map(w => (
+                                            <option key={w.ID || w.id} value={w.ID || w.id}>
+                                                {w.Nama || w.nama}
+                                            </option>
+                                        ))}
+                                    </select>
+                                </div>
+
+                                {/* Download Excel Button */}
+                                <button
+                                    type="button"
+                                    onClick={() => handleExportKaderAppExcel(kaderFilteredEntries, warungStatusList, selectedPeriodeKey)}
+                                    className="px-3.5 py-2 bg-emerald-600 hover:bg-emerald-700 active:scale-95 text-white rounded-xl text-xs font-bold shadow-sm flex items-center gap-1.5 transition-all cursor-pointer"
+                                    title="Download Data Format Excel Spreadsheet (.xlsx)"
+                                >
+                                    <FileSpreadsheet className="w-4 h-4" /> Download Excel
+                                </button>
+
+                                {/* Download PDF / Print Button */}
+                                <button
+                                    type="button"
+                                    onClick={() => handlePrintKaderAppPDF(kaderFilteredEntries, warungStatusList, selectedPeriodeKey)}
+                                    className="px-3.5 py-2 bg-indigo-600 hover:bg-indigo-700 active:scale-95 text-white rounded-xl text-xs font-bold shadow-sm flex items-center gap-1.5 transition-all cursor-pointer"
+                                    title="Cetak Laporan / Simpan PDF dengan Header Resmi"
+                                >
+                                    <Printer className="w-4 h-4" /> Download PDF / Cetak
+                                </button>
+                            </div>
+                        </div>
+
+                        {/* 4 KPI Cards */}
+                        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+                            {/* Card 1: Kas Masuk Kader */}
+                            <div className="bg-gradient-to-br from-emerald-500/10 via-emerald-500/5 to-surface border border-emerald-200/80 rounded-2xl p-4 shadow-xs relative overflow-hidden">
+                                <div className="flex justify-between items-start">
+                                    <div>
+                                        <span className="text-[11px] font-bold text-emerald-800 uppercase tracking-wider block">Kas Masuk Honor Kader</span>
+                                        <div className="text-xl sm:text-2xl font-black text-emerald-700 mt-1">
+                                            Rp {totKaderBulanIni.toLocaleString('id-ID')}
+                                        </div>
+                                    </div>
+                                    <div className="p-2.5 bg-emerald-600 text-white rounded-xl shadow-xs">
+                                        <Users className="w-5 h-5" />
+                                    </div>
+                                </div>
+                                <div className="text-[11px] text-emerald-800/80 mt-2 font-medium flex items-center gap-1">
+                                    <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                                    <span>Dari {kaderFilteredEntries.filter(x => Number(x.potonganKader || 0) > 0).length} transaksi pencairan</span>
+                                </div>
+                            </div>
+
+                            {/* Card 2: Kas Masuk Sewa Aplikasi */}
+                            <div className="bg-gradient-to-br from-indigo-500/10 via-indigo-500/5 to-surface border border-indigo-200/80 rounded-2xl p-4 shadow-xs relative overflow-hidden">
+                                <div className="flex justify-between items-start">
+                                    <div>
+                                        <span className="text-[11px] font-bold text-indigo-800 uppercase tracking-wider block">Kas Masuk Sewa Aplikasi</span>
+                                        <div className="text-xl sm:text-2xl font-black text-indigo-700 mt-1">
+                                            Rp {totAppBulanIni.toLocaleString('id-ID')}
+                                        </div>
+                                    </div>
+                                    <div className="p-2.5 bg-indigo-600 text-white rounded-xl shadow-xs">
+                                        <Layers className="w-5 h-5" />
+                                    </div>
+                                </div>
+                                <div className="text-[11px] text-indigo-800/80 mt-2 font-medium flex items-center gap-1">
+                                    <CheckCircle2 className="w-3.5 h-3.5 text-indigo-600 shrink-0" />
+                                    <span>Biaya aplikasi @Rp 30.000 / warung</span>
+                                </div>
+                            </div>
+
+                            {/* Card 3: Total Potongan */}
+                            <div className="bg-gradient-to-br from-purple-500/10 via-purple-500/5 to-surface border border-purple-200/80 rounded-2xl p-4 shadow-xs relative overflow-hidden">
+                                <div className="flex justify-between items-start">
+                                    <div>
+                                        <span className="text-[11px] font-bold text-purple-800 uppercase tracking-wider block">Total Potongan MOU</span>
+                                        <div className="text-xl sm:text-2xl font-black text-purple-700 mt-1">
+                                            Rp {totPotonganBulanIni.toLocaleString('id-ID')}
+                                        </div>
+                                    </div>
+                                    <div className="p-2.5 bg-purple-600 text-white rounded-xl shadow-xs">
+                                        <BadgePercent className="w-5 h-5" />
+                                    </div>
+                                </div>
+                                <div className="text-[11px] text-purple-800/80 mt-2 font-medium flex items-center gap-1">
+                                    <span>Total bersih dicairkan: Rp {totBersihBulanIni.toLocaleString('id-ID')}</span>
+                                </div>
+                            </div>
+
+                            {/* Card 4: Status Lunas */}
+                            <div className="bg-gradient-to-br from-blue-500/10 via-blue-500/5 to-surface border border-blue-200/80 rounded-2xl p-4 shadow-xs relative overflow-hidden">
+                                <div className="flex justify-between items-start">
+                                    <div>
+                                        <span className="text-[11px] font-bold text-blue-800 uppercase tracking-wider block">Pelunasan Warung</span>
+                                        <div className="text-xl sm:text-2xl font-black text-blue-700 mt-1">
+                                            {lunasCount} / {warungStatusList.length} Lunas
+                                        </div>
+                                    </div>
+                                    <div className="p-2.5 bg-blue-600 text-white rounded-xl shadow-xs">
+                                        <Store className="w-5 h-5" />
+                                    </div>
+                                </div>
+                                <div className="text-[11px] text-blue-800/80 mt-2 font-medium flex items-center gap-1">
+                                    <span>Sisa tanggungan: Rp {warungStatusList.reduce((s, x) => s + x.totalSisa, 0).toLocaleString('id-ID')}</span>
+                                </div>
+                            </div>
+                        </div>
+
+                        {/* Section 1: Tabel Status Kewajiban Bulanan per Warung */}
+                        <div className="bg-surface border border-whisper rounded-card shadow-sm overflow-hidden">
+                            <div className="p-4 border-b border-whisper bg-canvas/40 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                                <div>
+                                    <h4 className="font-bold text-ink text-sm sm:text-base flex items-center gap-2">
+                                        <Store className="w-4 h-4 text-primary" /> 1. Status Kewajiban Bulanan per Warung (MOU)
+                                    </h4>
+                                    <p className="text-xs text-steel">Target MOU, realisasi pemotongan, dan sisa tanggungan bulan {selectedPeriodeLabel}.</p>
+                                </div>
+                            </div>
+
+                            <div className="overflow-x-auto">
+                                <table className="w-full text-left text-xs text-ink">
+                                    <thead className="bg-canvas border-b border-whisper text-steel font-bold uppercase text-[10px]">
+                                        <tr>
+                                            <th className="px-4 py-3">Nama Warung</th>
+                                            <th className="px-4 py-3 text-right">Target Kader</th>
+                                            <th className="px-4 py-3 text-right">Terbayar Kader</th>
+                                            <th className="px-4 py-3 text-right">Sisa Kader</th>
+                                            <th className="px-4 py-3 text-right">Target App</th>
+                                            <th className="px-4 py-3 text-right">Terbayar App</th>
+                                            <th className="px-4 py-3 text-right">Sisa App</th>
+                                            <th className="px-4 py-3 text-right">Total Terbayar</th>
+                                            <th className="px-4 py-3 text-right">Sisa Tanggungan</th>
+                                            <th className="px-4 py-3 text-center">Status</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody className="divide-y divide-whisper">
+                                        {warungStatusList.map((w, idx) => (
+                                            <tr key={w.warungId} className="hover:bg-canvas/40 transition-colors">
+                                                <td className="px-4 py-3 font-bold text-ink">
+                                                    <div className="flex items-center gap-2">
+                                                        <span className="w-5 h-5 rounded-full bg-slate-100 text-steel flex items-center justify-center text-[10px]">{idx + 1}</span>
+                                                        <span>{w.warungName}</span>
+                                                    </div>
+                                                </td>
+                                                <td className="px-4 py-3 text-right font-mono">Rp {w.targetKader.toLocaleString('id-ID')}</td>
+                                                <td className="px-4 py-3 text-right font-mono font-bold text-emerald-600">Rp {w.terbayarKader.toLocaleString('id-ID')}</td>
+                                                <td className={`px-4 py-3 text-right font-mono ${w.sisaKader > 0 ? 'text-amber-700 font-bold' : 'text-steel'}`}>Rp {w.sisaKader.toLocaleString('id-ID')}</td>
+                                                <td className="px-4 py-3 text-right font-mono">Rp {w.targetAplikasi.toLocaleString('id-ID')}</td>
+                                                <td className="px-4 py-3 text-right font-mono font-bold text-indigo-600">Rp {w.terbayarAplikasi.toLocaleString('id-ID')}</td>
+                                                <td className={`px-4 py-3 text-right font-mono ${w.sisaAplikasi > 0 ? 'text-amber-700 font-bold' : 'text-steel'}`}>Rp {w.sisaAplikasi.toLocaleString('id-ID')}</td>
+                                                <td className="px-4 py-3 text-right font-mono font-bold text-ink">Rp {w.totalTerbayar.toLocaleString('id-ID')}</td>
+                                                <td className={`px-4 py-3 text-right font-mono font-bold ${w.totalSisa > 0 ? 'text-rose-600' : 'text-emerald-600'}`}>
+                                                    Rp {w.totalSisa.toLocaleString('id-ID')}
+                                                </td>
+                                                <td className="px-4 py-3 text-center">
+                                                    {w.isLunas ? (
+                                                        <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-200">LUNAS</span>
+                                                    ) : (
+                                                        <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-100 text-amber-800 border border-amber-200">BELUM LUNAS</span>
+                                                    )}
+                                                </td>
+                                            </tr>
+                                        ))}
+                                    </tbody>
+                                    <tfoot className="bg-slate-100/80 border-t-2 border-slate-300 font-bold text-ink text-xs">
+                                        <tr>
+                                            <td className="px-4 py-3">TOTAL</td>
+                                            <td className="px-4 py-3 text-right font-mono">Rp {warungStatusList.reduce((s, x) => s + x.targetKader, 0).toLocaleString('id-ID')}</td>
+                                            <td className="px-4 py-3 text-right font-mono text-emerald-700">Rp {warungStatusList.reduce((s, x) => s + x.terbayarKader, 0).toLocaleString('id-ID')}</td>
+                                            <td className="px-4 py-3 text-right font-mono text-amber-800">Rp {warungStatusList.reduce((s, x) => s + x.sisaKader, 0).toLocaleString('id-ID')}</td>
+                                            <td className="px-4 py-3 text-right font-mono">Rp {warungStatusList.reduce((s, x) => s + x.targetAplikasi, 0).toLocaleString('id-ID')}</td>
+                                            <td className="px-4 py-3 text-right font-mono text-indigo-700">Rp {warungStatusList.reduce((s, x) => s + x.terbayarAplikasi, 0).toLocaleString('id-ID')}</td>
+                                            <td className="px-4 py-3 text-right font-mono text-amber-800">Rp {warungStatusList.reduce((s, x) => s + x.sisaAplikasi, 0).toLocaleString('id-ID')}</td>
+                                            <td className="px-4 py-3 text-right font-mono text-ink">Rp {warungStatusList.reduce((s, x) => s + x.totalTerbayar, 0).toLocaleString('id-ID')}</td>
+                                            <td className="px-4 py-3 text-right font-mono text-rose-700">Rp {warungStatusList.reduce((s, x) => s + x.totalSisa, 0).toLocaleString('id-ID')}</td>
+                                            <td className="px-4 py-3 text-center">
+                                                {lunasCount} / {warungStatusList.length} Lunas
+                                            </td>
+                                        </tr>
+                                    </tfoot>
+                                </table>
+                            </div>
+                        </div>
+
+                        {/* Section 2: Tabel Rincian Transaksi Masuk per Pencairan Warung */}
+                        <div className="bg-surface border border-whisper rounded-card shadow-sm overflow-hidden">
+                            <div className="p-4 border-b border-whisper bg-canvas/40 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                                <div>
+                                    <h4 className="font-bold text-ink text-sm sm:text-base flex items-center gap-2">
+                                        <Receipt className="w-4 h-4 text-emerald-600" /> 2. Rincian Penerimaan Kas per Pencairan Warung
+                                    </h4>
+                                    <p className="text-xs text-steel">Detail setiap pencairan dana warung, nominal honor kader, dan potongan sewa aplikasi yang masuk.</p>
+                                </div>
+                                <div className="relative w-full sm:w-64">
+                                    <Search className="w-3.5 h-3.5 absolute left-3 top-2.5 text-steel" />
+                                    <input
+                                        type="text"
+                                        placeholder="Cari ID / warung..."
+                                        value={kaderAppSearch}
+                                        onChange={(e) => setKaderAppSearch(e.target.value)}
+                                        className={`${inputBase} text-xs pl-8 py-1.5`}
+                                    />
+                                </div>
+                            </div>
+
+                            <div className="overflow-x-auto">
+                                <table className="w-full text-left text-xs text-ink">
+                                    <thead className="bg-canvas border-b border-whisper text-steel font-bold uppercase text-[10px]">
+                                        <tr>
+                                            <th className="px-4 py-3 text-center w-10">No</th>
+                                            <th className="px-4 py-3">Tanggal & Jam Selesai</th>
+                                            <th className="px-4 py-3">ID Pencairan</th>
+                                            <th className="px-4 py-3">Warung</th>
+                                            <th className="px-4 py-3 text-right">Omset Kotor</th>
+                                            <th className="px-4 py-3 text-right text-emerald-700 bg-emerald-50/50">Potongan Kader</th>
+                                            <th className="px-4 py-3 text-right text-indigo-700 bg-indigo-50/50">Potongan App</th>
+                                            <th className="px-4 py-3 text-right font-bold">Total Potong</th>
+                                            <th className="px-4 py-3 text-right">Bersih Dicairkan</th>
+                                            <th className="px-4 py-3">Catatan / Buku Kas</th>
+                                            <th className="px-4 py-3 text-center">Aksi</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody className="divide-y divide-whisper">
+                                        {kaderFilteredEntries.length === 0 ? (
+                                            <tr>
+                                                <td colSpan={11} className="px-4 py-8 text-center text-steel">
+                                                    Tidak ada data transaksi pemotongan pada periode {selectedPeriodeLabel}.
+                                                </td>
+                                            </tr>
+                                        ) : (
+                                            kaderFilteredEntries.map((e, idx) => (
+                                                <tr key={e.idPencairan} className="hover:bg-canvas/40 transition-colors">
+                                                    <td className="px-4 py-3 text-center text-steel">{idx + 1}</td>
+                                                    <td className="px-4 py-3 text-steel">
+                                                        {e.waktuSelesai ? new Date(e.waktuSelesai).toLocaleDateString('id-ID', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : (e.waktuPengajuan ? new Date(e.waktuPengajuan).toLocaleDateString('id-ID', { day: '2-digit', month: 'short', year: 'numeric' }) : '-')}
+                                                    </td>
+                                                    <td className="px-4 py-3 font-mono text-[11px] font-bold text-accent">
+                                                        {e.idPencairan}
+                                                    </td>
+                                                    <td className="px-4 py-3 font-bold text-ink">
+                                                        {e.warungName || e.warungId}
+                                                    </td>
+                                                    <td className="px-4 py-3 text-right font-mono">
+                                                        Rp {Number(e.totalKotor || 0).toLocaleString('id-ID')}
+                                                    </td>
+                                                    <td className="px-4 py-3 text-right font-mono font-bold text-emerald-700 bg-emerald-50/40">
+                                                        {Number(e.potonganKader || 0) > 0 ? `+Rp ${Number(e.potonganKader).toLocaleString('id-ID')}` : '-'}
+                                                    </td>
+                                                    <td className="px-4 py-3 text-right font-mono font-bold text-indigo-700 bg-indigo-50/40">
+                                                        {Number(e.potonganAplikasi || 0) > 0 ? `+Rp ${Number(e.potonganAplikasi).toLocaleString('id-ID')}` : '-'}
+                                                    </td>
+                                                    <td className="px-4 py-3 text-right font-mono font-bold text-purple-700">
+                                                        {Number(e.totalPotongan || 0) > 0 ? `Rp ${Number(e.totalPotongan).toLocaleString('id-ID')}` : '-'}
+                                                    </td>
+                                                    <td className="px-4 py-3 text-right font-mono font-bold text-slate-800">
+                                                        Rp {Number(e.totalBersih || 0).toLocaleString('id-ID')}
+                                                    </td>
+                                                    <td className="px-4 py-3 text-[11px] text-steel max-w-[180px] truncate" title={e.catatan || (e.catatBukuKas ? 'Masuk Buku Kas' : '')}>
+                                                        {e.catatan || (e.catatBukuKas ? <span className="text-emerald-700 font-semibold flex items-center gap-1"><Check className="w-3 h-3" /> Buku Kas</span> : '-')}
+                                                    </td>
+                                                    <td className="px-4 py-3 text-center">
+                                                        <div className="flex items-center justify-center gap-1">
+                                                            <button
+                                                                type="button"
+                                                                onClick={() => handleCopyWhatsAppStruk(e, e.warungName || e.warungId)}
+                                                                className="p-1.5 rounded-md text-emerald-700 hover:bg-emerald-50 border border-emerald-200 cursor-pointer"
+                                                                title="Salin Struk WA"
+                                                            >
+                                                                <Copy className="w-3.5 h-3.5" />
+                                                            </button>
+                                                            <button
+                                                                type="button"
+                                                                onClick={() => handleDetailPencairan(e.idPencairan)}
+                                                                className="p-1.5 rounded-md text-blue-700 hover:bg-blue-50 border border-blue-200 cursor-pointer"
+                                                                title="Detail Transaksi"
+                                                            >
+                                                                <Eye className="w-3.5 h-3.5" />
+                                                            </button>
+                                                        </div>
+                                                    </td>
+                                                </tr>
+                                            ))
+                                        )}
+                                    </tbody>
+                                    {kaderFilteredEntries.length > 0 && (
+                                        <tfoot className="bg-slate-100/80 border-t-2 border-slate-300 font-bold text-ink text-xs">
+                                            <tr>
+                                                <td colSpan={4} className="px-4 py-3 text-center font-bold uppercase">
+                                                    TOTAL KESELURUHAN ({kaderFilteredEntries.length} TRANSAKSI)
+                                                </td>
+                                                <td className="px-4 py-3 text-right font-mono">
+                                                    Rp {totKotorBulanIni.toLocaleString('id-ID')}
+                                                </td>
+                                                <td className="px-4 py-3 text-right font-mono text-emerald-800 bg-emerald-100/60 font-black">
+                                                    Rp {totKaderBulanIni.toLocaleString('id-ID')}
+                                                </td>
+                                                <td className="px-4 py-3 text-right font-mono text-indigo-800 bg-indigo-100/60 font-black">
+                                                    Rp {totAppBulanIni.toLocaleString('id-ID')}
+                                                </td>
+                                                <td className="px-4 py-3 text-right font-mono text-purple-800 font-black">
+                                                    Rp {totPotonganBulanIni.toLocaleString('id-ID')}
+                                                </td>
+                                                <td className="px-4 py-3 text-right font-mono text-slate-900 font-black">
+                                                    Rp {totBersihBulanIni.toLocaleString('id-ID')}
+                                                </td>
+                                                <td colSpan={2}></td>
+                                            </tr>
+                                        </tfoot>
+                                    )}
+                                </table>
+                            </div>
+                        </div>
                     </div>
                 )}
             </div>
