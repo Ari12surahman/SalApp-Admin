@@ -8695,8 +8695,7 @@ Terima kasih atas kerja samanya.`;
             <div>Dibuat oleh,</div>
             <div style="font-weight: bold; margin-top: 2px;">Bendahara / Petugas Keuangan</div>
             <div class="sig-line"></div>
-            <div style="font-weight: bold;">${currentUser?.nama || 'Bendahara'}</div>
-            <div style="color: #64748b; font-size: 9.5px;">NIP / ID: ${currentUser?.username || 'ADM-01'}</div>
+            <div style="color: #64748b; font-size: 10px;">( ......................................... )</div>
         </div>
     </div>
 </body>
