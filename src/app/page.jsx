@@ -401,6 +401,7 @@ import {
 // Import Recharts dengan parameter bundle untuk mencegah error lodash missing modules
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from "recharts";
 import * as XLSX from "xlsx";
+import ExcelJS from "exceljs";
 
 // Helper nama bank WijayaPay
 const getBankDisplayName = (method) => {
@@ -8339,13 +8340,13 @@ Terima kasih atas kerja samanya.`;
         }
     };
 
-    // === EXPORT EXCEL KHUSUS LAPORAN HONOR KADER & SEWA APLIKASI (RAPIH & ELEGAN) ===
-    const handleExportKaderAppExcel = (filteredEntries, warungStatusList, periodeKey) => {
+    // === EXPORT EXCEL RESMI DENGAN STYLING LENGKAP (EXCELJS: BORDER, WARNA, KPI, TANDA TANGAN) ===
+    const handleExportKaderAppExcel = async (filteredEntries, warungStatusList, periodeKey) => {
         try {
+            showNotification("Sedang menyusun file Excel dengan border & warna...", "info");
             const periodeLabel = new Date(periodeKey + '-01').toLocaleDateString('id-ID', { month: 'long', year: 'numeric' });
             const tanggalUnduh = new Date().toLocaleDateString('id-ID', { day: 'numeric', month: 'long', year: 'numeric', hour: '2-digit', minute: '2-digit' });
-            const wb = XLSX.utils.book_new();
-
+            
             const totKotor = filteredEntries.reduce((s, x) => s + Number(x.totalKotor || 0), 0);
             const totKader = filteredEntries.reduce((s, x) => s + Number(x.potonganKader || 0), 0);
             const totApp = filteredEntries.reduce((s, x) => s + Number(x.potonganAplikasi || 0), 0);
@@ -8355,48 +8356,214 @@ Terima kasih atas kerja samanya.`;
             const lunasCount = warungStatusList.filter(w => w.isLunas).length;
             const totalWarungCount = warungStatusList.length;
 
-            const formatCurrencyCells = (ws, startRow, endRow, cols) => {
-                for (let r = startRow; r <= endRow; r++) {
-                    for (const c of cols) {
-                        const cellAddr = XLSX.utils.encode_cell({ r, c });
-                        if (ws[cellAddr] && typeof ws[cellAddr].v === 'number') {
-                            ws[cellAddr].z = '"Rp "#,##0';
-                        }
-                    }
-                }
+            const workbook = new ExcelJS.Workbook();
+            workbook.creator = appConfig.appName || 'SalApp Bendahara';
+            workbook.created = new Date();
+
+            const thinBorder = {
+                top: { style: 'thin', color: { argb: 'FFCBD5E1' } },
+                left: { style: 'thin', color: { argb: 'FFCBD5E1' } },
+                bottom: { style: 'thin', color: { argb: 'FFCBD5E1' } },
+                right: { style: 'thin', color: { argb: 'FFCBD5E1' } }
             };
 
-            // -------------------------------------------------------------
-            // SHEET 1: RINGKASAN EKSEKUTIF & STATUS KEWAJIBAN WARUNG (MOU)
-            // -------------------------------------------------------------
-            const headers1 = [
-                'No',
-                'Nama Warung / Merchant',
-                'Target Kader',
-                'Terbayar Kader',
-                'Sisa Kader',
-                'Target Aplikasi',
-                'Terbayar Aplikasi',
-                'Sisa Aplikasi',
-                'Total Terbayar',
-                'Sisa Tanggungan',
-                'Status'
+            const headerBorder = {
+                top: { style: 'medium', color: { argb: 'FF94A3B8' } },
+                left: { style: 'thin', color: { argb: 'FFCBD5E1' } },
+                bottom: { style: 'medium', color: { argb: 'FF94A3B8' } },
+                right: { style: 'thin', color: { argb: 'FFCBD5E1' } }
+            };
+
+            const totalBorder = {
+                top: { style: 'medium', color: { argb: 'FF64748B' } },
+                bottom: { style: 'medium', color: { argb: 'FF64748B' } },
+                left: { style: 'thin', color: { argb: 'FFCBD5E1' } },
+                right: { style: 'thin', color: { argb: 'FFCBD5E1' } }
+            };
+
+            // =========================================================
+            // SHEET 1: LAPORAN LENGKAP (KOP + KPI + TABEL 1 + TABEL 2 + TTD)
+            // =========================================================
+            const sheet1 = workbook.addWorksheet('Laporan Lengkap', { views: [{ showGridLines: true }] });
+
+            sheet1.columns = [
+                { width: 6 },  // A: NO
+                { width: 24 }, // B: NAMA WARUNG / WAKTU
+                { width: 20 }, // C: TARGET KADER / ID PENCAIRAN
+                { width: 22 }, // D: TERBAYAR KADER / NAMA WARUNG
+                { width: 18 }, // E: SISA KADER / OMSET KOTOR
+                { width: 18 }, // F: TARGET APP / POTONGAN KADER
+                { width: 18 }, // G: TERBAYAR APP / POTONGAN APP
+                { width: 18 }, // H: SISA APP / TOTAL POTONG
+                { width: 20 }, // I: TOTAL TERBAYAR / BERSIH DICAIRKAN
+                { width: 20 }, // J: SISA TANGGUNGAN / CATATAN
+                { width: 18 }  // K: STATUS
             ];
 
-            const rows1 = warungStatusList.map((w, idx) => [
-                idx + 1,
-                w.warungName,
-                Number(w.targetKader || 0),
-                Number(w.terbayarKader || 0),
-                Number(w.sisaKader || 0),
-                Number(w.targetAplikasi || 0),
-                Number(w.terbayarAplikasi || 0),
-                Number(w.sisaAplikasi || 0),
-                Number(w.totalTerbayar || 0),
-                Number(w.totalSisa || 0),
-                w.isLunas ? 'LUNAS' : 'BELUM LUNAS'
-            ]);
+            // Kop Surat
+            sheet1.mergeCells('A1:K1');
+            const c1 = sheet1.getCell('A1');
+            c1.value = `${appConfig.appName || 'SALAPP'} — SISTEM KEUANGAN PONDOK PESANTREN`;
+            c1.font = { name: 'Arial', size: 13, bold: true, color: { argb: 'FF0F172A' } };
+            c1.alignment = { horizontal: 'center', vertical: 'middle' };
 
+            sheet1.mergeCells('A2:K2');
+            const c2 = sheet1.getCell('A2');
+            c2.value = 'Pengelolaan Kas Unit Usaha Kantin / Warung Pesantren • Laporan Bagi Hasil MOU';
+            c2.font = { name: 'Arial', size: 9.5, italic: true, color: { argb: 'FF475569' } };
+            c2.alignment = { horizontal: 'center', vertical: 'middle' };
+
+            sheet1.mergeCells('A3:K3');
+            const c3 = sheet1.getCell('A3');
+            c3.value = 'LAPORAN PENERIMAAN KAS HONOR KADER & SEWA APLIKASI WARUNG';
+            c3.font = { name: 'Arial', size: 12, bold: true, color: { argb: 'FF1E1B4B' } };
+            c3.alignment = { horizontal: 'center', vertical: 'middle' };
+
+            sheet1.mergeCells('A4:K4');
+            const c4 = sheet1.getCell('A4');
+            c4.value = `Periode: ${periodeLabel} | Dokumen Resmi Bendahara | Dicetak: ${tanggalUnduh}`;
+            c4.font = { name: 'Arial', size: 9.5, bold: true, color: { argb: 'FF2563EB' } };
+            c4.alignment = { horizontal: 'center', vertical: 'middle' };
+
+            sheet1.addRow([]); // Row 5
+
+            // 4 KPI Boxes
+            // Box 1: B6:C7 (Honor Kader)
+            sheet1.mergeCells('B6:C6');
+            sheet1.getCell('B6').value = 'KAS MASUK HONOR KADER';
+            sheet1.getCell('B6').font = { size: 9, bold: true, color: { argb: 'FF065F46' } };
+            sheet1.getCell('B6').alignment = { horizontal: 'center', vertical: 'middle' };
+            sheet1.getCell('B6').fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFDCFCE7' } };
+            sheet1.getCell('B6').border = thinBorder;
+            sheet1.getCell('C6').border = thinBorder;
+
+            sheet1.mergeCells('B7:C7');
+            sheet1.getCell('B7').value = totKader;
+            sheet1.getCell('B7').numFmt = '"Rp "#,##0';
+            sheet1.getCell('B7').font = { size: 13, bold: true, color: { argb: 'FF059669' } };
+            sheet1.getCell('B7').alignment = { horizontal: 'center', vertical: 'middle' };
+            sheet1.getCell('B7').fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFECFDF5' } };
+            sheet1.getCell('B7').border = thinBorder;
+            sheet1.getCell('C7').border = thinBorder;
+
+            // Box 2: D6:E7 (Sewa App)
+            sheet1.mergeCells('D6:E6');
+            sheet1.getCell('D6').value = 'KAS MASUK SEWA APLIKASI';
+            sheet1.getCell('D6').font = { size: 9, bold: true, color: { argb: 'FF3730A3' } };
+            sheet1.getCell('D6').alignment = { horizontal: 'center', vertical: 'middle' };
+            sheet1.getCell('D6').fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFEEF2FF' } };
+            sheet1.getCell('D6').border = thinBorder;
+            sheet1.getCell('E6').border = thinBorder;
+
+            sheet1.mergeCells('D7:E7');
+            sheet1.getCell('D7').value = totApp;
+            sheet1.getCell('D7').numFmt = '"Rp "#,##0';
+            sheet1.getCell('D7').font = { size: 13, bold: true, color: { argb: 'FF4338CA' } };
+            sheet1.getCell('D7').alignment = { horizontal: 'center', vertical: 'middle' };
+            sheet1.getCell('D7').fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF5F3FF' } };
+            sheet1.getCell('D7').border = thinBorder;
+            sheet1.getCell('E7').border = thinBorder;
+
+            // Box 3: F6:G7 (Total Potongan)
+            sheet1.mergeCells('F6:G6');
+            sheet1.getCell('F6').value = 'TOTAL POTONGAN MOU';
+            sheet1.getCell('F6').font = { size: 9, bold: true, color: { argb: 'FF581C87' } };
+            sheet1.getCell('F6').alignment = { horizontal: 'center', vertical: 'middle' };
+            sheet1.getCell('F6').fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF3E8FF' } };
+            sheet1.getCell('F6').border = thinBorder;
+            sheet1.getCell('G6').border = thinBorder;
+
+            sheet1.mergeCells('F7:G7');
+            sheet1.getCell('F7').value = totPot;
+            sheet1.getCell('F7').numFmt = '"Rp "#,##0';
+            sheet1.getCell('F7').font = { size: 13, bold: true, color: { argb: 'FF7C3AED' } };
+            sheet1.getCell('F7').alignment = { horizontal: 'center', vertical: 'middle' };
+            sheet1.getCell('F7').fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFAF5FF' } };
+            sheet1.getCell('F7').border = thinBorder;
+            sheet1.getCell('G7').border = thinBorder;
+
+            // Box 4: H6:J7 (Pelunasan)
+            sheet1.mergeCells('H6:J6');
+            sheet1.getCell('H6').value = 'STATUS PELUNASAN WARUNG';
+            sheet1.getCell('H6').font = { size: 9, bold: true, color: { argb: 'FF1E40AF' } };
+            sheet1.getCell('H6').alignment = { horizontal: 'center', vertical: 'middle' };
+            sheet1.getCell('H6').fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFDBEAFE' } };
+            sheet1.getCell('H6').border = thinBorder;
+            sheet1.getCell('I6').border = thinBorder;
+            sheet1.getCell('J6').border = thinBorder;
+
+            sheet1.mergeCells('H7:J7');
+            sheet1.getCell('H7').value = `${lunasCount} / ${totalWarungCount} Warung Lunas`;
+            sheet1.getCell('H7').font = { size: 13, bold: true, color: { argb: 'FF2563EB' } };
+            sheet1.getCell('H7').alignment = { horizontal: 'center', vertical: 'middle' };
+            sheet1.getCell('H7').fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFEFF6FF' } };
+            sheet1.getCell('H7').border = thinBorder;
+            sheet1.getCell('I7').border = thinBorder;
+            sheet1.getCell('J7').border = thinBorder;
+
+            sheet1.addRow([]); // Row 8
+
+            // Section 1 Title
+            sheet1.mergeCells('A9:K9');
+            const s1 = sheet1.getCell('A9');
+            s1.value = '1. STATUS KEWAJIBAN BULANAN PER WARUNG (MOU)';
+            s1.font = { name: 'Arial', size: 10.5, bold: true, color: { argb: 'FF0F172A' } };
+
+            // Tabel 1 Header
+            const t1Headers = [
+                'NO', 'NAMA WARUNG', 'TARGET KADER', 'TERBAYAR KADER', 'SISA KADER',
+                'TARGET APP', 'TERBAYAR APP', 'SISA APP', 'TOTAL TERBAYAR', 'SISA TANGGUNGAN', 'STATUS'
+            ];
+            const t1HeaderRow = sheet1.addRow(t1Headers);
+            t1HeaderRow.height = 24;
+            t1HeaderRow.eachCell((cell, colNum) => {
+                cell.font = { name: 'Arial', size: 9, bold: true, color: { argb: 'FF1E293B' } };
+                cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF1F5F9' } };
+                cell.border = headerBorder;
+                cell.alignment = { vertical: 'middle', horizontal: colNum === 1 || colNum === 11 ? 'center' : (colNum === 2 ? 'left' : 'right') };
+            });
+
+            // Tabel 1 Data Rows
+            warungStatusList.forEach((w, idx) => {
+                const r = sheet1.addRow([
+                    idx + 1,
+                    w.warungName,
+                    Number(w.targetKader || 0),
+                    Number(w.terbayarKader || 0),
+                    Number(w.sisaKader || 0),
+                    Number(w.targetAplikasi || 0),
+                    Number(w.terbayarAplikasi || 0),
+                    Number(w.sisaAplikasi || 0),
+                    Number(w.totalTerbayar || 0),
+                    Number(w.totalSisa || 0),
+                    w.isLunas ? 'LUNAS' : 'BELUM LUNAS'
+                ]);
+                r.height = 20;
+                const isEven = idx % 2 === 1;
+                r.eachCell((cell, colNum) => {
+                    cell.border = thinBorder;
+                    cell.font = { name: 'Arial', size: 9 };
+                    if (isEven) cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFAFBFC' } };
+                    if (colNum === 1) cell.alignment = { horizontal: 'center' };
+                    if (colNum === 2) { cell.font = { name: 'Arial', size: 9, bold: true }; cell.alignment = { horizontal: 'left' }; }
+                    if (colNum >= 3 && colNum <= 10) {
+                        cell.numFmt = '"Rp "#,##0';
+                        cell.alignment = { horizontal: 'right' };
+                        if (colNum === 4) cell.font = { name: 'Arial', size: 9, bold: true, color: { argb: 'FF059669' } };
+                        if (colNum === 7) cell.font = { name: 'Arial', size: 9, bold: true, color: { argb: 'FF4338CA' } };
+                        if (colNum === 9) cell.font = { name: 'Arial', size: 9, bold: true };
+                        if (colNum === 10) cell.font = { name: 'Arial', size: 9, bold: true, color: { argb: cell.value > 0 ? 'FFB91C1C' : 'FF059669' } };
+                    }
+                    if (colNum === 11) {
+                        cell.alignment = { horizontal: 'center' };
+                        const isLunas = cell.value === 'LUNAS';
+                        cell.font = { name: 'Arial', size: 8.5, bold: true, color: { argb: isLunas ? 'FF15803D' : 'FFB45309' } };
+                        cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: isLunas ? 'FFDCFCE7' : 'FFFEF3C7' } };
+                    }
+                });
+            });
+
+            // Tabel 1 Total Row
             const totTarKdr = warungStatusList.reduce((s, x) => s + x.targetKader, 0);
             const totTerKdr = warungStatusList.reduce((s, x) => s + x.terbayarKader, 0);
             const totSisKdr = warungStatusList.reduce((s, x) => s + x.sisaKader, 0);
@@ -8406,152 +8573,314 @@ Terima kasih atas kerja samanya.`;
             const totSemuaTer = warungStatusList.reduce((s, x) => s + x.totalTerbayar, 0);
             const totSemuaSis = warungStatusList.reduce((s, x) => s + x.totalSisa, 0);
 
-            const aoaSheet1 = [
-                [appConfig.appName || 'SISTEM KEUANGAN PONDOK PESANTREN'],
-                ['LAPORAN KAS HONOR KADER & SEWA APLIKASI KANTIN / WARUNG'],
-                [`Periode: ${periodeLabel}`, '', '', '', '', '', '', '', '', '', `Diunduh: ${tanggalUnduh}`],
-                [],
-                ['RINGKASAN EKSEKUTIF (KEY PERFORMANCE INDICATORS)'],
-                ['', 'Kas Masuk Honor Kader', '', 'Kas Masuk Sewa Aplikasi', '', 'Total Potongan MOU', '', 'Total Omset Kotor', '', 'Total Bersih Dicairkan', 'Status Pelunasan'],
-                ['', totKader, '', totApp, '', totPot, '', totKotor, '', totBersih, `${lunasCount} / ${totalWarungCount} Warung Lunas`],
-                [],
-                ['1. STATUS KEWAJIBAN BULANAN PER WARUNG (MOU)'],
-                headers1,
-                ...rows1,
-                [
-                    '',
-                    'TOTAL KEWAJIBAN WARUNG',
-                    totTarKdr,
-                    totTerKdr,
-                    totSisKdr,
-                    totTarApp,
-                    totTerApp,
-                    totSisApp,
-                    totSemuaTer,
-                    totSemuaSis,
-                    `${lunasCount} / ${totalWarungCount} Lunas`
-                ],
-                [],
-                [],
-                ['', 'Mengetahui,', '', '', '', '', '', 'Dibuat oleh,'],
-                ['', 'Pimpinan / Pengasuh Pondok', '', '', '', '', '', 'Bendahara / Petugas Keuangan'],
-                [],
-                [],
-                ['', '( ......................................... )', '', '', '', '', '', '( ......................................... )']
-            ];
-
-            const ws1 = XLSX.utils.aoa_to_sheet(aoaSheet1);
-
-            ws1['!merges'] = [
-                { s: { r: 0, c: 0 }, e: { r: 0, c: 10 } },
-                { s: { r: 1, c: 0 }, e: { r: 1, c: 10 } },
-                { s: { r: 4, c: 0 }, e: { r: 4, c: 10 } },
-                { s: { r: 8, c: 0 }, e: { r: 8, c: 10 } }
-            ];
-
-            formatCurrencyCells(ws1, 6, 6, [1, 3, 5, 7, 9]);
-            formatCurrencyCells(ws1, 10, 10 + rows1.length, [2, 3, 4, 5, 6, 7, 8, 9]);
-
-            ws1['!cols'] = [
-                { wch: 6 },
-                { wch: 26 },
-                { wch: 18 },
-                { wch: 18 },
-                { wch: 16 },
-                { wch: 16 },
-                { wch: 16 },
-                { wch: 16 },
-                { wch: 18 },
-                { wch: 20 },
-                { wch: 18 }
-            ];
-
-            XLSX.utils.book_append_sheet(wb, ws1, 'Ringkasan & Status Warung');
-
-            // -------------------------------------------------------------
-            // SHEET 2: RINCIAN PENERIMAAN KAS PER PENCAIRAN WARUNG
-            // -------------------------------------------------------------
-            const headers2 = [
-                'No',
-                'Tanggal & Waktu Selesai',
-                'ID Pencairan',
-                'Nama Warung / Merchant',
-                'Omset Kotor',
-                'Potongan Kader',
-                'Potongan Aplikasi',
-                'Total Potongan',
-                'Bersih Dicairkan',
-                'Buku Kas / Keterangan'
-            ];
-
-            const rows2 = filteredEntries.map((e, idx) => [
-                idx + 1,
-                e.waktuSelesai ? new Date(e.waktuSelesai).toLocaleString('id-ID') : (e.waktuPengajuan ? new Date(e.waktuPengajuan).toLocaleString('id-ID') : '-'),
-                e.idPencairan,
-                e.warungName || e.warungId,
-                Number(e.totalKotor || 0),
-                Number(e.potonganKader || 0),
-                Number(e.potonganAplikasi || 0),
-                Number(e.totalPotongan || 0),
-                Number(e.totalBersih || 0),
-                e.catatan || (e.catatBukuKas ? 'Masuk Buku Kas' : '-')
+            const totT1 = sheet1.addRow([
+                '', 'TOTAL', totTarKdr, totTerKdr, totSisKdr, totTarApp, totTerApp, totSisApp, totSemuaTer, totSemuaSis, `${lunasCount} / ${totalWarungCount} Lunas`
             ]);
+            totT1.height = 22;
+            totT1.eachCell((cell, colNum) => {
+                cell.font = { name: 'Arial', size: 9.5, bold: true };
+                cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE2E8F0' } };
+                cell.border = totalBorder;
+                if (colNum === 2) cell.alignment = { horizontal: 'center' };
+                if (colNum >= 3 && colNum <= 10) {
+                    cell.numFmt = '"Rp "#,##0';
+                    cell.alignment = { horizontal: 'right' };
+                }
+                if (colNum === 11) cell.alignment = { horizontal: 'center' };
+            });
 
-            const aoaSheet2 = [
-                [appConfig.appName || 'SISTEM KEUANGAN PONDOK PESANTREN'],
-                ['RINCIAN PENERIMAAN KAS PER PENCAIRAN WARUNG'],
-                [`Periode: ${periodeLabel}`, '', '', `Total Transaksi: ${filteredEntries.length} Transaksi`, '', '', '', '', `Diunduh: ${tanggalUnduh}`],
-                [],
-                headers2,
-                ...rows2,
-                [
-                    '',
-                    'TOTAL KESELURUHAN',
-                    '',
-                    `${filteredEntries.length} Transaksi`,
-                    totKotor,
-                    totKader,
-                    totApp,
-                    totPot,
-                    totBersih,
+            sheet1.addRow([]); // Blank row
+
+            // Section 2 Title
+            const s2TitleRow = sheet1.addRow(['2. RINCIAN TRANSAKSI MASUK PER PENCAIRAN WARUNG']);
+            sheet1.mergeCells(`A${s2TitleRow.number}:K${s2TitleRow.number}`);
+            s2TitleRow.getCell(1).font = { name: 'Arial', size: 10.5, bold: true, color: { argb: 'FF0F172A' } };
+
+            // Tabel 2 Header
+            const t2Headers = [
+                'NO', 'WAKTU SELESAI', 'ID PENCAIRAN', 'NAMA WARUNG', 'OMSET KOTOR',
+                'POTONGAN KADER', 'POTONGAN APP', 'TOTAL POTONG', 'BERSIH DICAIRKAN', 'CATATAN / KETERANGAN', ''
+            ];
+            const t2HeaderRow = sheet1.addRow(t2Headers);
+            sheet1.mergeCells(`J${t2HeaderRow.number}:K${t2HeaderRow.number}`);
+            t2HeaderRow.height = 24;
+            t2HeaderRow.eachCell((cell, colNum) => {
+                cell.font = { name: 'Arial', size: 9, bold: true, color: { argb: 'FF1E293B' } };
+                cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF1F5F9' } };
+                cell.border = headerBorder;
+                cell.alignment = { vertical: 'middle', horizontal: colNum === 1 ? 'center' : (colNum >= 2 && colNum <= 4 ? 'left' : (colNum >= 5 && colNum <= 9 ? 'right' : 'left')) };
+            });
+
+            // Tabel 2 Data Rows
+            filteredEntries.forEach((e, idx) => {
+                const waktuStr = e.waktuSelesai ? new Date(e.waktuSelesai).toLocaleString('id-ID') : (e.waktuPengajuan ? new Date(e.waktuPengajuan).toLocaleString('id-ID') : '-');
+                const r = sheet1.addRow([
+                    idx + 1,
+                    waktuStr,
+                    e.idPencairan,
+                    e.warungName || e.warungId,
+                    Number(e.totalKotor || 0),
+                    Number(e.potonganKader || 0),
+                    Number(e.potonganAplikasi || 0),
+                    Number(e.totalPotongan || 0),
+                    Number(e.totalBersih || 0),
+                    e.catatan || (e.catatBukuKas ? 'Masuk Buku Kas' : '-'),
                     ''
-                ],
-                [],
-                [],
-                ['', 'Mengetahui,', '', '', '', '', 'Dibuat oleh,'],
-                ['', 'Pimpinan / Pengasuh Pondok', '', '', '', '', 'Bendahara / Petugas Keuangan'],
-                [],
-                [],
-                ['', '( ......................................... )', '', '', '', '', '( ......................................... )']
+                ]);
+                sheet1.mergeCells(`J${r.number}:K${r.number}`);
+                r.height = 20;
+                const isEven = idx % 2 === 1;
+                r.eachCell((cell, colNum) => {
+                    cell.border = thinBorder;
+                    cell.font = { name: 'Arial', size: 9 };
+                    if (isEven) cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFAFBFC' } };
+                    if (colNum === 1) cell.alignment = { horizontal: 'center' };
+                    if (colNum === 2) cell.alignment = { horizontal: 'left' };
+                    if (colNum === 3) { cell.font = { name: 'Arial', size: 9, bold: true }; cell.alignment = { horizontal: 'left' }; }
+                    if (colNum === 4) { cell.font = { name: 'Arial', size: 9, bold: true }; cell.alignment = { horizontal: 'left' }; }
+                    if (colNum >= 5 && colNum <= 9) {
+                        cell.numFmt = '"Rp "#,##0';
+                        cell.alignment = { horizontal: 'right' };
+                        if (colNum === 6) cell.font = { name: 'Arial', size: 9, bold: true, color: { argb: cell.value > 0 ? 'FF059669' : 'FF64748B' } };
+                        if (colNum === 7) cell.font = { name: 'Arial', size: 9, bold: true, color: { argb: cell.value > 0 ? 'FF4338CA' : 'FF64748B' } };
+                        if (colNum === 8) cell.font = { name: 'Arial', size: 9, bold: true, color: { argb: cell.value > 0 ? 'FF7C3AED' : 'FF64748B' } };
+                        if (colNum === 9) cell.font = { name: 'Arial', size: 9, bold: true };
+                    }
+                    if (colNum === 10) cell.alignment = { horizontal: 'left' };
+                });
+            });
+
+            // Tabel 2 Total Row
+            const totT2 = sheet1.addRow([
+                '', `TOTAL KESELURUHAN (${filteredEntries.length} TRANSAKSI)`, '', '', totKotor, totKader, totApp, totPot, totBersih, '', ''
+            ]);
+            sheet1.mergeCells(`B${totT2.number}:D${totT2.number}`);
+            sheet1.mergeCells(`J${totT2.number}:K${totT2.number}`);
+            totT2.height = 22;
+            totT2.eachCell((cell, colNum) => {
+                cell.font = { name: 'Arial', size: 9.5, bold: true };
+                cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE2E8F0' } };
+                cell.border = totalBorder;
+                if (colNum === 2) cell.alignment = { horizontal: 'center' };
+                if (colNum >= 5 && colNum <= 9) {
+                    cell.numFmt = '"Rp "#,##0';
+                    cell.alignment = { horizontal: 'right' };
+                }
+            });
+
+            // Signatures
+            sheet1.addRow([]);
+            sheet1.addRow([]);
+
+            const sig1 = sheet1.addRow(['', 'Mengetahui,', '', '', '', '', '', 'Dibuat oleh,', '', '', '']);
+            sheet1.mergeCells(`B${sig1.number}:D${sig1.number}`);
+            sheet1.mergeCells(`H${sig1.number}:J${sig1.number}`);
+            sig1.getCell(2).alignment = { horizontal: 'center' };
+            sig1.getCell(8).alignment = { horizontal: 'center' };
+
+            const sig2 = sheet1.addRow(['', 'Pimpinan / Pengasuh Pondok', '', '', '', '', '', 'Bendahara / Petugas Keuangan', '', '', '']);
+            sheet1.mergeCells(`B${sig2.number}:D${sig2.number}`);
+            sheet1.mergeCells(`H${sig2.number}:J${sig2.number}`);
+            sig2.getCell(2).font = { bold: true };
+            sig2.getCell(2).alignment = { horizontal: 'center' };
+            sig2.getCell(8).font = { bold: true };
+            sig2.getCell(8).alignment = { horizontal: 'center' };
+
+            sheet1.addRow([]);
+            sheet1.addRow([]);
+            sheet1.addRow([]);
+
+            const sig3 = sheet1.addRow(['', '( ......................................... )', '', '', '', '', '', '( ......................................... )', '', '', '']);
+            sheet1.mergeCells(`B${sig3.number}:D${sig3.number}`);
+            sheet1.mergeCells(`H${sig3.number}:J${sig3.number}`);
+            sig3.getCell(2).font = { color: { argb: 'FF64748B' } };
+            sig3.getCell(2).alignment = { horizontal: 'center' };
+            sig3.getCell(8).font = { color: { argb: 'FF64748B' } };
+            sig3.getCell(8).alignment = { horizontal: 'center' };
+
+
+            // =========================================================
+            // SHEET 2: RINCIAN PENCAIRAN WARUNG (PURE FILTERABLE TABLE)
+            // =========================================================
+            const sheet2 = workbook.addWorksheet('Rincian Pencairan Warung', { views: [{ showGridLines: true }] });
+            sheet2.columns = [
+                { width: 6 },  // No
+                { width: 24 }, // Waktu
+                { width: 20 }, // ID Pencairan
+                { width: 26 }, // Nama Warung
+                { width: 18 }, // Omset Kotor
+                { width: 18 }, // Potongan Kader
+                { width: 18 }, // Potongan App
+                { width: 18 }, // Total Potong
+                { width: 20 }, // Bersih
+                { width: 28 }  // Catatan
             ];
 
-            const ws2 = XLSX.utils.aoa_to_sheet(aoaSheet2);
+            const s2Title = sheet2.addRow(['RINCIAN TRANSAKSI PENCAIRAN WARUNG']);
+            sheet2.mergeCells(`A1:J1`);
+            s2Title.getCell(1).font = { size: 12, bold: true };
 
-            ws2['!merges'] = [
-                { s: { r: 0, c: 0 }, e: { r: 0, c: 9 } },
-                { s: { r: 1, c: 0 }, e: { r: 1, c: 9 } }
+            const s2Sub = sheet2.addRow([`Periode: ${periodeLabel} | Total Transaksi: ${filteredEntries.length} Transaksi`]);
+            sheet2.mergeCells(`A2:J2`);
+            s2Sub.getCell(1).font = { size: 9.5, italic: true, color: { argb: 'FF475569' } };
+            sheet2.addRow([]);
+
+            const s2Head = sheet2.addRow([
+                'NO', 'TANGGAL & WAKTU SELESAI', 'ID PENCAIRAN', 'NAMA WARUNG', 'OMSET KOTOR',
+                'POTONGAN KADER', 'POTONGAN APP', 'TOTAL POTONG', 'BERSIH DICAIRKAN', 'STATUS BUKU KAS'
+            ]);
+            s2Head.height = 24;
+            s2Head.eachCell((cell, colNum) => {
+                cell.font = { name: 'Arial', size: 9, bold: true, color: { argb: 'FF1E293B' } };
+                cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF1F5F9' } };
+                cell.border = headerBorder;
+                cell.alignment = { vertical: 'middle', horizontal: colNum === 1 ? 'center' : (colNum >= 2 && colNum <= 4 ? 'left' : (colNum >= 5 && colNum <= 9 ? 'right' : 'left')) };
+            });
+
+            filteredEntries.forEach((e, idx) => {
+                const r = sheet2.addRow([
+                    idx + 1,
+                    e.waktuSelesai ? new Date(e.waktuSelesai).toLocaleString('id-ID') : '-',
+                    e.idPencairan,
+                    e.warungName || e.warungId,
+                    Number(e.totalKotor || 0),
+                    Number(e.potonganKader || 0),
+                    Number(e.potonganAplikasi || 0),
+                    Number(e.totalPotongan || 0),
+                    Number(e.totalBersih || 0),
+                    e.catatan || (e.catatBukuKas ? 'Masuk Buku Kas' : '-')
+                ]);
+                r.height = 20;
+                r.eachCell((cell, colNum) => {
+                    cell.border = thinBorder;
+                    cell.font = { name: 'Arial', size: 9 };
+                    if (colNum === 1) cell.alignment = { horizontal: 'center' };
+                    if (colNum >= 5 && colNum <= 9) {
+                        cell.numFmt = '"Rp "#,##0';
+                        cell.alignment = { horizontal: 'right' };
+                        if (colNum === 6 && cell.value > 0) cell.font = { name: 'Arial', size: 9, bold: true, color: { argb: 'FF059669' } };
+                        if (colNum === 7 && cell.value > 0) cell.font = { name: 'Arial', size: 9, bold: true, color: { argb: 'FF4338CA' } };
+                        if (colNum === 8 && cell.value > 0) cell.font = { name: 'Arial', size: 9, bold: true, color: { argb: 'FF7C3AED' } };
+                    }
+                });
+            });
+
+            const totS2 = sheet2.addRow([
+                '', 'TOTAL KESELURUHAN', '', '', totKotor, totKader, totApp, totPot, totBersih, ''
+            ]);
+            totS2.height = 22;
+            totS2.eachCell((cell, colNum) => {
+                cell.font = { name: 'Arial', size: 9.5, bold: true };
+                cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE2E8F0' } };
+                cell.border = totalBorder;
+                if (colNum >= 5 && colNum <= 9) {
+                    cell.numFmt = '"Rp "#,##0';
+                    cell.alignment = { horizontal: 'right' };
+                }
+            });
+
+
+            // =========================================================
+            // SHEET 3: STATUS KEWAJIBAN WARUNG (PURE FILTERABLE TABLE)
+            // =========================================================
+            const sheet3 = workbook.addWorksheet('Status Kewajiban Warung', { views: [{ showGridLines: true }] });
+            sheet3.columns = [
+                { width: 6 },  // NO
+                { width: 28 }, // NAMA WARUNG
+                { width: 18 }, // TARGET KADER
+                { width: 18 }, // TERBAYAR KADER
+                { width: 16 }, // SISA KADER
+                { width: 16 }, // TARGET APP
+                { width: 18 }, // TERBAYAR APP
+                { width: 16 }, // SISA APP
+                { width: 20 }, // TOTAL TERBAYAR
+                { width: 20 }, // SISA TANGGUNGAN
+                { width: 18 }  // STATUS
             ];
 
-            formatCurrencyCells(ws2, 5, 5 + rows2.length, [4, 5, 6, 7, 8]);
+            const s3Title = sheet3.addRow(['STATUS KEWAJIBAN BULANAN PER WARUNG (MOU)']);
+            sheet3.mergeCells(`A1:K1`);
+            s3Title.getCell(1).font = { size: 12, bold: true };
 
-            ws2['!cols'] = [
-                { wch: 6 },
-                { wch: 24 },
-                { wch: 18 },
-                { wch: 26 },
-                { wch: 18 },
-                { wch: 18 },
-                { wch: 18 },
-                { wch: 18 },
-                { wch: 20 },
-                { wch: 26 }
-            ];
+            const s3Sub = sheet3.addRow([`Periode: ${periodeLabel} | Total Warung: ${warungStatusList.length}`]);
+            sheet3.mergeCells(`A2:K2`);
+            s3Sub.getCell(1).font = { size: 9.5, italic: true, color: { argb: 'FF475569' } };
+            sheet3.addRow([]);
 
-            XLSX.utils.book_append_sheet(wb, ws2, 'Rincian Pencairan Warung');
+            const s3Head = sheet3.addRow(t1Headers);
+            s3Head.height = 24;
+            s3Head.eachCell((cell, colNum) => {
+                cell.font = { name: 'Arial', size: 9, bold: true, color: { argb: 'FF1E293B' } };
+                cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF1F5F9' } };
+                cell.border = headerBorder;
+                cell.alignment = { vertical: 'middle', horizontal: colNum === 1 || colNum === 11 ? 'center' : (colNum === 2 ? 'left' : 'right') };
+            });
 
-            XLSX.writeFile(wb, `Laporan_Kader_Aplikasi_${periodeKey}.xlsx`);
-            showNotification(`Laporan Excel Kader & Aplikasi bulan ${periodeLabel} berhasil diunduh!`, 'success');
-            addLog('DOWNLOAD', 'EXPORT', `Download Excel Kader & Aplikasi: ${periodeKey}`);
+            warungStatusList.forEach((w, idx) => {
+                const r = sheet3.addRow([
+                    idx + 1,
+                    w.warungName,
+                    Number(w.targetKader || 0),
+                    Number(w.terbayarKader || 0),
+                    Number(w.sisaKader || 0),
+                    Number(w.targetAplikasi || 0),
+                    Number(w.terbayarAplikasi || 0),
+                    Number(w.sisaAplikasi || 0),
+                    Number(w.totalTerbayar || 0),
+                    Number(w.totalSisa || 0),
+                    w.isLunas ? 'LUNAS' : 'BELUM LUNAS'
+                ]);
+                r.height = 20;
+                r.eachCell((cell, colNum) => {
+                    cell.border = thinBorder;
+                    cell.font = { name: 'Arial', size: 9 };
+                    if (colNum === 1) cell.alignment = { horizontal: 'center' };
+                    if (colNum === 2) { cell.font = { name: 'Arial', size: 9, bold: true }; cell.alignment = { horizontal: 'left' }; }
+                    if (colNum >= 3 && colNum <= 10) {
+                        cell.numFmt = '"Rp "#,##0';
+                        cell.alignment = { horizontal: 'right' };
+                        if (colNum === 4) cell.font = { name: 'Arial', size: 9, bold: true, color: { argb: 'FF059669' } };
+                        if (colNum === 7) cell.font = { name: 'Arial', size: 9, bold: true, color: { argb: 'FF4338CA' } };
+                        if (colNum === 10) cell.font = { name: 'Arial', size: 9, bold: true, color: { argb: cell.value > 0 ? 'FFB91C1C' : 'FF059669' } };
+                    }
+                    if (colNum === 11) {
+                        cell.alignment = { horizontal: 'center' };
+                        const isLunas = cell.value === 'LUNAS';
+                        cell.font = { name: 'Arial', size: 8.5, bold: true, color: { argb: isLunas ? 'FF15803D' : 'FFB45309' } };
+                        cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: isLunas ? 'FFDCFCE7' : 'FFFEF3C7' } };
+                    }
+                });
+            });
+
+            const totS3 = sheet3.addRow([
+                '', 'TOTAL', totTarKdr, totTerKdr, totSisKdr, totTarApp, totTerApp, totSisApp, totSemuaTer, totSemuaSis, `${lunasCount} / ${totalWarungCount} Lunas`
+            ]);
+            totS3.height = 22;
+            totS3.eachCell((cell, colNum) => {
+                cell.font = { name: 'Arial', size: 9.5, bold: true };
+                cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE2E8F0' } };
+                cell.border = totalBorder;
+                if (colNum >= 3 && colNum <= 10) {
+                    cell.numFmt = '"Rp "#,##0';
+                    cell.alignment = { horizontal: 'right' };
+                }
+                if (colNum === 11) cell.alignment = { horizontal: 'center' };
+            });
+
+            // Download file di browser
+            const buffer = await workbook.xlsx.writeBuffer();
+            const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+            const url = window.URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `Laporan_Kader_Aplikasi_${periodeKey}.xlsx`;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            window.URL.revokeObjectURL(url);
+
+            showNotification(`Laporan Excel Resmi (Full Style & Border) bulan ${periodeLabel} berhasil diunduh!`, 'success');
+            addLog('DOWNLOAD', 'EXPORT', `Download Excel Resmi: ${periodeKey}`);
         } catch (e) {
             console.error("Excel Export Error:", e);
             showNotification("Gagal mengunduh Excel.", "error");
@@ -8761,67 +9090,9 @@ Terima kasih atas kerja samanya.`;
 </html>`;
     };
 
-    // === DOWNLOAD LANGSUNG PDF KE KOMPUTER (TANPA DIALOG PRINT) ===
-    const handleDownloadKaderAppPDF = async (filteredEntries, warungStatusList, periodeKey) => {
-        showNotification("Sedang membuat file PDF...", "info");
-        try {
-            if (!window.html2pdf) {
-                await new Promise((resolve, reject) => {
-                    const existing = document.querySelector('script[data-lib="html2pdf"]');
-                    if (existing) {
-                        existing.onload = resolve;
-                        existing.onerror = reject;
-                        return;
-                    }
-                    const s = document.createElement('script');
-                    s.setAttribute('data-lib', 'html2pdf');
-                    s.src = '/html2pdf.bundle.min.js';
-                    s.onload = resolve;
-                    s.onerror = () => reject(new Error('Gagal memuat library PDF'));
-                    document.head.appendChild(s);
-                });
-            }
-
-            if (!window.html2pdf) {
-                throw new Error("html2pdf library tidak dapat diinisialisasi");
-            }
-
-            const periodeLabel = new Date(periodeKey + '-01').toLocaleDateString('id-ID', { month: 'long', year: 'numeric' });
-            const htmlString = getKaderAppReportHTML(filteredEntries, warungStatusList, periodeKey);
-
-            // Buat container tersembunyi untuk perenderan PDF
-            const container = document.createElement('div');
-            container.style.position = 'fixed';
-            container.style.top = '-9999px';
-            container.style.left = '-9999px';
-            container.style.width = '1120px';
-            container.style.background = '#ffffff';
-            container.innerHTML = htmlString;
-            document.body.appendChild(container);
-
-            const opt = {
-                margin: [6, 6, 6, 6],
-                filename: `Laporan_Honor_Kader_dan_Aplikasi_${periodeKey}.pdf`,
-                image: { type: 'jpeg', quality: 0.98 },
-                html2canvas: { scale: 2, useCORS: true, letterRendering: true, logging: false },
-                jsPDF: { unit: 'mm', format: 'a4', orientation: 'landscape' },
-                pagebreak: { mode: ['avoid-all', 'css', 'legacy'] }
-            };
-
-            await window.html2pdf().set(opt).from(container).save();
-            document.body.removeChild(container);
-
-            showNotification(`Laporan PDF bulan ${periodeLabel} berhasil diunduh ke folder Downloads!`, 'success');
-            addLog('DOWNLOAD', 'EXPORT', `Download Langsung PDF: ${periodeKey}`);
-        } catch (err) {
-            console.error("Download PDF langsung gagal, beralih ke print view:", err);
-            showNotification("Mengalihkan ke jendela cetak dokumen...", "info");
-            handlePrintKaderAppPDF(filteredEntries, warungStatusList, periodeKey);
-        }
-    };
-
-    // === CETAK PDF RESMI LAPORAN HONOR KADER & SEWA APLIKASI ===
+    // === CETAK / SIMPAN PDF RESMI LAPORAN HONOR KADER & SEWA APLIKASI ===
     const handlePrintKaderAppPDF = (filteredEntries, warungStatusList, periodeKey) => {
+        showNotification("Membuka dokumen resmi... Pilih 'Simpan sebagai PDF' untuk mendownload file PDF.", "info");
         const htmlContent = getKaderAppReportHTML(filteredEntries, warungStatusList, periodeKey);
         executePrint(htmlContent);
     };
@@ -10334,34 +10605,24 @@ Terima kasih atas kerja samanya.`;
                                     </select>
                                 </div>
 
-                                {/* Download Excel Button */}
+                                {/* Download Excel Button (Full Style & Border) */}
                                 <button
                                     type="button"
                                     onClick={() => handleExportKaderAppExcel(kaderFilteredEntries, warungStatusList, selectedPeriodeKey)}
                                     className="px-3.5 py-2 bg-emerald-600 hover:bg-emerald-700 active:scale-95 text-white rounded-xl text-xs font-bold shadow-sm flex items-center gap-1.5 transition-all cursor-pointer"
-                                    title="Download Data Format Excel Spreadsheet (.xlsx)"
+                                    title="Download Format Excel Lengkap dengan Border, Warna & Tanda Tangan"
                                 >
-                                    <FileSpreadsheet className="w-4 h-4" /> Download Excel
+                                    <FileSpreadsheet className="w-4 h-4" /> Download Excel (Resmi & Berwarna)
                                 </button>
 
-                                {/* Direct Download PDF Button */}
-                                <button
-                                    type="button"
-                                    onClick={() => handleDownloadKaderAppPDF(kaderFilteredEntries, warungStatusList, selectedPeriodeKey)}
-                                    className="px-3.5 py-2 bg-rose-600 hover:bg-rose-700 active:scale-95 text-white rounded-xl text-xs font-bold shadow-sm flex items-center gap-1.5 transition-all cursor-pointer"
-                                    title="Download File PDF Langsung ke Komputer"
-                                >
-                                    <Download className="w-4 h-4" /> Download PDF
-                                </button>
-
-                                {/* Cetak / Print Button */}
+                                {/* Cetak / Simpan PDF Button */}
                                 <button
                                     type="button"
                                     onClick={() => handlePrintKaderAppPDF(kaderFilteredEntries, warungStatusList, selectedPeriodeKey)}
                                     className="px-3.5 py-2 bg-indigo-600 hover:bg-indigo-700 active:scale-95 text-white rounded-xl text-xs font-bold shadow-sm flex items-center gap-1.5 transition-all cursor-pointer"
-                                    title="Cetak Laporan ke Printer / Dialog Cetak"
+                                    title="Cetak Dokumen Resmi / Simpan sebagai PDF"
                                 >
-                                    <Printer className="w-4 h-4" /> Cetak
+                                    <Printer className="w-4 h-4" /> Cetak / Simpan PDF (Resmi)
                                 </button>
                             </div>
                         </div>

@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.110.0",
+    "exceljs": "^4.4.0",
     "google-auth-library": "^10.9.0",
     "html2canvas": "^1.4.1",
     "html2pdf.js": "^0.14.0",
