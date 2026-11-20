@@ -398,49 +398,15 @@ import {
     Trophy, UserPlus, UserCheck, Lock, Unlock, Receipt, Award
 } from "lucide-react";
 
+import { getBankLogo, getBankDisplayName, BANK_LOGOS, VA_CHANNELS } from "../lib/bankLogos";
+
 // Import Recharts dengan parameter bundle untuk mencegah error lodash missing modules
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from "recharts";
 import * as XLSX from "xlsx";
 import * as XLSXStyleModule from "xlsx-js-style";
 const XLSXStyle = XLSXStyleModule.default || XLSXStyleModule;
 
-// Helper nama bank WijayaPay
-const getBankDisplayName = (method) => {
-    const map = {
-        qris: 'QRIS Dinamis',
-        bca_va: 'BCA Virtual Account',
-        mandiri_va: 'Mandiri Virtual Account',
-        bri_va: 'BRI Virtual Account',
-        bni_va: 'BNI Virtual Account',
-        bsi_va: 'BSI Virtual Account',
-        cimb_niaga_va: 'CIMB Niaga VA',
-        cimb_va: 'CIMB Niaga VA',
-        permata_va: 'Bank Permata VA',
-        danamon_va: 'Danamon VA',
-        maybank_va: 'Maybank VA',
-        ocbc_va: 'OCBC VA',
-        muamalat_va: 'Muamalat VA',
-        bnc_va: 'Bank Neo Commerce (BNC)',
-        payment_link: 'Payment Link'
-    };
-    return map[method] || String(method || '').replace('_va', ' VA').toUpperCase();
-};
-
-const getBankLogo = (method) => {
-    const m = String(method || '').toLowerCase();
-    if (m.includes('bca')) return '/banks/bca.svg';
-    if (m.includes('mandiri')) return '/banks/mandiri.svg';
-    if (m.includes('bri')) return '/banks/bri.svg';
-    if (m.includes('bni')) return '/banks/bni.svg';
-    if (m.includes('bsi') || m.includes('bsm')) return '/banks/bsi.svg';
-    if (m.includes('cimb')) return '/banks/cimb.svg';
-    if (m.includes('permata')) return '/banks/permata.svg';
-    if (m.includes('danamon')) return '/banks/danamon.svg';
-    if (m.includes('maybank')) return '/banks/maybank.svg';
-    if (m.includes('ocbc')) return '/banks/ocbc.svg';
-    if (m.includes('qris')) return '/banks/qris.svg';
-    return null;
-};
+// Helper nama bank WijayaPay diimpor dari @/lib/bankLogos
 
 // --- CSS Classes (Stitch Design Taste) ---
 const inputBase = "w-full rounded-xl border border-whisper bg-surface px-4 py-2.5 text-sm text-ink focus:outline-none focus:border-accent focus:ring-2 focus:ring-accent/20 transition-all duration-200";
@@ -1723,7 +1689,7 @@ function App() {
         try {
             const pokokAmount = formData.sisa || formData.nominal || 0;
             const appFee = formData.biaya_aplikasi ? Number(formData.biaya_aplikasi) : 0;
-            const adminFee = (method === 'qris' || method === 'QRIS') ? 0 : 3000;
+            const adminFee = (method === 'qris' || method === 'QRIS') ? 0 : ((method || '').includes('bca') ? 4700 : ((method || '').includes('alfa') || (method || '').includes('indo')) ? 3000 : 3500);
             const amountToPay = pokokAmount + appFee + adminFee;
             const isQris = method === 'QRIS' || method === 'qris';
             if (!isQris && amountToPay < 10000) {
@@ -11359,7 +11325,7 @@ Terima kasih atas kerja samanya.`;
                                         >
                                             <div className="flex items-center gap-3.5">
                                                 <div className="w-12 h-10 rounded-lg bg-white border border-emerald-200 p-1 flex items-center justify-center shrink-0 shadow-xs">
-                                                    <img src="/banks/qris.svg" alt="QRIS" className="w-full h-full object-contain" />
+                                                    <img src={getBankLogo('qris')} alt="QRIS" className="w-full h-full object-contain" />
                                                 </div>
                                                 <div className="text-left">
                                                     <span className="font-bold text-emerald-950 block text-sm">QRIS Dinamis (Otomatis)</span>
@@ -11369,28 +11335,17 @@ Terima kasih atas kerja samanya.`;
                                             <span className="text-xs bg-emerald-600 text-white font-bold px-2.5 py-1 rounded-md">Instan</span>
                                         </button>
 
-                                        <p className="text-xs font-bold text-slate-400 uppercase tracking-wider pt-2 pb-1">Virtual Account Bank (WijayaPay)</p>
+                                        <p className="text-xs font-bold text-slate-400 uppercase tracking-wider pt-2 pb-1">Virtual Account Bank & Gerai (WijayaPay)</p>
 
-                                        {[
-                                            { id: 'bca_va', name: 'Bank BCA', logo: '/banks/bca.svg' },
-                                            { id: 'mandiri_va', name: 'Bank Mandiri', logo: '/banks/mandiri.svg' },
-                                            { id: 'bri_va', name: 'Bank BRI', logo: '/banks/bri.svg' },
-                                            { id: 'bni_va', name: 'Bank BNI', logo: '/banks/bni.svg' },
-                                            { id: 'bsi_va', name: 'Bank Syariah Indonesia (BSI)', logo: '/banks/bsi.svg' },
-                                            { id: 'cimb_niaga_va', name: 'Bank CIMB Niaga', logo: '/banks/cimb.svg' },
-                                            { id: 'permata_va', name: 'Bank Permata', logo: '/banks/permata.svg' },
-                                            { id: 'danamon_va', name: 'Bank Danamon', logo: '/banks/danamon.svg' },
-                                            { id: 'maybank_va', name: 'Bank Maybank', logo: '/banks/maybank.svg' },
-                                            { id: 'ocbc_va', name: 'Bank OCBC', logo: '/banks/ocbc.svg' },
-                                        ].map(bank => (
+                                        {VA_CHANNELS.map(bank => (
                                             <button key={bank.id} onClick={() => handleGeneratePakasirQR(bank.id)} className="w-full flex items-center justify-between p-3.5 border border-whisper rounded-xl hover:bg-canvas hover:border-blue-400 transition-all group bg-white">
                                                 <div className="flex items-center gap-3.5">
                                                     <div className="w-12 h-10 rounded-lg bg-white border border-slate-200 p-1 flex items-center justify-center shrink-0 shadow-xs">
-                                                        <img src={bank.logo} alt={bank.name} className="w-full h-full object-contain" />
+                                                        <img src={getBankLogo(bank.id)} alt={bank.name} className="w-full h-full object-contain" />
                                                     </div>
                                                     <div className="text-left">
                                                         <span className="font-semibold text-ink block text-sm group-hover:text-blue-600 transition-colors">{bank.name}</span>
-                                                        <span className="text-[11px] text-slate-400">Virtual Account Otomatis</span>
+                                                        <span className="text-[11px] text-slate-400">{bank.id.includes('alfa') || bank.id.includes('indo') ? 'Gerai Retail Kasir' : 'Virtual Account Otomatis'}</span>
                                                     </div>
                                                 </div>
                                                 <ArrowRight className="w-4 h-4 text-steel group-hover:text-blue-600 group-hover:translate-x-0.5 transition-all" />
@@ -11457,7 +11412,7 @@ Terima kasih atas kerja samanya.`;
                                             </div>
                                             <div className="flex">
                                                 <div className="w-1/3 p-2.5 bg-slate-50/70 border-r border-slate-200 text-slate-500 font-medium text-xs">Biaya Admin</div>
-                                                <div className="w-2/3 p-2.5 text-slate-800 font-semibold text-xs">Rp 3.000</div>
+                                                <div className="w-2/3 p-2.5 text-slate-800 font-semibold text-xs">Rp {((pakasirData.method || '').includes('bca') ? 4700 : ((pakasirData.method || '').includes('alfa') || (pakasirData.method || '').includes('indo')) ? 3000 : 3500).toLocaleString("id-ID")}</div>
                                             </div>
                                             <div className="flex">
                                                 <div className="w-1/3 p-2.5 bg-slate-50/70 border-r border-slate-200 text-slate-500 font-medium text-xs">Biaya Aplikasi</div>
@@ -11465,7 +11420,7 @@ Terima kasih atas kerja samanya.`;
                                             </div>
                                             <div className="flex bg-slate-50/40">
                                                 <div className="w-1/3 p-2.5 bg-slate-50 border-r border-slate-200 text-slate-900 font-bold text-sm">Total Bayar</div>
-                                                <div className="w-2/3 p-2.5 text-blue-700 font-bold text-base">Rp {(Number(formData.sisa || formData.nominal || 0) + 3000 + Number(formData.biaya_aplikasi || 0)).toLocaleString("id-ID")}</div>
+                                                <div className="w-2/3 p-2.5 text-blue-700 font-bold text-base">Rp {(Number(formData.sisa || formData.nominal || 0) + ((pakasirData.method || '').includes('bca') ? 4700 : ((pakasirData.method || '').includes('alfa') || (pakasirData.method || '').includes('indo')) ? 3000 : 3500) + Number(formData.biaya_aplikasi || 0)).toLocaleString("id-ID")}</div>
                                             </div>
                                         </div>
                                     </div>
@@ -11495,7 +11450,7 @@ Terima kasih atas kerja samanya.`;
                                             {pakasirData.step === 'SHOW_VA' && (
                                                 <div className="bg-slate-50 border border-slate-200 rounded-2xl p-6 mb-4 flex flex-col items-center">
                                                     <div className="w-20 h-12 rounded-xl bg-white border border-slate-200 p-1.5 flex items-center justify-center mb-2 shadow-xs">
-                                                        <img src={getBankLogo(pakasirData.method) || '/banks/bri.svg'} alt="Bank" className="w-full h-full object-contain" />
+                                                        <img src={getBankLogo(pakasirData.method) || getBankLogo('bri_va')} alt="Bank" className="w-full h-full object-contain" />
                                                     </div>
                                                     <p className="text-xs font-bold text-slate-400 uppercase tracking-widest mb-1">{getBankDisplayName(pakasirData.method)}</p>
                                                     <div className="text-3xl font-mono font-bold text-slate-900 tracking-wider break-all mb-4">{pakasirData.qrString}</div>
@@ -11509,7 +11464,7 @@ Terima kasih atas kerja samanya.`;
                                             <div className="w-full p-4 bg-blue-50/60 rounded-2xl flex justify-between items-center border border-blue-100 mb-4">
                                                 <div className="text-left">
                                                     <p className="text-xs text-blue-600 font-medium">Total Pembayaran</p>
-                                                    <p className="text-xl font-extrabold text-blue-950">Rp {(Number(formData.sisa || formData.nominal || 0) + 3000 + Number(formData.biaya_aplikasi || 0)).toLocaleString("id-ID")}</p>
+                                                    <p className="text-xl font-extrabold text-blue-950">Rp {(Number(formData.sisa || formData.nominal || 0) + ((pakasirData.method || '').includes('bca') ? 4700 : ((pakasirData.method || '').includes('alfa') || (pakasirData.method || '').includes('indo')) ? 3000 : 3500) + Number(formData.biaya_aplikasi || 0)).toLocaleString("id-ID")}</p>
                                                 </div>
                                                 <div className="flex items-center gap-2 text-xs font-bold text-blue-600">
                                                     <span className="w-2 h-2 rounded-full bg-blue-600 animate-ping"></span> Menunggu Transfer...
@@ -12391,7 +12346,7 @@ Terima kasih atas kerja samanya.`;
                 <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-sm animate-in fade-in">
                     <div className={`bg-white rounded-2xl shadow-xl w-full ${isTagihan ? 'max-w-xl' : 'max-w-lg'} flex flex-col max-h-[80vh] relative animate-in zoom-in-95`}>
                         <button onClick={closeModal} className="absolute top-4 right-4 z-[200] w-8 h-8 flex items-center justify-center rounded-full bg-whisper text-steel hover:text-ink hover:bg-slate-200 transition-colors shadow-sm" style={{ cursor: 'pointer', pointerEvents: 'auto' }}><X className="w-5 h-5" /></button>
-                        <div className="px-6 py-4 border-b border-whisper flex justify-between items-center bg-canvas/50 rounded-t-2xl pr-14 shrink-0"><h3 className="font-semibold text-ink">{isTagihan ? 'Master Tagihan & Pakasir' : simpleTitle}</h3></div>
+                        <div className="px-6 py-4 border-b border-whisper flex justify-between items-center bg-canvas/50 rounded-t-2xl pr-14 shrink-0"><h3 className="font-semibold text-ink">{isTagihan ? 'Master Tagihan' : simpleTitle}</h3></div>
                         <div className="p-6 overflow-y-auto space-y-6">
                             {isTagihan ? (
                                 <><form onSubmit={async (e) => {
@@ -12406,8 +12361,6 @@ Terima kasih atas kerja samanya.`;
                                         tagihan: targetTagihan,
                                         nominal: nom,
                                         tipe: formData.tipe || 'Rutin',
-                                        pakasirSlug: formData.pakasirSlug || null,
-                                        pakasirApiKey: formData.pakasirApiKey || null,
                                         portalMenu: Array.isArray(formData.portalMenu) ? JSON.stringify(formData.portalMenu) : (formData.portalMenu || '[]'),
                                         biaya_aplikasi: biayaAp
                                     };
@@ -12456,7 +12409,7 @@ Terima kasih atas kerja samanya.`;
     else if (typeof t.portalMenu === 'string' && t.portalMenu.startsWith('[')) {
         try { pm = JSON.parse(t.portalMenu); } catch(e){}
     }
-    setFormData({ tagihan: t.tagihan, nominal: (t.nominal || 0).toString(), tipe: t.tipe, pakasirSlug: t.pakasirSlug || '', pakasirApiKey: t.pakasirApiKey || '', portalMenu: pm, biaya_aplikasi: t.biaya_aplikasi ? t.biaya_aplikasi.toString() : '' });
+    setFormData({ tagihan: t.tagihan, nominal: (t.nominal || 0).toString(), tipe: t.tipe, portalMenu: pm, biaya_aplikasi: t.biaya_aplikasi ? t.biaya_aplikasi.toString() : '' });
 }} className="text-accent hover:text-accentDark"><Edit className="w-4 h-4" /></button><button onClick={() => confirmDelete('MASTER_TAGIHAN', t.tagihan, t.tagihan)} className="text-rose-600 hover:text-red-700"><Trash2 className="w-4 h-4" /></button></td></tr>))}</tbody>
                                         </table>
                                     </div>
@@ -12470,7 +12423,7 @@ Terima kasih atas kerja samanya.`;
                                                 <div className="flex flex-col items-end gap-2 shrink-0">
                                                     <div className="font-bold text-sm text-ink">Rp {Number(t.nominal || 0).toLocaleString('id-ID')}</div>
                                                     <div className="flex items-center gap-1">
-                                                        <button onClick={() => setFormData({ tagihan: t.tagihan, nominal: t.nominal.toString(), tipe: t.tipe, pakasirSlug: t.pakasirSlug || '', pakasirApiKey: t.pakasirApiKey || '', portalMenu: Array.isArray(t.portalMenu) ? t.portalMenu : [], biaya_aplikasi: t.biaya_aplikasi ? t.biaya_aplikasi.toString() : '' })} className="text-accent flex items-center gap-1 text-[10px] font-semibold bg-accent/10 px-2 py-1 rounded"><Edit className="w-3 h-3" /> Edit</button>
+                                                        <button onClick={() => setFormData({ tagihan: t.tagihan, nominal: t.nominal.toString(), tipe: t.tipe, portalMenu: Array.isArray(t.portalMenu) ? t.portalMenu : [], biaya_aplikasi: t.biaya_aplikasi ? t.biaya_aplikasi.toString() : '' })} className="text-accent flex items-center gap-1 text-[10px] font-semibold bg-accent/10 px-2 py-1 rounded"><Edit className="w-3 h-3" /> Edit</button>
                                                         <button onClick={() => confirmDelete('MASTER_TAGIHAN', t.tagihan, t.tagihan)} className="text-danger flex items-center gap-1 text-[10px] font-semibold bg-dangerBg px-2 py-1 rounded"><Trash2 className="w-3 h-3" /> Hapus</button>
                                                     </div>
                                                 </div>
@@ -12660,14 +12613,7 @@ Terima kasih atas kerja samanya.`;
                             {(appConfig.adminContacts || []).length === 0 && <p className="text-xs text-slate italic mb-2">Belum ada kontak. Klik Tambah Kontak.</p>}
                             <p className="text-xs text-slate mt-1">Daftar kontak ini akan ditampilkan di menu Pusat Bantuan pada Portal Wali.</p>
                         </div>
-                        <div className="pt-4 border-t border-whisper mt-4">
-                            <h3 className="text-sm font-semibold text-ink mb-3">Integrasi Pakasir (Global)</h3>
-                            <div className="grid grid-cols-2 gap-4">
-                                <div><label className="block text-xs font-medium text-steel mb-1">Project Slug Default</label><input name="pakasirSlug" value={appConfig.pakasirSlug || ''} onChange={(e) => setAppConfig(prev => ({ ...prev, pakasirSlug: e.target.value }))} className={inputBase} placeholder="depodomain" /></div>
-                                <div><label className="block text-xs font-medium text-steel mb-1">API Key Default</label><input name="pakasirApiKey" value={appConfig.pakasirApiKey || ''} onChange={(e) => setAppConfig(prev => ({ ...prev, pakasirApiKey: e.target.value }))} className={inputBase} placeholder="xxx123" /></div>
-                            </div>
-                            <p className="text-xs text-steel mt-2">Digunakan untuk fitur Top-Up Tabungan, atau sebagai cadangan jika Master Tagihan tidak memiliki konfigurasi API sendiri.</p>
-                        </div>
+                        
                         <button type="submit" className={btnPrimary}>Simpan Pengaturan</button>
                     </form>
                 )}
