@@ -11470,11 +11470,11 @@ Terima kasih atas kerja samanya.`;
                                                         {isRetail && (
                                                             <div className="w-full text-left bg-amber-50 border border-amber-200 rounded-xl p-3 text-xs text-amber-900 leading-relaxed mt-1">
                                                                 <p className="font-bold mb-1">🏪 Petunjuk Pembayaran di Kasir ${retailName}:</p>
-                                                                <ol className="list-decimal list-inside space-y-0.5 text-[11px] text-amber-800">
+                                                                <ol className="list-decimal list-inside space-y-1 text-[11px] text-amber-800">
                                                                     <li>Kunjungi gerai <b>${retailName}</b> terdekat.</li>
-                                                                    <li>Beri tahu kasir mau bayar <b>Tagihan WijayaPay</b>.</li>
-                                                                    <li>Tunjukkan <b>Kode Pembayaran</b> di atas ke kasir.</li>
-                                                                    <li>Bayar sesuai nominal total tagihan dan simpan struknya.</li>
+                                                                    <li>Beri tahu kasir: <i>"Mau bayar tagihan merchant <b>LINKITA</b>"</i>.</li>
+                                                                    <li>Tunjukkan / sebutkan <b>Kode Pembayaran</b> di atas ke kasir.</li>
+                                                                    <li>Kasir akan menginput kode, bayar sesuai nominal dan simpan struknya.</li>
                                                                 </ol>
                                                             </div>
                                                         )}
