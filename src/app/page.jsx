@@ -12513,6 +12513,9 @@ Terima kasih atas kerja samanya.`;
             if (appConfig.appLogo) {
                 await supabase.from('Pengaturan').upsert({ Kunci: 'APP_LOGO', Nilai: appConfig.appLogo }, { onConflict: 'Kunci' });
             }
+            if (appConfig.adminContacts) {
+                await supabase.from('Pengaturan').upsert({ Kunci: 'ADMIN_CONTACTS', Nilai: JSON.stringify(appConfig.adminContacts) }, { onConflict: 'Kunci' });
+            }
             
             showNotification('Pengaturan Branding berhasil disimpan permanen!');
             addLog('UPDATE', 'PENGATURAN', `Branding diubah: "${appConfig.appName}"`);
@@ -12608,31 +12611,90 @@ Terima kasih atas kerja samanya.`;
                         </div>
                         <div className="pt-4 border-t border-whisper mt-4">
                             <div className="flex justify-between items-center mb-2">
-                                <label className="block text-sm font-semibold text-ink">Kontak Pengurus (Pusat Bantuan)</label>
-                                <button type="button" onClick={() => setAppConfig(prev => ({ ...prev, adminContacts: [...(prev.adminContacts || []), { nama: '', phone: '' }] }))} className="text-xs font-bold text-accent hover:text-accentDark bg-accent/10 px-2 py-1 rounded">+ Tambah Kontak</button>
-                            </div>
-                            {(appConfig.adminContacts || []).map((contact, idx) => (
-                                <div key={idx} className="flex gap-2 mb-2 items-center">
-                                    <input value={contact.nama} onChange={(e) => {
-                                        const newContacts = [...(appConfig.adminContacts || [])];
-                                        newContacts[idx] = { ...newContacts[idx], nama: e.target.value };
-                                        setAppConfig(prev => ({ ...prev, adminContacts: newContacts }));
-                                    }} className={inputBase} placeholder="Nama (Misal: Ustadz Budi)" />
-                                    <input value={contact.phone} onChange={(e) => {
-                                        const newContacts = [...(appConfig.adminContacts || [])];
-                                        newContacts[idx] = { ...newContacts[idx], phone: e.target.value };
-                                        setAppConfig(prev => ({ ...prev, adminContacts: newContacts }));
-                                    }} className={inputBase} placeholder="No HP (628...)" />
-                                    <button type="button" onClick={() => {
-                                        const newContacts = (appConfig.adminContacts || []).filter((_, i) => i !== idx);
-                                        setAppConfig(prev => ({ ...prev, adminContacts: newContacts }));
-                                    }} className="p-2 text-danger hover:bg-danger/10 rounded-lg shrink-0">
-                                        <Trash2 className="w-4 h-4" />
-                                    </button>
+                                <div>
+                                    <label className="block text-sm font-semibold text-ink">Kontak Pengurus (Pusat Bantuan)</label>
+                                    <p className="text-xs text-steel">Wali santri dapat langsung chat WhatsApp ke nomor-nomor ini.</p>
                                 </div>
-                            ))}
-                            {(appConfig.adminContacts || []).length === 0 && <p className="text-xs text-slate italic mb-2">Belum ada kontak. Klik Tambah Kontak.</p>}
-                            <p className="text-xs text-slate mt-1">Daftar kontak ini akan ditampilkan di menu Pusat Bantuan pada Portal Wali.</p>
+                                <button 
+                                    type="button" 
+                                    onClick={() => setAppConfig(prev => ({ ...prev, adminContacts: [...(prev.adminContacts || []), { nama: '', phone: '' }] }))} 
+                                    className="text-xs font-bold text-accent hover:text-accentDark bg-accent/10 px-3 py-1.5 rounded-lg flex items-center gap-1 transition-all"
+                                >
+                                    <Plus className="w-3.5 h-3.5" /> Tambah Kontak
+                                </button>
+                            </div>
+
+                            <div className="space-y-3 mt-3">
+                                {(appConfig.adminContacts || []).map((contact, idx) => {
+                                    const rawDigits = String(contact.phone || '').replace(/\D/g, '');
+                                    const waFormatted = rawDigits.startsWith('0') ? ('62' + rawDigits.slice(1)) : rawDigits.startsWith('8') ? ('62' + rawDigits) : rawDigits;
+                                    const isValidWa = waFormatted.length >= 10 && waFormatted.startsWith('62');
+
+                                    return (
+                                        <div key={idx} className="p-3 border border-whisper rounded-xl bg-canvas/40 space-y-2">
+                                            <div className="flex gap-2 items-center">
+                                                <input 
+                                                    value={contact.nama} 
+                                                    onChange={(e) => {
+                                                        const newContacts = [...(appConfig.adminContacts || [])];
+                                                        newContacts[idx] = { ...newContacts[idx], nama: e.target.value };
+                                                        setAppConfig(prev => ({ ...prev, adminContacts: newContacts }));
+                                                    }} 
+                                                    className={inputBase} 
+                                                    placeholder="Nama / Divisi (Misal: Keuangan / Ust. Budi)" 
+                                                />
+                                                <input 
+                                                    value={contact.phone} 
+                                                    onChange={(e) => {
+                                                        const newContacts = [...(appConfig.adminContacts || [])];
+                                                        newContacts[idx] = { ...newContacts[idx], phone: e.target.value };
+                                                        setAppConfig(prev => ({ ...prev, adminContacts: newContacts }));
+                                                    }} 
+                                                    className={inputBase} 
+                                                    placeholder="No WhatsApp (Bisa 08... atau 628...)" 
+                                                />
+                                                <button 
+                                                    type="button" 
+                                                    onClick={() => {
+                                                        const newContacts = (appConfig.adminContacts || []).filter((_, i) => i !== idx);
+                                                        setAppConfig(prev => ({ ...prev, adminContacts: newContacts }));
+                                                    }} 
+                                                    className="p-2.5 text-danger hover:bg-danger/10 rounded-xl shrink-0 transition-colors"
+                                                    title="Hapus Kontak"
+                                                >
+                                                    <Trash2 className="w-4 h-4" />
+                                                </button>
+                                            </div>
+
+                                            {contact.phone && (
+                                                <div className="flex items-center justify-between px-1 text-xs">
+                                                    <span className="flex items-center gap-1.5 text-emerald-600 font-medium">
+                                                        <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+                                                        Format WA: <b>+{waFormatted}</b>
+                                                    </span>
+                                                    {isValidWa && (
+                                                        <a 
+                                                            href={`https://wa.me/${waFormatted}`} 
+                                                            target="_blank" 
+                                                            rel="noreferrer" 
+                                                            className="text-xs font-semibold text-blue-600 hover:text-blue-800 hover:underline flex items-center gap-1 bg-blue-50 px-2 py-0.5 rounded"
+                                                        >
+                                                            Tes Chat WA ↗
+                                                        </a>
+                                                    )}
+                                                </div>
+                                            )}
+                                        </div>
+                                    );
+                                })}
+                            </div>
+
+                            {(appConfig.adminContacts || []).length === 0 && (
+                                <div className="text-center py-6 border-2 border-dashed border-whisper rounded-xl bg-canvas/30 text-xs text-slate mt-2">
+                                    Belum ada nomor kontak. Klik <b>+ Tambah Kontak</b> untuk menambahkan kontak admin/pengurus.
+                                </div>
+                            )}
+                            <p className="text-xs text-slate mt-2">Daftar kontak ini akan otomatis tampil di menu <b>Pusat Bantuan</b> pada aplikasi Portal Wali.</p>
                         </div>
                         
                         <button type="submit" className={btnPrimary}>Simpan Pengaturan</button>
