@@ -1720,11 +1720,16 @@ function App() {
             }]);
 
             let data;
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 12000);
+
             const res = await fetch('/api/wijayapay', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ action: 'requestPayment', data: { method, amount: amountToPay, orderId: uniqueOrderId, customerName: formData.nama || 'Santri', tipe: 'TAGIHAN_ADMIN', tagihanData: tRef || formData } })
+                body: JSON.stringify({ action: 'requestPayment', data: { method, amount: amountToPay, orderId: uniqueOrderId, customerName: formData.nama || 'Santri', tipe: 'TAGIHAN_ADMIN', tagihanData: tRef || formData } }),
+                signal: controller.signal
             });
+            clearTimeout(timeoutId);
             
             let rawData = await res.json();
             // Handle double-stringified JSON from Pakasir/Next.js
@@ -1734,9 +1739,9 @@ function App() {
             
             const paymentData = data?.payment || data?.data || data;
 
-            if (paymentData && (paymentData.payment_number || paymentData.va_number || paymentData.checkout_url || paymentData.qr_string)) {
+            if (paymentData && (paymentData.nomor_pembayaran || paymentData.payment_number || paymentData.va_number || paymentData.code || paymentData.checkout_url || paymentData.qr_string)) {
                 const checkoutUrl = paymentData.checkout_url || paymentData.url || '';
-                const qrStr = paymentData.va_number || paymentData.payment_number || paymentData.qr_string || '';
+                const qrStr = paymentData.nomor_pembayaran || paymentData.va_number || paymentData.payment_number || paymentData.code || paymentData.qr_string || '';
 
                 const strData = JSON.stringify(data || {}).toLowerCase();
                 const isSandboxApi = strData.includes('"sandbox"') || strData.includes('sandbox.pakasir.com') || String(qrStr).toUpperCase().includes('SANDBOX') || String(checkoutUrl).toUpperCase().includes('SANDBOX') || String(qrStr) === '123123123';

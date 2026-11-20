@@ -26,8 +26,14 @@ export async function POST(request) {
     const action = body.action || 'requestPayment';
     const payload = typeof body.data === 'string' ? JSON.parse(body.data) : (body.data || body);
 
-    const codeMerchant = payload.codeMerchant || DEFAULT_CODE_MERCHANT;
-    const apiKey = payload.apiKey || DEFAULT_API_KEY;
+    const codeMerchant = (payload.codeMerchant && String(payload.codeMerchant).startsWith('WP'))
+      ? payload.codeMerchant
+      : DEFAULT_CODE_MERCHANT;
+
+    const rawApiKey = String(payload.apiKey || '');
+    const apiKey = (rawApiKey.length === 26 && !rawApiKey.includes('xxx') && !rawApiKey.includes('sandbox'))
+      ? rawApiKey
+      : DEFAULT_API_KEY;
 
     // --- 1. ACTION: REQUEST PAYMENT (CREATE QRIS / VA) ---
     if (action === 'requestPayment' || action === 'requestDokuPayment' || action === 'requestWijayapayPayment') {
@@ -48,6 +54,7 @@ export async function POST(request) {
       else if (rawMethod.includes('DANAMON')) codePayment = 'DANAMONVA';
       else if (rawMethod.includes('MUAMALAT')) codePayment = 'MUAMALATVA';
       else if (rawMethod.includes('MAYBANK')) codePayment = 'MAYBANKVA';
+      else if (rawMethod.includes('OCBC')) codePayment = 'OCBCVA';
       else if (rawMethod.includes('NEO')) codePayment = 'BANKNEOVA';
       else if (rawMethod.includes('ALFAMART')) codePayment = 'ALFAMART';
       else if (rawMethod.includes('INDOMARET')) codePayment = 'INDOMARET';
@@ -87,18 +94,35 @@ export async function POST(request) {
         console.warn('Gagal mencatat order ke Supabase:', dbErr);
       }
 
-      // Request ke WijayaPay Gateway
-      const res = await fetch(`${WIJAYAPAY_API_URL}/transaction/create`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-Signature': signature,
-          'User-Agent': 'SalApp-Integration/1.0'
-        },
-        body: JSON.stringify(createPayload)
-      });
+      // Request ke WijayaPay Gateway dengan timeout 12 detik
+      let res;
+      let resData = {};
+      try {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 12000);
 
-      const resData = await res.json();
+        res = await fetch(`${WIJAYAPAY_API_URL}/transaction/create`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Signature': signature,
+            'User-Agent': 'SalApp-Integration/1.0'
+          },
+          body: JSON.stringify(createPayload),
+          signal: controller.signal
+        });
+        clearTimeout(timeoutId);
+        resData = await res.json();
+      } catch (fetchErr) {
+        if (fetchErr.name === 'AbortError' || String(fetchErr).includes('abort')) {
+          return NextResponse.json({
+            status: 'error',
+            success: false,
+            message: `Koneksi ke server ${codePayment} melebihi batas waktu (timeout). Server ${codePayment} sedang sibuk, silakan coba metode lain.`
+          }, { status: 400, headers: corsHeaders });
+        }
+        throw fetchErr;
+      }
 
       if (!res.ok || resData.success === false) {
         return NextResponse.json({
@@ -110,13 +134,16 @@ export async function POST(request) {
 
       const d = resData.data || {};
       const isQRIS = codePayment === 'QRIS';
-      const vaNum = d.nomor_va || '';
+      const vaNum = d.nomor_pembayaran || d.nomor_va || d.pay_code || '';
       const qrStr = d.qr_string || '';
       const qrImg = d.qr_image || '';
+      const paymentCode = isQRIS ? qrStr : vaNum;
 
       const paymentObj = {
         va_number: vaNum,
-        payment_number: vaNum,
+        payment_number: paymentCode,
+        nomor_pembayaran: vaNum,
+        code: paymentCode,
         qr_string: qrStr,
         qr_image: qrImg,
         checkout_url: d.checkout_url || '',
