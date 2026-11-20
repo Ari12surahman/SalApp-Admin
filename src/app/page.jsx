@@ -1683,9 +1683,9 @@ function App() {
         const slug = masterRef?.pakasirSlug || masterRef?.pakasir_slug || masterRef?.PAKASIR_SLUG || appConfig.pakasirSlug || appConfig.pakasir_slug || appConfig.PAKASIR_SLUG || 'depodomain';
         const apiKey = masterRef?.pakasirApiKey || masterRef?.pakasir_apikey || masterRef?.PAKASIR_APIKEY || appConfig.pakasirApiKey || appConfig.pakasir_apikey || appConfig.PAKASIR_APIKEY || 'xxx123';
 
-        // DOKU Gateway is centrally configured, slug not required
+        const uniqueOrderId = `${formData.id}_${Date.now()}`;
+        setPakasirData(prev => ({ ...prev, loading: true, step: 'LOADING', method, uniqueOrderId }));
 
-        setPakasirData(prev => ({ ...prev, loading: true, step: 'LOADING', method }));
         try {
             const pokokAmount = formData.sisa || formData.nominal || 0;
             const appFee = formData.biaya_aplikasi ? Number(formData.biaya_aplikasi) : 0;
@@ -1699,11 +1699,8 @@ function App() {
             }
             
             // Save to PakasirOrders for Webhook support
-            // Generate a unique orderId to prevent "Transaction already canceled/exist" errors from Pakasir
-            const uniqueOrderId = `${formData.id}_${Date.now()}`;
-            
             const dbPayload = {
-              orderId: formData.id, // Keep the original for internal reference
+              orderId: formData.id,
               pakasirOrderId: uniqueOrderId,
               method,
               amount: amountToPay,
@@ -1712,26 +1709,55 @@ function App() {
               slug: slug,
               apiKey: apiKey
             };
-            await supabase.from('PakasirOrders').upsert([{
-              order_id: uniqueOrderId,
-              tipe: 'TAGIHAN_ADMIN',
-              status: 'PENDING',
-              payload: dbPayload
-            }]);
+            try {
+              await supabase.from('PakasirOrders').upsert([{
+                order_id: uniqueOrderId,
+                tipe: 'TAGIHAN_ADMIN',
+                status: 'PENDING',
+                payload: dbPayload
+              }]);
+            } catch (dbErr) {
+              console.warn("Gagal catat order ke DB:", dbErr);
+            }
 
             let data;
             const controller = new AbortController();
             const timeoutId = setTimeout(() => controller.abort(), 12000);
 
-            const res = await fetch('/api/wijayapay', {
+            const requestBody = JSON.stringify({ 
+              action: 'requestPayment', 
+              data: { 
+                method, 
+                amount: amountToPay, 
+                orderId: uniqueOrderId, 
+                customerName: formData.nama || 'Santri', 
+                tipe: 'TAGIHAN_ADMIN', 
+                tagihanData: tRef || formData 
+              } 
+            });
+
+            let rawData;
+            try {
+              const res = await fetch('/api/wijayapay', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ action: 'requestPayment', data: { method, amount: amountToPay, orderId: uniqueOrderId, customerName: formData.nama || 'Santri', tipe: 'TAGIHAN_ADMIN', tagihanData: tRef || formData } }),
+                body: requestBody,
                 signal: controller.signal
-            });
+              });
+              if (!res.ok) throw new Error(`Local API status ${res.status}`);
+              rawData = await res.json();
+            } catch (localErr) {
+              console.warn("Local /api/wijayapay gagal, fallback ke gateway pusat:", localErr);
+              const fallbackRes = await fetch('https://salapp-bendahara.web.id/api/wijayapay', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: requestBody,
+                signal: controller.signal
+              });
+              rawData = await fallbackRes.json();
+            }
             clearTimeout(timeoutId);
             
-            let rawData = await res.json();
             // Handle double-stringified JSON from Pakasir/Next.js
             data = typeof rawData === 'string' ? (JSON.parse(rawData) || rawData) : rawData;
             
@@ -1746,7 +1772,6 @@ function App() {
                 const strData = JSON.stringify(data || {}).toLowerCase();
                 const isSandboxApi = strData.includes('"sandbox"') || strData.includes('sandbox.pakasir.com') || String(qrStr).toUpperCase().includes('SANDBOX') || String(checkoutUrl).toUpperCase().includes('SANDBOX') || String(qrStr) === '123123123';
 
-                console.log("IS SANDBOX:", isSandboxApi, "qrString:", qrStr, "checkout_url:", checkoutUrl);
                 const txnId = paymentData.txn_id || data.txn_id || '';
                 setPakasirTimeLeft(900);
                 setPakasirData(prev => ({ ...prev, loading: false, step: isQris ? 'SHOW_QR' : 'SHOW_VA', qrString: qrStr, checkoutUrl: checkoutUrl, isSandbox: false, txnId: txnId, uniqueOrderId: uniqueOrderId }));

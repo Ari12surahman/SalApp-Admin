@@ -134,7 +134,7 @@ export async function POST(request) {
 
       const d = resData.data || {};
       const isQRIS = codePayment === 'QRIS';
-      const vaNum = d.nomor_pembayaran || d.nomor_va || d.pay_code || '';
+      const vaNum = d.nomor_pembayaran || d.payment_code || d.kode_pembayaran || d.kode_bayar || d.nomor_va || d.va_number || d.pay_code || d.code || '';
       const qrStr = d.qr_string || '';
       const qrImg = d.qr_image || '';
       const paymentCode = isQRIS ? qrStr : vaNum;
