@@ -23,12 +23,13 @@ export async function POST(request) {
 
     console.log("WijayaPay Webhook Payload:", JSON.stringify(payload, null, 2));
 
-    const invoiceNumber = payload.ref_id || payload.order_id || payload.invoice_number || '';
-    const statusPembayaran = String(payload.status_pembayaran || payload.status || '').toLowerCase();
+    const rawData = payload.data || payload;
+    const invoiceNumber = rawData.ref_id || payload.ref_id || payload.order_id || payload.invoice_number || '';
+    const statusPembayaran = String(payload.status || rawData.status || rawData.status_pembayaran || payload.status_pembayaran || '').toLowerCase();
     const isSuccess = statusPembayaran === 'paid' || statusPembayaran === 'success' || statusPembayaran === 'settlement' || statusPembayaran === 'berhasil';
-    const amount = Number(payload.total_bayar || payload.total_dibayar || payload.nominal || payload.amount || 0);
-    const channelName = payload.payment_method || payload.payment_name || payload.code_payment || 'WijayaPay';
-    const trxRef = payload.trx_reference || '';
+    const amount = Number(rawData.total_dibayar || rawData.total_bayar || rawData.nominal || payload.total_bayar || payload.total_dibayar || payload.nominal || payload.amount || 0);
+    const channelName = rawData.payment_methode || rawData.payment_method || rawData.payment_name || rawData.code_payment || payload.payment_method || payload.payment_name || payload.code_payment || 'WijayaPay';
+    const trxRef = rawData.trx_reference || payload.trx_reference || '';
 
     // Verifikasi X-Signature jika tersedia
     const incomingSignature = request.headers.get('x-signature') || '';
@@ -69,47 +70,55 @@ export async function POST(request) {
 
       // 3. Eksekusi sesuai tipe transaksi
       if (orderType === 'POS') {
-        // --- TRANSAKSI KASIR POS ---
-        const trxData = {
-          TrxID: invoiceNumber,
-          SantriID: orderPayload.santriId || null,
-          TotalHarga: amount || orderPayload.total || 0,
-          WaktuTransaksi: new Date().toISOString(),
-          Metode: `Transfer Online (${channelName})`,
-          StatusPencairan: 'Belum Diajukan',
-          StatusAmbil: 'Sudah Diambil',
-          Catatan: `WijayaPay Ref: ${trxRef}`
-        };
+        // --- TRANSAKSI KASIR POS (IDEMPOTENT) ---
+        const { data: existingTrx } = await supabase
+          .from('Transaksi')
+          .select('TrxID')
+          .eq('TrxID', invoiceNumber)
+          .maybeSingle();
 
-        const { error: trxErr } = await supabase.from('Transaksi').upsert([trxData], { onConflict: 'TrxID' });
-        if (trxErr) console.error("Gagal insert Transaksi POS:", trxErr);
-
-        if (Array.isArray(orderPayload.items)) {
-          const detailRows = orderPayload.items.map((item) => ({
+        if (!existingTrx) {
+          const trxData = {
             TrxID: invoiceNumber,
-            ProdukID: item.id || item.produkId,
-            NamaProduk: item.name || item.namaProduk,
-            HargaSatuan: item.price || item.harga,
-            Kuantitas: item.quantity || item.qty || 1,
-            Subtotal: (item.price || item.harga) * (item.quantity || item.qty || 1)
-          }));
-          await supabase.from('DetailTransaksi').upsert(detailRows);
+            SantriID: orderPayload.santriId || null,
+            TotalHarga: orderPayload.total || amount || 0,
+            Waktu: new Date().toISOString(),
+            Metode: `Transfer Online (${channelName})`,
+            StatusPencairan: 'Belum Diajukan',
+            StatusAmbil: orderPayload.statusAmbil || 'Sudah Diambil',
+            WarungID: orderPayload.warungId || 'WRG-KANTIN',
+            Catatan: `WijayaPay Ref: ${trxRef}`
+          };
 
-          // Kurangi stok produk
-          for (const item of orderPayload.items) {
-            const pid = item.id || item.produkId;
-            const qty = item.quantity || item.qty || 1;
-            if (pid) {
-              const { data: pData } = await supabase.from('Produk').select('Stok').eq('ProdukID', pid).single();
-              if (pData) {
-                const currentStock = Number(pData.Stok || 0);
-                const newStock = Math.max(0, currentStock - qty);
-                await supabase.from('Produk').update({ Stok: newStock }).eq('ProdukID', pid);
+          const { error: trxErr } = await supabase.from('Transaksi').upsert([trxData], { onConflict: 'TrxID' });
+          if (trxErr) console.error("Gagal insert Transaksi POS:", trxErr);
+
+          if (Array.isArray(orderPayload.items)) {
+            const detailRows = orderPayload.items.map((item) => ({
+              TrxID: invoiceNumber,
+              ProdukID: item.id || item.produkId || '',
+              NamaProduk: item.name || item.nama || item.namaProduk || '',
+              HargaSatuan: item.price || item.harga || 0,
+              Kuantitas: item.quantity || item.qty || 1,
+              Subtotal: (item.price || item.harga || 0) * (item.quantity || item.qty || 1)
+            }));
+            await supabase.from('DetailTransaksi').upsert(detailRows);
+
+            // Kurangi stok produk sekali saja
+            for (const item of orderPayload.items) {
+              const pid = item.id || item.produkId;
+              const qty = item.quantity || item.qty || 1;
+              if (pid) {
+                const { data: pData } = await supabase.from('Produk').select('Stok').eq('ID', pid).maybeSingle();
+                if (pData) {
+                  const currentStock = Number(pData.Stok || 0);
+                  const newStock = Math.max(0, currentStock - qty);
+                  await supabase.from('Produk').update({ Stok: newStock }).eq('ID', pid);
+                }
               }
             }
           }
         }
-
       } else if (orderType === 'TOPUP_TABUNGAN') {
         // --- TOP UP TABUNGAN SANTRI ---
         const santriNis = String(orderPayload.nis || orderPayload.santriId || '').trim();
