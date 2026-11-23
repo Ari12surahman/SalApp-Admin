@@ -1708,8 +1708,13 @@ function App() {
             // Kirim nominal nett (pokok + biaya aplikasi) ke WijayaPay; biaya admin bank/QRIS dihitung & dikembalikan langsung oleh WijayaPay
             const amountNett = pokokAmount + appFee;
             const isQris = method === 'QRIS' || method === 'qris';
+            if (isQris && amountNett < 500) {
+                showNotification("Nominal pembayaran via QRIS minimal Rp 500.");
+                setPakasirData(prev => ({ ...prev, loading: false, step: 'CHOOSE_METHOD' }));
+                return;
+            }
             if (!isQris && amountNett < 10000) {
-                showNotification("Nominal pembayaran via Virtual Account minimal Rp 10.000. Untuk nominal di bawah Rp 10.000, silakan gunakan QRIS.");
+                showNotification("Nominal pembayaran via Virtual Account / Gerai Retail minimal Rp 10.000. Untuk nominal di bawah Rp 10.000 (mulai Rp 500), silakan gunakan QRIS.");
                 setPakasirData(prev => ({ ...prev, loading: false, step: 'CHOOSE_METHOD' }));
                 return;
             }
