@@ -1802,7 +1802,8 @@ function App() {
                     txnId: txnId,
                     uniqueOrderId: uniqueOrderId,
                     totalAmount: actualTotalBayar,
-                    adminFee: actualAdminFee
+                    adminFee: actualAdminFee,
+                    instructions: paymentData.instructions || ''
                 }));
                 const bankName = getBankDisplayName(method) || method;
                 addLog('INTEGRATION', 'PEMBAYARAN ONLINE', `Membuat pembayaran ${bankName} untuk ${uniqueOrderId}${isSandboxApi ? ' (Sandbox)' : ''}`);
@@ -12498,7 +12499,7 @@ Terima kasih atas kerja samanya.`;
                                                             <Copy className="w-4 h-4" /> {isRetail ? 'Salin Kode Pembayaran' : 'Salin VA'}
                                                         </button>
 
-                                                        {isRetail && (
+                                                        {isRetail ? (
                                                             <div className="w-full text-left bg-amber-50 border border-amber-200 rounded-xl p-3 text-xs text-amber-900 leading-relaxed mt-1">
                                                                 <p className="font-bold mb-1">🏪 Petunjuk Pembayaran di Kasir {retailName}:</p>
                                                                 <ol className="list-decimal list-inside space-y-1 text-[11px] text-amber-800">
@@ -12508,7 +12509,55 @@ Terima kasih atas kerja samanya.`;
                                                                     <li>Kasir akan menginput kode, bayar sesuai nominal dan simpan struknya.</li>
                                                                 </ol>
                                                             </div>
-                                                        )}
+                                                        ) : (() => {
+                                                            const m = String(pakasirData.method || '').toLowerCase();
+                                                            const apiLines = String(pakasirData.instructions || '').split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+                                                            const defaultSteps = m.includes('bca') ? [
+                                                                'Buka aplikasi BCA mobile (m-BCA) atau myBCA.',
+                                                                'Pilih menu m-Transfer → BCA Virtual Account.',
+                                                                'Masukkan Nomor Virtual Account di atas lalu klik Send.',
+                                                                'Periksa nominal tagihan yang muncul, lalu masukkan PIN BCA.',
+                                                                'Catatan: VA BCA khusus pembayaran dari sesama BCA (m-BCA / myBCA / KlikBCA / ATM BCA).'
+                                                            ] : m.includes('bri') ? [
+                                                                'Buka aplikasi BRImo lalu pilih menu BRIVA.',
+                                                                'Klik Pembayaran Baru dan masukkan Nomor VA di atas.',
+                                                                'Periksa detail tagihan lalu konfirmasi dengan PIN BRImo.',
+                                                                'Bisa juga dibayar dari bank lain / e-wallet (transfer ke Bank BRI dengan nomor VA di atas).'
+                                                            ] : m.includes('bni') ? [
+                                                                'Buka BNI Mobile Banking / wondr by BNI.',
+                                                                'Pilih menu Transfer → Virtual Account Billing.',
+                                                                'Masukkan Nomor VA di atas, cek nominal, lalu masukkan password transaksi.',
+                                                                'Bisa juga dibayar dari bank lain / e-wallet ke Bank BNI.'
+                                                            ] : (m.includes('bsi') || m.includes('bsm')) ? [
+                                                                'Buka BSI Mobile / BYOND by BSI.',
+                                                                'Pilih menu Bayar → Virtual Account / Institusi (kode 1062 jika diminta).',
+                                                                'Masukkan Nomor VA di atas, cek nominal, lalu masukkan PIN BSI.'
+                                                            ] : m.includes('mandiri') ? [
+                                                                'Buka aplikasi Livin\' by Mandiri.',
+                                                                'Pilih menu Bayar → Multipayment / Virtual Account.',
+                                                                'Masukkan Nomor VA di atas, cek nominal, lalu masukkan PIN Livin\'.'
+                                                            ] : m.includes('permata') ? [
+                                                                'Buka PermataME / Mobile Banking bank lain / e-wallet.',
+                                                                'Pilih Transfer ke Bank Permata atau menu Virtual Account.',
+                                                                'Masukkan Nomor VA di atas, pastikan nominal sesuai, lalu konfirmasi.'
+                                                            ] : [
+                                                                `Buka Mobile Banking ${getBankDisplayName(pakasirData.method)} atau aplikasi bank/e-wallet Anda.`,
+                                                                'Pilih menu Transfer / Pembayaran Virtual Account.',
+                                                                'Masukkan Nomor Virtual Account di atas.',
+                                                                'Periksa detail & nominal pembayaran lalu konfirmasi dengan PIN.'
+                                                            ];
+                                                            const steps = apiLines.length > 0 ? apiLines : defaultSteps;
+                                                            return (
+                                                                <div className="w-full text-left bg-blue-50/80 border border-blue-200 rounded-xl p-3 text-xs text-slate-800 leading-relaxed mt-1">
+                                                                    <p className="font-bold text-blue-900 mb-1.5">📋 Cara Pembayaran {getBankDisplayName(pakasirData.method)}:</p>
+                                                                    <ol className="space-y-1 text-[11px] text-slate-700 list-decimal list-inside">
+                                                                        {steps.map((step, idx) => (
+                                                                            <li key={idx}>{step.replace(/^\d+[\.\)]\s*/, '')}</li>
+                                                                        ))}
+                                                                    </ol>
+                                                                </div>
+                                                            );
+                                                        })()}
                                                     </div>
                                                 );
                                             })()}
