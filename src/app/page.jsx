@@ -505,6 +505,10 @@ function App() {
             if (cachedAnggota) {
                 setAppConfig(prev => ({ ...prev, kasEkskulAnggotaMap: JSON.parse(cachedAnggota) }));
             }
+            const cachedTunggakanIuran = localStorage.getItem('appConfig_tunggakanIuran');
+            if (cachedTunggakanIuran) {
+                setAppConfig(prev => ({ ...prev, tunggakanIuran: JSON.parse(cachedTunggakanIuran) }));
+            }
         } catch (e) { }
     }, []);
 
@@ -550,12 +554,21 @@ function App() {
     const [iuranSearchSantri, setIuranSearchSantri] = useState('');
     const [iuranProcessing, setIuranProcessing] = useState(false);
     const [iuranHasilEksekusi, setIuranHasilEksekusi] = useState(null);
-    const [iuranSectionTab, setIuranSectionTab] = useState('akunKas'); // 'akunKas' | 'tarikIuran' | 'riwayat' | 'kategori'
+    const [iuranSectionTab, setIuranSectionTab] = useState('akunKas'); // 'akunKas' | 'tarikIuran' | 'tunggakan' | 'riwayat' | 'kategori'
     const [akunKasSearch, setAkunKasSearch] = useState('');
     const [akunKasPage, setAkunKasPage] = useState(1);
     const [iuranRiwayatPage, setIuranRiwayatPage] = useState(1);
     const [iuranRiwayatFilter, setIuranRiwayatFilter] = useState('Semua');
     const [iuranRiwayatSearch, setIuranRiwayatSearch] = useState('');
+    // --- DATA TUNGGAKAN IURAN / KAS MINGGUAN ---
+    const [tunggakanViewMode, setTunggakanViewMode] = useState('perItem'); // 'perItem' | 'perSantri'
+    const [tunggakanStatusFilter, setTunggakanStatusFilter] = useState('BELUM_LUNAS'); // 'BELUM_LUNAS' | 'LUNAS' | 'SEMUA'
+    const [tunggakanKategoriFilter, setTunggakanKategoriFilter] = useState('Semua');
+    const [tunggakanKelasFilter, setTunggakanKelasFilter] = useState('Semua');
+    const [tunggakanPeriodeFilter, setTunggakanPeriodeFilter] = useState('Semua');
+    const [tunggakanSearch, setTunggakanSearch] = useState('');
+    const [tunggakanPage, setTunggakanPage] = useState(1);
+    const [tunggakanProcessingId, setTunggakanProcessingId] = useState(null);
     const [showModalBuatAkunKamar, setShowModalBuatAkunKamar] = useState(false);
     const [namaKamarBaru, setNamaKamarBaru] = useState('');
     const [kategoriKamarBaru, setKategoriKamarBaru] = useState('Ekskul'); // 'Ekskul' | 'Kas Kamar' | 'Organisasi' | 'Lainnya'
@@ -3889,13 +3902,366 @@ function App() {
         );
     };
 
+    // === HELPER TUNGGAKAN IURAN / KAS MINGGUAN ===
+    const getWeekLabelIuran = (dateStr) => {
+        if (!dateStr) return '-';
+        try {
+            const parts = String(dateStr).split('-');
+            if (parts.length !== 3) return dateStr;
+            const yr = Number(parts[0]);
+            const mo = Number(parts[1]) - 1;
+            const dy = Number(parts[2]);
+            const bulanShort = ['Jan', 'Feb', 'Mar', 'Apr', 'Mei', 'Jun', 'Jul', 'Agu', 'Sep', 'Okt', 'Nov', 'Des'];
+            const weekNum = Math.ceil(dy / 7);
+            return `Minggu ${weekNum} ${bulanShort[mo] || ''} ${yr}`.trim();
+        } catch {
+            return dateStr;
+        }
+    };
+
+    const saveTunggakanIuranList = async (updatedList) => {
+        setAppConfig(prev => ({ ...prev, tunggakanIuran: updatedList }));
+        try {
+            localStorage.setItem('appConfig_tunggakanIuran', JSON.stringify(updatedList));
+        } catch (e) {}
+        try {
+            const { error } = await supabase.from('MasterConfig').upsert({
+                kunci: 'tunggakanIuran',
+                nilai: JSON.stringify(updatedList)
+            }, { onConflict: 'kunci' });
+            if (error) console.error("Gagal simpan tunggakanIuran ke Supabase:", error);
+        } catch (e) {
+            console.error("Fallback simpan tunggakanIuran err:", e);
+        }
+    };
+
+    const handleLunasiTunggakanIuran = async (item, metode = 'tabungan') => {
+        if (!item || item.status === 'LUNAS') return;
+        const nom = Number(item.nominal || 0);
+        if (metode === 'tabungan') {
+            const saldoNow = getSantriSaldoTabungan(item.nis);
+            if (saldoNow < nom) {
+                return showNotification(`Saldo ${item.nama} saat ini (Rp ${saldoNow.toLocaleString('id-ID')}) masih kurang dari Rp ${nom.toLocaleString('id-ID')}!`, 'error');
+            }
+        }
+
+        const labelMetode = metode === 'tabungan' ? 'Potong Saldo Tabungan' : 'Bayar Tunai (Cash)';
+        if (!window.confirm(`Lunasi tunggakan ${item.kategori} (${item.mingguKe || item.tanggal}) atas nama ${item.nama} sebesar Rp ${nom.toLocaleString('id-ID')} dengan metode ${labelMetode}?`)) return;
+
+        setTunggakanProcessingId(item.id);
+        try {
+            const todayStr = new Date().toISOString().split('T')[0];
+            const newTabunganRecords = [];
+
+            if (metode === 'tabungan') {
+                newTabunganRecords.push({
+                    id: `TB-LNS-${Date.now()}-${Math.floor(1000 + Math.random() * 9000)}`,
+                    tanggal: todayStr,
+                    nis: item.nis,
+                    nama: item.nama,
+                    jenis: 'Tarik',
+                    nominal: nom,
+                    keterangan: `[Pelunasan Tunggakan ${item.kategori}] ${item.keterangan || ''} (${item.mingguKe || item.tanggal})`.trim()
+                });
+            }
+
+            if (item.alokasi === 'KasKamar' && item.tujuanAkunNis) {
+                const targetAkun = dataSantri.find(s => String(s.nis) === String(item.tujuanAkunNis)) || { nama: 'Kas Kamar' };
+                newTabunganRecords.push({
+                    id: `TB-LNS-IN-${Date.now()}-${Math.floor(1000 + Math.random() * 9000)}`,
+                    tanggal: todayStr,
+                    nis: item.tujuanAkunNis,
+                    nama: targetAkun.nama,
+                    jenis: 'Setor',
+                    nominal: nom,
+                    keterangan: `[Pelunasan ${item.kategori} - ${labelMetode}] Dari ${item.nama}: ${item.keterangan || ''} (${item.mingguKe || item.tanggal})`.trim()
+                });
+            }
+
+            if (newTabunganRecords.length > 0) {
+                const { error: insErr } = await supabase.from('Tabungan').insert(newTabunganRecords);
+                if (insErr) {
+                    showNotification(`Gagal menyimpan ke Tabungan: ${insErr.message}`, 'error');
+                    setTunggakanProcessingId(null);
+                    return;
+                }
+                setDataTabungan(prev => [...newTabunganRecords, ...prev]);
+            }
+
+            if (item.alokasi === 'BukuKas') {
+                const katKas = item.kategori === 'Infaq / Sedekah' ? 'Infaq / Sedekah' : item.kategori === 'Cukur' ? 'Jasa Cukur' : 'Kas Kamar/Asrama';
+                const newKas = {
+                    id: `KAS-LNS-${Date.now()}-${Math.floor(1000 + Math.random() * 9000)}`,
+                    tanggal: todayStr,
+                    tipeKas: 'MASUK',
+                    kategori: katKas,
+                    sumber: `Pelunasan Tunggakan (${item.nama} - ${labelMetode})`,
+                    nominal: nom,
+                    keterangan: `[Pelunasan ${item.kategori}] ${item.keterangan || ''} (${item.mingguKe || item.tanggal})`.trim()
+                };
+                const { error: kasErr } = await supabase.from('Kas').insert([newKas]);
+                if (kasErr) console.error("Gagal simpan kas pelunasan:", kasErr);
+                setDataKas(prev => [newKas, ...prev]);
+            }
+
+            const existingList = Array.isArray(appConfig?.tunggakanIuran) ? appConfig.tunggakanIuran : [];
+            const updatedList = existingList.map(t => t.id === item.id ? {
+                ...t,
+                status: 'LUNAS',
+                tanggalLunas: todayStr,
+                metodeLunas: labelMetode
+            } : t);
+
+            await saveTunggakanIuranList(updatedList);
+            addLog('UPDATE', 'TABUNGAN', `Pelunasan tunggakan ${item.kategori} a.n ${item.nama} Rp ${nom.toLocaleString('id-ID')} (${labelMetode})`);
+            showNotification(`Tunggakan ${item.nama} berhasil dilunasi (${labelMetode})!`);
+        } catch (err) {
+            console.error("Gagal lunasi tunggakan:", err);
+            showNotification("Terjadi kesalahan saat melunasi tunggakan!", "error");
+        } finally {
+            setTunggakanProcessingId(null);
+        }
+    };
+
+    const handleTarikMassalTunggakanSiap = async (unpaidItems) => {
+        if (!unpaidItems || unpaidItems.length === 0) return;
+
+        // Simulasi running saldo per santri agar jika 1 santri punya 2 tunggakan tapi saldo cukup untuk 1 saja, tidak minus
+        const runningSaldoMap = {};
+        const itemsToSettle = [];
+
+        // Urutkan dari yang paling lama (FIFO)
+        const sortedOldestFirst = [...unpaidItems].sort((a, b) => String(a.tanggal || '').localeCompare(String(b.tanggal || '')));
+
+        sortedOldestFirst.forEach(item => {
+            const key = String(item.nis);
+            if (runningSaldoMap[key] === undefined) {
+                runningSaldoMap[key] = getSantriSaldoTabungan(item.nis);
+            }
+            const nom = Number(item.nominal || 0);
+            if (runningSaldoMap[key] >= nom && nom > 0) {
+                runningSaldoMap[key] -= nom;
+                itemsToSettle.push(item);
+            }
+        });
+
+        if (itemsToSettle.length === 0) {
+            return showNotification('Belum ada santri nunggak yang saldonya mencukupi untuk ditarik otomatis.', 'error');
+        }
+
+        const totalNom = itemsToSettle.reduce((acc, i) => acc + Number(i.nominal || 0), 0);
+        if (!window.confirm(
+            `TARIK OTOMATIS TUNGGAKAN SIAP BAYAR:\n\n` +
+            `• Jumlah Tunggakan Ditarik: ${itemsToSettle.length} catatan\n` +
+            `• Total Dana Terkumpul: Rp ${totalNom.toLocaleString('id-ID')}\n\n` +
+            `Hanya santri yang saldo tabungannya sudah mencukupi yang akan dipotong. Lanjutkan?`
+        )) return;
+
+        setTunggakanProcessingId('BULK');
+        try {
+            const todayStr = new Date().toISOString().split('T')[0];
+            const newTabunganRecords = [];
+            const kasKamarTotals = {}; // { tujuanAkunNis: { total, count, kategori } }
+            const bukuKasItems = [];
+
+            itemsToSettle.forEach((item, idx) => {
+                const nom = Number(item.nominal || 0);
+                newTabunganRecords.push({
+                    id: `TB-LNSB-${Date.now()}-${idx}-${Math.floor(1000 + Math.random() * 9000)}`,
+                    tanggal: todayStr,
+                    nis: item.nis,
+                    nama: item.nama,
+                    jenis: 'Tarik',
+                    nominal: nom,
+                    keterangan: `[Pelunasan Tunggakan ${item.kategori}] ${item.keterangan || ''} (${item.mingguKe || item.tanggal})`.trim()
+                });
+
+                if (item.alokasi === 'KasKamar' && item.tujuanAkunNis) {
+                    const kKey = String(item.tujuanAkunNis);
+                    if (!kasKamarTotals[kKey]) kasKamarTotals[kKey] = { total: 0, count: 0, kategori: item.kategori };
+                    kasKamarTotals[kKey].total += nom;
+                    kasKamarTotals[kKey].count += 1;
+                } else if (item.alokasi === 'BukuKas') {
+                    bukuKasItems.push(item);
+                }
+            });
+
+            Object.entries(kasKamarTotals).forEach(([tujuanNis, info], idx) => {
+                const targetAkun = dataSantri.find(s => String(s.nis) === tujuanNis) || { nama: 'Kas Kamar' };
+                newTabunganRecords.push({
+                    id: `TB-LNSB-IN-${Date.now()}-${idx}-${Math.floor(1000 + Math.random() * 9000)}`,
+                    tanggal: todayStr,
+                    nis: tujuanNis,
+                    nama: targetAkun.nama,
+                    jenis: 'Setor',
+                    nominal: info.total,
+                    keterangan: `[Pelunasan Massal Tunggakan ${info.kategori}] Dari ${info.count} catatan tunggakan`
+                });
+            });
+
+            if (newTabunganRecords.length > 0) {
+                const { error: insErr } = await supabase.from('Tabungan').insert(newTabunganRecords);
+                if (insErr) {
+                    showNotification(`Gagal menyimpan ke Tabungan: ${insErr.message}`, 'error');
+                    setTunggakanProcessingId(null);
+                    return;
+                }
+                setDataTabungan(prev => [...newTabunganRecords, ...prev]);
+            }
+
+            if (bukuKasItems.length > 0) {
+                const totalBukuKas = bukuKasItems.reduce((a, b) => a + Number(b.nominal || 0), 0);
+                const newKas = {
+                    id: `KAS-LNSB-${Date.now()}-${Math.floor(1000 + Math.random() * 9000)}`,
+                    tanggal: todayStr,
+                    tipeKas: 'MASUK',
+                    kategori: 'Kas Kamar/Asrama',
+                    sumber: `Pelunasan Massal Tunggakan (${bukuKasItems.length} catatan)`,
+                    nominal: totalBukuKas,
+                    keterangan: `[Pelunasan Massal Tunggakan Iuran] ${bukuKasItems.length} tunggakan lunas via potong tabungan`
+                };
+                const { error: kasErr } = await supabase.from('Kas').insert([newKas]);
+                if (kasErr) console.error("Gagal simpan kas massal:", kasErr);
+                setDataKas(prev => [newKas, ...prev]);
+            }
+
+            const settledIdSet = new Set(itemsToSettle.map(i => i.id));
+            const existingList = Array.isArray(appConfig?.tunggakanIuran) ? appConfig.tunggakanIuran : [];
+            const updatedList = existingList.map(t => settledIdSet.has(t.id) ? {
+                ...t,
+                status: 'LUNAS',
+                tanggalLunas: todayStr,
+                metodeLunas: 'Potong Tabungan'
+            } : t);
+
+            await saveTunggakanIuranList(updatedList);
+            addLog('UPDATE', 'TABUNGAN', `Tarik massal ${itemsToSettle.length} tunggakan iuran (Total: Rp ${totalNom.toLocaleString('id-ID')})`);
+            showNotification(`Berhasil melunasi ${itemsToSettle.length} tunggakan iuran! Total dana: Rp ${totalNom.toLocaleString('id-ID')}`);
+        } catch (err) {
+            console.error("Gagal tarik massal tunggakan:", err);
+            showNotification("Gagal memproses tarik massal tunggakan!", "error");
+        } finally {
+            setTunggakanProcessingId(null);
+        }
+    };
+
+    const handleTarikSemuaTunggakanSantri = async (santriNis, santriNama, unpaidItemsSantri, metode = 'tabungan') => {
+        if (!unpaidItemsSantri || unpaidItemsSantri.length === 0) return;
+        const totalNom = unpaidItemsSantri.reduce((acc, i) => acc + Number(i.nominal || 0), 0);
+        if (metode === 'tabungan') {
+            const saldoNow = getSantriSaldoTabungan(santriNis);
+            if (saldoNow < totalNom) {
+                return showNotification(`Saldo ${santriNama} (Rp ${saldoNow.toLocaleString('id-ID')}) tidak cukup untuk melunasi seluruh Rp ${totalNom.toLocaleString('id-ID')}. Gunakan tombol "Tarik Saldo Siap" untuk pelunasan sebagian.`, 'error');
+            }
+        }
+        const labelMetode = metode === 'tabungan' ? 'Potong Saldo Tabungan' : 'Bayar Tunai (Cash)';
+        if (!window.confirm(`Lunasi seluruh ${unpaidItemsSantri.length} tunggakan atas nama ${santriNama} sebesar Rp ${totalNom.toLocaleString('id-ID')} via ${labelMetode}?`)) return;
+
+        setTunggakanProcessingId(`SANTRI-${santriNis}`);
+        try {
+            const todayStr = new Date().toISOString().split('T')[0];
+            const newTabunganRecords = [];
+            const kasKamarTotals = {};
+            let totalBukuKas = 0;
+
+            unpaidItemsSantri.forEach((item, idx) => {
+                const nom = Number(item.nominal || 0);
+                if (metode === 'tabungan') {
+                    newTabunganRecords.push({
+                        id: `TB-LNSS-${Date.now()}-${idx}-${Math.floor(1000 + Math.random() * 9000)}`,
+                        tanggal: todayStr,
+                        nis: item.nis,
+                        nama: item.nama,
+                        jenis: 'Tarik',
+                        nominal: nom,
+                        keterangan: `[Pelunasan Tunggakan ${item.kategori}] ${item.keterangan || ''} (${item.mingguKe || item.tanggal})`.trim()
+                    });
+                }
+                if (item.alokasi === 'KasKamar' && item.tujuanAkunNis) {
+                    const kKey = String(item.tujuanAkunNis);
+                    if (!kasKamarTotals[kKey]) kasKamarTotals[kKey] = { total: 0, count: 0, kategori: item.kategori };
+                    kasKamarTotals[kKey].total += nom;
+                    kasKamarTotals[kKey].count += 1;
+                } else if (item.alokasi === 'BukuKas') {
+                    totalBukuKas += nom;
+                }
+            });
+
+            Object.entries(kasKamarTotals).forEach(([tujuanNis, info], idx) => {
+                const targetAkun = dataSantri.find(s => String(s.nis) === tujuanNis) || { nama: 'Kas Kamar' };
+                newTabunganRecords.push({
+                    id: `TB-LNSS-IN-${Date.now()}-${idx}-${Math.floor(1000 + Math.random() * 9000)}`,
+                    tanggal: todayStr,
+                    nis: tujuanNis,
+                    nama: targetAkun.nama,
+                    jenis: 'Setor',
+                    nominal: info.total,
+                    keterangan: `[Pelunasan ${info.count}x Tunggakan ${info.kategori} - ${labelMetode}] Dari ${santriNama}`
+                });
+            });
+
+            if (newTabunganRecords.length > 0) {
+                const { error: insErr } = await supabase.from('Tabungan').insert(newTabunganRecords);
+                if (insErr) {
+                    showNotification(`Gagal menyimpan ke Tabungan: ${insErr.message}`, 'error');
+                    setTunggakanProcessingId(null);
+                    return;
+                }
+                setDataTabungan(prev => [...newTabunganRecords, ...prev]);
+            }
+
+            if (totalBukuKas > 0) {
+                const newKas = {
+                    id: `KAS-LNSS-${Date.now()}-${Math.floor(1000 + Math.random() * 9000)}`,
+                    tanggal: todayStr,
+                    tipeKas: 'MASUK',
+                    kategori: 'Kas Kamar/Asrama',
+                    sumber: `Pelunasan Tunggakan (${santriNama} - ${labelMetode})`,
+                    nominal: totalBukuKas,
+                    keterangan: `[Pelunasan ${unpaidItemsSantri.length}x Tunggakan Iuran] Atas nama ${santriNama}`
+                };
+                const { error: kasErr } = await supabase.from('Kas').insert([newKas]);
+                if (kasErr) console.error("Gagal simpan kas santri:", kasErr);
+                setDataKas(prev => [newKas, ...prev]);
+            }
+
+            const settledIds = new Set(unpaidItemsSantri.map(i => i.id));
+            const existingList = Array.isArray(appConfig?.tunggakanIuran) ? appConfig.tunggakanIuran : [];
+            const updatedList = existingList.map(t => settledIds.has(t.id) ? {
+                ...t,
+                status: 'LUNAS',
+                tanggalLunas: todayStr,
+                metodeLunas: labelMetode
+            } : t);
+
+            await saveTunggakanIuranList(updatedList);
+            addLog('UPDATE', 'TABUNGAN', `Lunasi ${unpaidItemsSantri.length}x tunggakan a.n ${santriNama} Rp ${totalNom.toLocaleString('id-ID')} (${labelMetode})`);
+            showNotification(`Seluruh ${unpaidItemsSantri.length} tunggakan ${santriNama} berhasil dilunasi!`);
+        } catch (err) {
+            console.error("Gagal lunasi semua tunggakan santri:", err);
+            showNotification("Gagal memproses pelunasan!", "error");
+        } finally {
+            setTunggakanProcessingId(null);
+        }
+    };
+
+    const handleHapusTunggakanIuran = async (item) => {
+        if (!window.confirm(`Hapus catatan tunggakan ${item.kategori} (${item.mingguKe || item.tanggal}) atas nama ${item.nama} sebesar Rp ${Number(item.nominal || 0).toLocaleString('id-ID')}?`)) return;
+        const existingList = Array.isArray(appConfig?.tunggakanIuran) ? appConfig.tunggakanIuran : [];
+        const updatedList = existingList.filter(t => t.id !== item.id);
+        await saveTunggakanIuranList(updatedList);
+        showNotification(`Catatan tunggakan ${item.nama} dihapus.`);
+    };
+
     // === LOGIKA PENARIKAN KAS / IURAN INSIDENTAL OTOMATIS ===
     const handleEksekusiPotongIuran = async () => {
         const currentKelas = iuranSelectedKelas || masterKelasList[0] || '';
         let targetSantri = [];
+        let targetLabel = iuranTargetType;
         if (iuranTargetType === 'Ekskul') {
             const selectedEkskulObj = dataSantri.find(s => String(s.nis) === String(iuranSelectedEkskulNis));
             if (!selectedEkskulObj) return showNotification('Pilih akun kas / ekskul target terlebih dahulu!', 'error');
+            targetLabel = selectedEkskulObj.nama || 'Ekskul';
             const anggotaNisList = (appConfig?.kasEkskulAnggotaMap || {})[selectedEkskulObj.nis] || [];
             if (anggotaNisList.length === 0) return showNotification(`Belum ada santri yang didaftarkan ke anggota ${selectedEkskulObj.nama}! Buka 'Kelola Anggota' untuk menambahkan santri.`, 'error');
             targetSantri = dataSantri.filter(s => 
@@ -3906,6 +4272,7 @@ function App() {
         } else if (iuranTargetType === 'Kamar') {
             const selectedKamarObj = dataSantri.find(s => String(s.nis) === String(iuranSelectedKamarNis));
             if (!selectedKamarObj) return showNotification('Pilih kamar / asrama target terlebih dahulu!', 'error');
+            targetLabel = selectedKamarObj.nama || 'Kamar';
             const kamarKelas = String(selectedKamarObj.kelas || '').trim().toLowerCase();
             targetSantri = dataSantri.filter(s => 
                 !String(s.nis || '').startsWith('KAS-') &&
@@ -3914,6 +4281,7 @@ function App() {
             );
         } else if (iuranTargetType === 'Kelas') {
             if (!currentKelas) return showNotification('Pilih kelas target terlebih dahulu!', 'error');
+            targetLabel = `Kelas ${currentKelas}`;
             targetSantri = dataSantri.filter(s => 
                 !String(s.nis || '').startsWith('KAS-') &&
                 (!s.status || s.status.toLowerCase() !== 'keluar') &&
@@ -3921,12 +4289,14 @@ function App() {
             );
         } else if (iuranTargetType === 'PilihSantri') {
             if (iuranSelectedNisList.length === 0) return showNotification('Pilih minimal 1 santri!', 'error');
+            targetLabel = 'Pilih Manual';
             targetSantri = dataSantri.filter(s => 
                 !String(s.nis || '').startsWith('KAS-') &&
                 (!s.status || s.status.toLowerCase() !== 'keluar') &&
                 iuranSelectedNisList.includes(String(s.nis))
             );
         } else if (iuranTargetType === 'Semua') {
+            targetLabel = 'Semua Santri';
             targetSantri = dataSantri.filter(s => 
                 !String(s.nis || '').startsWith('KAS-') &&
                 (!s.status || s.status.toLowerCase() !== 'keluar')
@@ -3940,10 +4310,6 @@ function App() {
         const eligible = targetSantri.filter(s => getSantriSaldoTabungan(s.nis) >= nom);
         const insufficient = targetSantri.filter(s => getSantriSaldoTabungan(s.nis) < nom);
 
-        if (eligible.length === 0 && iuranSkipInsufficient) {
-            return showNotification(`Tidak ada santri yang memiliki saldo mencukupi (minimal Rp ${nom.toLocaleString('id-ID')})!`, 'error');
-        }
-
         const santriToProcess = iuranSkipInsufficient ? eligible : targetSantri;
         const totalDitarik = santriToProcess.length * nom;
 
@@ -3952,17 +4318,19 @@ function App() {
             `• Kategori: ${iuranKategori}\n` +
             `• Keterangan: ${iuranKeterangan || '-'}\n` +
             `• Nominal per Santri: Rp ${nom.toLocaleString('id-ID')}\n` +
-            `• Target: ${santriToProcess.length} santri\n` +
+            `• Saldo Cukup (Langsung Dipotong): ${santriToProcess.length} santri\n` +
             `• Total Dana Terkumpul: Rp ${totalDitarik.toLocaleString('id-ID')}\n` +
-            (insufficient.length > 0 && iuranSkipInsufficient ? `• Dilewati (Saldo Kurang): ${insufficient.length} santri\n` : '') +
+            (insufficient.length > 0 && iuranSkipInsufficient ? `• Saldo Kurang (Dicatat sebagai Nunggak): ${insufficient.length} santri\n` : '') +
             `• Alokasi Dana: ${iuranAlokasi === 'BukuKas' ? 'Buku Kas Pondok (Pemasukan)' : iuranAlokasi === 'KasKamar' ? `Akun Dompet Kamar (${iuranTujuanAkunNis || 'Otomatis'})` : 'Hanya Potong Saldo Santri'}\n\n` +
-            `Apakah Anda yakin ingin memproses pemotongan saldo santri ini sekarang?`;
+            `Apakah Anda yakin ingin memproses penarikan iuran ini sekarang?`;
 
         if (!window.confirm(confirmMsg)) return;
 
         setIuranProcessing(true);
         try {
             const todayStr = new Date().toISOString().split('T')[0];
+            const weekLabel = getWeekLabelIuran(todayStr);
+            const batchId = `BATCH-${Date.now()}`;
             const newTabunganRecords = [];
 
             santriToProcess.forEach((s, idx) => {
@@ -3978,7 +4346,7 @@ function App() {
             });
 
             // Jika dialokasikan ke Akun Kas Kamar / Virtual Account Santri
-            if (iuranAlokasi === 'KasKamar' && iuranTujuanAkunNis) {
+            if (totalDitarik > 0 && iuranAlokasi === 'KasKamar' && iuranTujuanAkunNis) {
                 const targetAkun = dataSantri.find(s => String(s.nis) === String(iuranTujuanAkunNis)) || { nama: 'Kas Kamar' };
                 newTabunganRecords.push({
                     id: `TB-IRN-IN-${Date.now()}-dest-${Math.floor(1000 + Math.random() * 9000)}`,
@@ -4010,10 +4378,12 @@ function App() {
             }
 
             // Simpan ke state Tabungan
-            setDataTabungan(prev => [...newTabunganRecords, ...prev]);
+            if (newTabunganRecords.length > 0) {
+                setDataTabungan(prev => [...newTabunganRecords, ...prev]);
+            }
 
             // Jika dialokasikan ke Buku Kas Pondok (Tabel Kas)
-            if (iuranAlokasi === 'BukuKas') {
+            if (totalDitarik > 0 && iuranAlokasi === 'BukuKas') {
                 const katKas = iuranKategori === 'Infaq / Sedekah' ? 'Infaq / Sedekah' : iuranKategori === 'Cukur' ? 'Jasa Cukur' : 'Kas Kamar/Asrama';
                 const newKas = {
                     id: `KAS-IRN-${Date.now()}-${Math.floor(1000 + Math.random() * 9000)}`,
@@ -4033,8 +4403,36 @@ function App() {
                 setDataKas(prev => [newKas, ...prev]);
             }
 
-            addLog('CREATE', 'TABUNGAN', `Potong ${iuranKategori} otomatis: Rp ${nom.toLocaleString('id-ID')} x ${santriToProcess.length} santri (Total: Rp ${totalDitarik.toLocaleString('id-ID')})`);
-            showNotification(`Berhasil memotong saldo ${santriToProcess.length} santri! Total dana: Rp ${totalDitarik.toLocaleString('id-ID')}`);
+            // CATAT OTOMATIS SANTRI YANG NUNGGAK (SALDO KURANG) KE DATA TUNGGAKAN IURAN
+            if (iuranSkipInsufficient && insufficient.length > 0) {
+                const newTunggakanRecords = insufficient.map((s, idx) => ({
+                    id: `TGG-IRN-${Date.now()}-${idx}-${Math.floor(1000 + Math.random() * 9000)}`,
+                    batchId,
+                    tanggal: todayStr,
+                    mingguKe: weekLabel,
+                    nis: String(s.nis),
+                    nama: s.nama,
+                    kelas: s.kelas || '-',
+                    kategori: iuranKategori,
+                    keterangan: iuranKeterangan || iuranKategori,
+                    nominal: nom,
+                    alokasi: iuranAlokasi,
+                    tujuanAkunNis: iuranAlokasi === 'KasKamar' ? iuranTujuanAkunNis : '',
+                    targetLabel,
+                    status: 'BELUM_LUNAS',
+                    tanggalLunas: null,
+                    metodeLunas: null
+                }));
+                const existingTunggakan = Array.isArray(appConfig?.tunggakanIuran) ? appConfig.tunggakanIuran : [];
+                await saveTunggakanIuranList([...newTunggakanRecords, ...existingTunggakan]);
+            }
+
+            addLog('CREATE', 'TABUNGAN', `Potong ${iuranKategori} otomatis: Rp ${nom.toLocaleString('id-ID')} x ${santriToProcess.length} santri (Total: Rp ${totalDitarik.toLocaleString('id-ID')})${insufficient.length > 0 && iuranSkipInsufficient ? `, ${insufficient.length} santri dicatat nunggak` : ''}`);
+            showNotification(
+                santriToProcess.length > 0
+                    ? `Berhasil memotong saldo ${santriToProcess.length} santri!${insufficient.length > 0 && iuranSkipInsufficient ? ` (${insufficient.length} santri dicatat di Data Nunggak)` : ''}`
+                    : `${insufficient.length} santri dicatat ke Data Nunggak Iuran karena saldo belum mencukupi.`
+            );
 
             setIuranHasilEksekusi({
                 tanggal: todayStr,
@@ -4042,14 +4440,19 @@ function App() {
                 keterangan: iuranKeterangan,
                 nominalPerSantri: nom,
                 suksesCount: santriToProcess.length,
-                gagalCount: insufficient.length,
+                gagalCount: iuranSkipInsufficient ? insufficient.length : 0,
                 totalDana: totalDitarik,
                 detailSukses: santriToProcess,
-                detailGagal: insufficient
+                detailGagal: iuranSkipInsufficient ? insufficient : []
             });
-            // Alihkan otomatis ke tab riwayat agar user langsung melihat hasilnya
-            setIuranSectionTab('riwayat');
-            setIuranRiwayatPage(1);
+            // Jika ada yang nunggak & tidak ada yang sukses, arahkan ke tab tunggakan; selain itu ke riwayat
+            if (santriToProcess.length === 0 && insufficient.length > 0) {
+                setIuranSectionTab('tunggakan');
+                setTunggakanPage(1);
+            } else {
+                setIuranSectionTab('riwayat');
+                setIuranRiwayatPage(1);
+            }
         } catch (err) {
             console.error("Gagal potong iuran:", err);
             showNotification("Gagal memproses pemotongan iuran!", "error");
@@ -4627,6 +5030,7 @@ function App() {
             const tid = String(t.id || '');
             const matchesCategory = 
                 tid.startsWith('TB-IRN') ||
+                tid.startsWith('TB-LNS') ||
                 tid.startsWith('TB-CAIR') ||
                 ket.includes('[kas ') || 
                 ket.includes('[infaq') || 
@@ -4658,6 +5062,93 @@ function App() {
         const iuranRiwayatPerPage = 12;
         const totalRiwayatPages = Math.max(1, Math.ceil(riwayatInsidental.length / iuranRiwayatPerPage));
         const pagedRiwayatInsidental = riwayatInsidental.slice((iuranRiwayatPage - 1) * iuranRiwayatPerPage, iuranRiwayatPage * iuranRiwayatPerPage);
+
+        // --- COMPUTED DATA TUNGGAKAN IURAN / KAS MINGGUAN ---
+        const allTunggakanIuran = Array.isArray(appConfig?.tunggakanIuran) ? appConfig.tunggakanIuran : [];
+        const unpaidTunggakanAll = allTunggakanIuran.filter(t => t.status !== 'LUNAS');
+        const paidTunggakanAll = allTunggakanIuran.filter(t => t.status === 'LUNAS');
+
+        // Daftar unik periode (mingguKe / tanggal) untuk filter mingguan
+        const tunggakanPeriodeOptions = Array.from(new Set(
+            allTunggakanIuran.map(t => t.mingguKe || getWeekLabelIuran(t.tanggal)).filter(Boolean)
+        ));
+        const tunggakanKategoriOptions = Array.from(new Set(
+            allTunggakanIuran.map(t => t.kategori).filter(Boolean)
+        ));
+
+        const filteredTunggakan = allTunggakanIuran.filter(t => {
+            if (tunggakanStatusFilter === 'BELUM_LUNAS' && t.status === 'LUNAS') return false;
+            if (tunggakanStatusFilter === 'LUNAS' && t.status !== 'LUNAS') return false;
+            if (tunggakanKategoriFilter !== 'Semua' && t.kategori !== tunggakanKategoriFilter) return false;
+            if (tunggakanKelasFilter !== 'Semua' && String(t.kelas || '').toLowerCase() !== String(tunggakanKelasFilter).toLowerCase()) return false;
+            if (tunggakanPeriodeFilter !== 'Semua') {
+                const pLabel = t.mingguKe || getWeekLabelIuran(t.tanggal);
+                if (pLabel !== tunggakanPeriodeFilter) return false;
+            }
+            if (tunggakanSearch) {
+                const q = tunggakanSearch.toLowerCase();
+                return (t.nama || '').toLowerCase().includes(q) ||
+                       String(t.nis || '').toLowerCase().includes(q) ||
+                       (t.keterangan || '').toLowerCase().includes(q) ||
+                       (t.targetLabel || '').toLowerCase().includes(q) ||
+                       (t.mingguKe || '').toLowerCase().includes(q);
+            }
+            return true;
+        });
+
+        const filteredUnpaidTunggakan = filteredTunggakan.filter(t => t.status !== 'LUNAS');
+        const totalNominalFilteredUnpaid = filteredUnpaidTunggakan.reduce((acc, t) => acc + Number(t.nominal || 0), 0);
+
+        // Hitung berapa tunggakan unpaid di filter saat ini yang saldonya sudah cukup untuk langsung ditarik
+        const siapTarikCount = (() => {
+            const runSaldo = {};
+            let cnt = 0;
+            [...filteredUnpaidTunggakan]
+                .sort((a, b) => String(a.tanggal || '').localeCompare(String(b.tanggal || '')))
+                .forEach(item => {
+                    const k = String(item.nis);
+                    if (runSaldo[k] === undefined) runSaldo[k] = getSantriSaldoTabungan(item.nis);
+                    const n = Number(item.nominal || 0);
+                    if (runSaldo[k] >= n && n > 0) {
+                        runSaldo[k] -= n;
+                        cnt++;
+                    }
+                });
+            return cnt;
+        })();
+
+        // Rekap per Santri (mengelompokkan semua tunggakan sesuai filter berdasarkan NIS)
+        const rekapTunggakanPerSantri = (() => {
+            const map = {};
+            filteredTunggakan.forEach(item => {
+                const k = String(item.nis);
+                if (!map[k]) {
+                    map[k] = {
+                        nis: k,
+                        nama: item.nama,
+                        kelas: item.kelas || '-',
+                        items: [],
+                        unpaidItems: [],
+                        totalUnpaid: 0,
+                        totalPaid: 0,
+                    };
+                }
+                map[k].items.push(item);
+                if (item.status !== 'LUNAS') {
+                    map[k].unpaidItems.push(item);
+                    map[k].totalUnpaid += Number(item.nominal || 0);
+                } else {
+                    map[k].totalPaid += Number(item.nominal || 0);
+                }
+            });
+            return Object.values(map).sort((a, b) => b.totalUnpaid - a.totalUnpaid);
+        })();
+
+        const tunggakanPerPage = 15;
+        const activeTunggakanListLength = tunggakanViewMode === 'perSantri' ? rekapTunggakanPerSantri.length : filteredTunggakan.length;
+        const totalTunggakanPages = Math.max(1, Math.ceil(activeTunggakanListLength / tunggakanPerPage));
+        const pagedTunggakanItems = filteredTunggakan.slice((tunggakanPage - 1) * tunggakanPerPage, tunggakanPage * tunggakanPerPage);
+        const pagedTunggakanSantri = rekapTunggakanPerSantri.slice((tunggakanPage - 1) * tunggakanPerPage, tunggakanPage * tunggakanPerPage);
 
         return (
             <div className="space-y-6 animate-in fade-in duration-300">
@@ -4725,6 +5216,30 @@ function App() {
                     </button>
                     <button
                         type="button"
+                        onClick={() => {
+                            setIuranSectionTab('tunggakan');
+                            setTunggakanPage(1);
+                        }}
+                        className={`px-4 py-2.5 rounded-xl text-xs font-bold transition-all flex items-center gap-2 ${
+                            iuranSectionTab === 'tunggakan'
+                                ? 'bg-rose-600 text-white shadow-sm ring-2 ring-rose-500/20'
+                                : 'bg-surface hover:bg-canvas text-steel border border-whisper'
+                        }`}
+                    >
+                        <AlertCircle className={`w-4 h-4 ${iuranSectionTab === 'tunggakan' ? 'text-white' : 'text-rose-500'}`} />
+                        <span>Data Nunggak Iuran</span>
+                        <span className={`px-2 py-0.5 rounded-full text-[10px] font-mono font-bold ${
+                            iuranSectionTab === 'tunggakan'
+                                ? 'bg-white/20 text-white'
+                                : unpaidTunggakanAll.length > 0
+                                    ? 'bg-rose-100 text-rose-700'
+                                    : 'bg-slate-100 text-slate-700'
+                        }`}>
+                            {unpaidTunggakanAll.length}
+                        </span>
+                    </button>
+                    <button
+                        type="button"
                         onClick={() => setIuranSectionTab('riwayat')}
                         className={`px-4 py-2.5 rounded-xl text-xs font-bold transition-all flex items-center gap-2 ${
                             iuranSectionTab === 'riwayat'
@@ -4789,8 +5304,23 @@ function App() {
                                 <div className="font-bold text-ink text-sm">Rp {iuranHasilEksekusi.nominalPerSantri.toLocaleString('id-ID')}</div>
                             </div>
                             <div>
-                                <span className="text-steel">Saldo Kurang (Dilewati):</span>
-                                <div className="font-bold text-amber-600 text-sm">{iuranHasilEksekusi.gagalCount} santri</div>
+                                <span className="text-steel">Saldo Kurang (Dicatat Nunggak):</span>
+                                <div className="flex items-center gap-2 mt-0.5">
+                                    <span className="font-bold text-rose-600 text-sm">{iuranHasilEksekusi.gagalCount} santri</span>
+                                    {iuranHasilEksekusi.gagalCount > 0 && (
+                                        <button
+                                            type="button"
+                                            onClick={() => {
+                                                setIuranSectionTab('tunggakan');
+                                                setTunggakanStatusFilter('BELUM_LUNAS');
+                                                setTunggakanPage(1);
+                                            }}
+                                            className="px-2 py-0.5 bg-rose-600 hover:bg-rose-700 text-white rounded-md text-[10px] font-bold transition-colors"
+                                        >
+                                            Lihat Data Nunggak →
+                                        </button>
+                                    )}
+                                </div>
                             </div>
                         </div>
                     </div>
@@ -5501,11 +6031,13 @@ function App() {
                             {/* Tombol Eksekusi */}
                             <button
                                 type="button"
-                                disabled={iuranProcessing || eligibleSantri.length === 0}
+                                disabled={iuranProcessing || (eligibleSantri.length === 0 && (!iuranSkipInsufficient || insufficientSantri.length === 0))}
                                 onClick={handleEksekusiPotongIuran}
                                 className={`w-full py-3.5 px-4 rounded-xl font-bold text-sm flex items-center justify-center gap-2 shadow-sm transition-all ${
-                                    eligibleSantri.length > 0 && !iuranProcessing
-                                        ? 'bg-indigo-600 hover:bg-indigo-700 text-white shadow-indigo-200 active:scale-[0.98]'
+                                    (eligibleSantri.length > 0 || (iuranSkipInsufficient && insufficientSantri.length > 0)) && !iuranProcessing
+                                        ? eligibleSantri.length > 0
+                                            ? 'bg-indigo-600 hover:bg-indigo-700 text-white shadow-indigo-200 active:scale-[0.98]'
+                                            : 'bg-rose-600 hover:bg-rose-700 text-white shadow-rose-200 active:scale-[0.98]'
                                         : 'bg-slate-200 text-slate-400 cursor-not-allowed'
                                 }`}
                             >
@@ -5513,9 +6045,13 @@ function App() {
                                     <>
                                         <RefreshCw className="w-4 h-4 animate-spin" /> Memproses Pemotongan Saldo...
                                     </>
+                                ) : eligibleSantri.length > 0 ? (
+                                    <>
+                                        <Zap className="w-4 h-4" /> Tarik Saldo Sekarang ({eligibleSantri.length} Santri{insufficientSantri.length > 0 && iuranSkipInsufficient ? ` • ${insufficientSantri.length} Nunggak` : ''})
+                                    </>
                                 ) : (
                                     <>
-                                        <Zap className="w-4 h-4" /> Tarik Saldo Sekarang ({eligibleSantri.length} Santri)
+                                        <AlertCircle className="w-4 h-4" /> Catat Tunggakan ({insufficientSantri.length} Santri Saldo Kurang)
                                     </>
                                 )}
                             </button>
@@ -5958,6 +6494,460 @@ function App() {
                             </div>
                         </div>
                     )}
+                </div>
+                )}
+
+                {/* DATA TUNGGAKAN IURAN / KAS MINGGUAN (SANTRI YANG BELUM TERPOTONG / SALDO KURANG) */}
+                {iuranSectionTab === 'tunggakan' && (
+                <div className="space-y-4">
+                    {/* Ringkasan KPI Tunggakan */}
+                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+                        <div className="bg-surface border border-rose-200/80 rounded-2xl p-4 shadow-xs">
+                            <div className="text-[11px] font-bold uppercase tracking-wider text-rose-600">Total Nominal Nunggak</div>
+                            <div className="text-xl font-bold font-mono text-rose-700 mt-1">
+                                Rp {totalNominalFilteredUnpaid.toLocaleString('id-ID')}
+                            </div>
+                            <div className="text-[11px] text-steel mt-0.5">Sesuai filter aktif saat ini</div>
+                        </div>
+                        <div className="bg-surface border border-whisper rounded-2xl p-4 shadow-xs">
+                            <div className="text-[11px] font-bold uppercase tracking-wider text-steel">Jumlah Tunggakan</div>
+                            <div className="text-xl font-bold font-mono text-ink mt-1">
+                                {filteredUnpaidTunggakan.length} <span className="text-xs font-semibold text-steel">catatan</span>
+                            </div>
+                            <div className="text-[11px] text-steel mt-0.5">
+                                Dari {new Set(filteredUnpaidTunggakan.map(t => String(t.nis))).size} santri belum lunas
+                            </div>
+                        </div>
+                        <div className="bg-surface border border-emerald-200/80 rounded-2xl p-4 shadow-xs">
+                            <div className="text-[11px] font-bold uppercase tracking-wider text-emerald-700">Siap Ditarik Otomatis</div>
+                            <div className="text-xl font-bold font-mono text-emerald-700 mt-1">
+                                {siapTarikCount} <span className="text-xs font-semibold text-emerald-600">tunggakan</span>
+                            </div>
+                            <div className="text-[11px] text-steel mt-0.5">Saldo tabungan santri sudah cukup</div>
+                        </div>
+                        <div className="bg-surface border border-whisper rounded-2xl p-4 shadow-xs">
+                            <div className="text-[11px] font-bold uppercase tracking-wider text-indigo-600">Riwayat Sudah Lunas</div>
+                            <div className="text-xl font-bold font-mono text-indigo-700 mt-1">
+                                {paidTunggakanAll.length} <span className="text-xs font-semibold text-steel">catatan</span>
+                            </div>
+                            <div className="text-[11px] text-steel mt-0.5">Total tunggakan yang telah dilunasi</div>
+                        </div>
+                    </div>
+
+                    {/* Panel Utama Daftar Tunggakan */}
+                    <div className="bg-surface border border-whisper shadow-sm rounded-card overflow-hidden">
+                        {/* Header & Tombol Aksi Massal */}
+                        <div className="p-4 border-b border-whisper/50 flex flex-col lg:flex-row justify-between items-start lg:items-center gap-3 bg-canvas/40">
+                            <div>
+                                <h4 className="font-bold text-ink text-sm flex items-center gap-2">
+                                    <AlertCircle className="w-4 h-4 text-rose-600" /> Data Santri Nunggak Iuran / Kas Mingguan
+                                </h4>
+                                <p className="text-xs text-steel mt-0.5">
+                                    Santri yang saldonya kurang saat penarikan iuran otomatis tercatat di sini per minggu/tanggal. Anda bisa menarik ulang saldo begitu santri top-up atau menandai lunas tunai.
+                                </p>
+                            </div>
+                            <div className="flex flex-wrap items-center gap-2 w-full lg:w-auto">
+                                {siapTarikCount > 0 && (
+                                    <button
+                                        type="button"
+                                        disabled={tunggakanProcessingId !== null}
+                                        onClick={() => handleTarikMassalTunggakanSiap(filteredUnpaidTunggakan)}
+                                        className="px-3.5 py-2 bg-emerald-600 hover:bg-emerald-700 active:scale-95 text-white rounded-xl text-xs font-bold shadow-sm flex items-center gap-1.5 transition-all disabled:opacity-60"
+                                    >
+                                        {tunggakanProcessingId === 'BULK' ? (
+                                            <><RefreshCw className="w-3.5 h-3.5 animate-spin" /> Memproses...</>
+                                        ) : (
+                                            <><Zap className="w-3.5 h-3.5" /> Tarik Saldo Siap ({siapTarikCount})</>
+                                        )}
+                                    </button>
+                                )}
+                                <button
+                                    type="button"
+                                    onClick={() => {
+                                        if (tunggakanViewMode === 'perSantri') {
+                                            downloadStyledExcel(
+                                                'Rekap Tunggakan Iuran Per Santri',
+                                                ['NIS', 'Nama Santri', 'Kelas', 'Jumlah Tunggakan', 'Rincian Periode/Kategori', 'Total Nunggak', 'Saldo Tabungan Saat Ini'],
+                                                rekapTunggakanPerSantri.map(r => [
+                                                    r.nis,
+                                                    r.nama,
+                                                    r.kelas,
+                                                    r.unpaidItems.length,
+                                                    r.unpaidItems.map(i => `${i.kategori} (${i.mingguKe || i.tanggal})`).join('; '),
+                                                    r.totalUnpaid,
+                                                    getSantriSaldoTabungan(r.nis)
+                                                ]),
+                                                'Rekap_Nunggak_Iuran_Per_Santri'
+                                            );
+                                        } else {
+                                            downloadStyledExcel(
+                                                'Data Tunggakan Iuran Mingguan',
+                                                ['Tanggal Tarik', 'Periode Minggu', 'NIS', 'Nama Santri', 'Kelas', 'Kategori', 'Keterangan', 'Nominal', 'Saldo Saat Ini', 'Status', 'Tanggal Lunas', 'Metode'],
+                                                filteredTunggakan.map(t => [
+                                                    t.tanggal,
+                                                    t.mingguKe || getWeekLabelIuran(t.tanggal),
+                                                    t.nis,
+                                                    t.nama,
+                                                    t.kelas,
+                                                    t.kategori,
+                                                    t.keterangan,
+                                                    t.nominal,
+                                                    getSantriSaldoTabungan(t.nis),
+                                                    t.status === 'LUNAS' ? 'Lunas' : 'Belum Lunas',
+                                                    t.tanggalLunas || '-',
+                                                    t.metodeLunas || '-'
+                                                ]),
+                                                'Data_Tunggakan_Iuran_Mingguan'
+                                            );
+                                        }
+                                    }}
+                                    className={btnOutline}
+                                >
+                                    <FileSpreadsheet className="w-3.5 h-3.5 text-accent" /> Unduh Excel
+                                </button>
+                            </div>
+                        </div>
+
+                        {/* Bar Filter & Toggle Mode Tampilan */}
+                        <div className="p-3.5 border-b border-whisper/50 bg-canvas/20 flex flex-wrap items-center justify-between gap-2.5 text-xs">
+                            {/* Toggle Mode Tampilan */}
+                            <div className="flex items-center bg-slate-100 p-1 rounded-xl border border-whisper">
+                                <button
+                                    type="button"
+                                    onClick={() => { setTunggakanViewMode('perItem'); setTunggakanPage(1); }}
+                                    className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${
+                                        tunggakanViewMode === 'perItem' ? 'bg-white text-indigo-700 shadow-xs' : 'text-steel hover:text-ink'
+                                    }`}
+                                >
+                                    Per Minggu / Catatan ({filteredTunggakan.length})
+                                </button>
+                                <button
+                                    type="button"
+                                    onClick={() => { setTunggakanViewMode('perSantri'); setTunggakanPage(1); }}
+                                    className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${
+                                        tunggakanViewMode === 'perSantri' ? 'bg-white text-indigo-700 shadow-xs' : 'text-steel hover:text-ink'
+                                    }`}
+                                >
+                                    Rekap Per Santri ({rekapTunggakanPerSantri.length})
+                                </button>
+                            </div>
+
+                            {/* Dropdown Filter */}
+                            <div className="flex flex-wrap items-center gap-2">
+                                <select
+                                    value={tunggakanStatusFilter}
+                                    onChange={(e) => { setTunggakanStatusFilter(e.target.value); setTunggakanPage(1); }}
+                                    className={`${inputBase} py-1.5 text-xs w-auto`}
+                                >
+                                    <option value="BELUM_LUNAS">Belum Lunas (Nunggak)</option>
+                                    <option value="LUNAS">Sudah Lunas</option>
+                                    <option value="SEMUA">Semua Status</option>
+                                </select>
+
+                                <select
+                                    value={tunggakanPeriodeFilter}
+                                    onChange={(e) => { setTunggakanPeriodeFilter(e.target.value); setTunggakanPage(1); }}
+                                    className={`${inputBase} py-1.5 text-xs w-auto`}
+                                >
+                                    <option value="Semua">Semua Minggu</option>
+                                    {tunggakanPeriodeOptions.map(p => (
+                                        <option key={p} value={p}>{p}</option>
+                                    ))}
+                                </select>
+
+                                <select
+                                    value={tunggakanKategoriFilter}
+                                    onChange={(e) => { setTunggakanKategoriFilter(e.target.value); setTunggakanPage(1); }}
+                                    className={`${inputBase} py-1.5 text-xs w-auto`}
+                                >
+                                    <option value="Semua">Semua Kategori</option>
+                                    {tunggakanKategoriOptions.map(k => (
+                                        <option key={k} value={k}>{k}</option>
+                                    ))}
+                                </select>
+
+                                <select
+                                    value={tunggakanKelasFilter}
+                                    onChange={(e) => { setTunggakanKelasFilter(e.target.value); setTunggakanPage(1); }}
+                                    className={`${inputBase} py-1.5 text-xs w-auto`}
+                                >
+                                    <option value="Semua">Semua Kelas</option>
+                                    {masterKelasList.map(k => (
+                                        <option key={k} value={k}>Kelas {k}</option>
+                                    ))}
+                                </select>
+
+                                <div className="relative">
+                                    <Search className="w-3.5 h-3.5 absolute left-3 top-2.5 text-steel" />
+                                    <input
+                                        type="text"
+                                        placeholder="Cari nama / NIS / ket..."
+                                        value={tunggakanSearch}
+                                        onChange={(e) => { setTunggakanSearch(e.target.value); setTunggakanPage(1); }}
+                                        className={`${inputBase} pl-8 py-1.5 text-xs w-48`}
+                                    />
+                                </div>
+                            </div>
+                        </div>
+
+                        {/* TABEL MODE 1: PER MINGGU / CATATAN */}
+                        {tunggakanViewMode === 'perItem' && (
+                        <div className="overflow-x-auto">
+                            <table className="w-full text-sm text-left">
+                                <thead className="bg-canvas/60 text-steel border-b border-whisper/50 text-xs">
+                                    <tr>
+                                        <th className="px-5 py-3">Minggu / Tanggal</th>
+                                        <th className="px-5 py-3">Santri</th>
+                                        <th className="px-5 py-3">Iuran / Keterangan</th>
+                                        <th className="px-5 py-3 text-right">Nominal Nunggak</th>
+                                        <th className="px-5 py-3 text-right">Saldo Saat Ini</th>
+                                        <th className="px-5 py-3 text-center">Status</th>
+                                        <th className="px-5 py-3 text-center">Aksi</th>
+                                    </tr>
+                                </thead>
+                                <tbody className="divide-y divide-slate-100 text-xs">
+                                    {pagedTunggakanItems.length === 0 ? (
+                                        <tr>
+                                            <td colSpan={7} className="px-6 py-12 text-center text-steel">
+                                                {allTunggakanIuran.length === 0
+                                                    ? 'Belum ada data tunggakan iuran. Santri yang saldonya kurang saat penarikan iuran otomatis akan tercatat di sini.'
+                                                    : 'Tidak ada data tunggakan yang sesuai dengan filter yang dipilih.'}
+                                            </td>
+                                        </tr>
+                                    ) : (
+                                        pagedTunggakanItems.map((item) => {
+                                            const saldoNow = getSantriSaldoTabungan(item.nis);
+                                            const isSaldoCukup = saldoNow >= Number(item.nominal || 0);
+                                            const isLunas = item.status === 'LUNAS';
+                                            const isBusy = tunggakanProcessingId === item.id || tunggakanProcessingId === 'BULK';
+                                            return (
+                                                <tr key={item.id} className="hover:bg-canvas/50 transition-colors">
+                                                    <td className="px-5 py-3">
+                                                        <div className="font-bold text-indigo-700">{item.mingguKe || getWeekLabelIuran(item.tanggal)}</div>
+                                                        <div className="text-[10px] font-mono text-steel">{item.tanggal}</div>
+                                                    </td>
+                                                    <td className="px-5 py-3">
+                                                        <div className="font-semibold text-ink">{item.nama}</div>
+                                                        <div className="text-[10px] text-steel font-mono">{item.nis} • Kelas {item.kelas || '-'}</div>
+                                                    </td>
+                                                    <td className="px-5 py-3">
+                                                        <span className="inline-block px-2 py-0.5 rounded-md bg-indigo-50 text-indigo-700 font-bold text-[10px] mr-1.5">
+                                                            {item.kategori}
+                                                        </span>
+                                                        <span className="text-ink font-medium">{item.keterangan || '-'}</span>
+                                                        {item.targetLabel && (
+                                                            <div className="text-[10px] text-steel mt-0.5">Target: {item.targetLabel}</div>
+                                                        )}
+                                                    </td>
+                                                    <td className="px-5 py-3 text-right font-bold font-mono text-rose-600">
+                                                        Rp {Number(item.nominal || 0).toLocaleString('id-ID')}
+                                                    </td>
+                                                    <td className="px-5 py-3 text-right">
+                                                        <div className={`font-bold font-mono ${isSaldoCukup ? 'text-emerald-600' : 'text-rose-500'}`}>
+                                                            Rp {saldoNow.toLocaleString('id-ID')}
+                                                        </div>
+                                                        {!isLunas && (
+                                                            <div className={`text-[10px] font-semibold ${isSaldoCukup ? 'text-emerald-600' : 'text-amber-600'}`}>
+                                                                {isSaldoCukup ? '✓ Saldo Cukup' : `Kurang Rp ${(Number(item.nominal || 0) - saldoNow).toLocaleString('id-ID')}`}
+                                                            </div>
+                                                        )}
+                                                    </td>
+                                                    <td className="px-5 py-3 text-center">
+                                                        {isLunas ? (
+                                                            <div>
+                                                                <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-700">
+                                                                    LUNAS
+                                                                </span>
+                                                                <div className="text-[10px] text-steel mt-0.5">{item.tanggalLunas} ({item.metodeLunas})</div>
+                                                            </div>
+                                                        ) : (
+                                                            <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-rose-100 text-rose-700">
+                                                                NUNGGAK
+                                                            </span>
+                                                        )}
+                                                    </td>
+                                                    <td className="px-5 py-3 text-center">
+                                                        <div className="flex items-center justify-center gap-1.5">
+                                                            {!isLunas && (
+                                                                <>
+                                                                    <button
+                                                                        type="button"
+                                                                        disabled={!isSaldoCukup || isBusy}
+                                                                        onClick={() => handleLunasiTunggakanIuran(item, 'tabungan')}
+                                                                        title={isSaldoCukup ? 'Potong saldo tabungan santri sekarang' : 'Saldo tabungan santri masih kurang'}
+                                                                        className={`px-2.5 py-1.5 rounded-lg text-[11px] font-bold flex items-center gap-1 transition-all ${
+                                                                            isSaldoCukup && !isBusy
+                                                                                ? 'bg-emerald-600 hover:bg-emerald-700 text-white shadow-2xs'
+                                                                                : 'bg-slate-100 text-slate-400 cursor-not-allowed'
+                                                                        }`}
+                                                                    >
+                                                                        <Zap className="w-3 h-3" /> Tarik
+                                                                    </button>
+                                                                    <button
+                                                                        type="button"
+                                                                        disabled={isBusy}
+                                                                        onClick={() => handleLunasiTunggakanIuran(item, 'tunai')}
+                                                                        title="Tandai lunas dibayar tunai (cash)"
+                                                                        className="px-2.5 py-1.5 rounded-lg text-[11px] font-bold bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 transition-all"
+                                                                    >
+                                                                        Tunai
+                                                                    </button>
+                                                                </>
+                                                            )}
+                                                            <button
+                                                                type="button"
+                                                                disabled={isBusy}
+                                                                onClick={() => handleHapusTunggakanIuran(item)}
+                                                                title="Hapus catatan tunggakan"
+                                                                className="p-1.5 text-rose-600 hover:bg-rose-50 rounded-lg border border-rose-200 transition-colors"
+                                                            >
+                                                                <Trash2 className="w-3.5 h-3.5" />
+                                                            </button>
+                                                        </div>
+                                                    </td>
+                                                </tr>
+                                            );
+                                        })
+                                    )}
+                                </tbody>
+                            </table>
+                        </div>
+                        )}
+
+                        {/* TABEL MODE 2: REKAP PER SANTRI */}
+                        {tunggakanViewMode === 'perSantri' && (
+                        <div className="overflow-x-auto">
+                            <table className="w-full text-sm text-left">
+                                <thead className="bg-canvas/60 text-steel border-b border-whisper/50 text-xs">
+                                    <tr>
+                                        <th className="px-5 py-3">Santri</th>
+                                        <th className="px-5 py-3 text-center">Kali Nunggak</th>
+                                        <th className="px-5 py-3">Rincian Tunggakan Mingguan</th>
+                                        <th className="px-5 py-3 text-right">Total Nunggak</th>
+                                        <th className="px-5 py-3 text-right">Saldo Tabungan</th>
+                                        <th className="px-5 py-3 text-center">Aksi Pelunasan</th>
+                                    </tr>
+                                </thead>
+                                <tbody className="divide-y divide-slate-100 text-xs">
+                                    {pagedTunggakanSantri.length === 0 ? (
+                                        <tr>
+                                            <td colSpan={6} className="px-6 py-12 text-center text-steel">
+                                                Tidak ada rekap santri nunggak untuk filter saat ini.
+                                            </td>
+                                        </tr>
+                                    ) : (
+                                        pagedTunggakanSantri.map((row) => {
+                                            const saldoNow = getSantriSaldoTabungan(row.nis);
+                                            const canPayAll = row.unpaidItems.length > 0 && saldoNow >= row.totalUnpaid;
+                                            const isBusy = tunggakanProcessingId === `SANTRI-${row.nis}` || tunggakanProcessingId === 'BULK';
+                                            return (
+                                                <tr key={row.nis} className="hover:bg-canvas/50 transition-colors">
+                                                    <td className="px-5 py-3">
+                                                        <div className="font-bold text-ink">{row.nama}</div>
+                                                        <div className="text-[10px] text-steel font-mono">{row.nis} • Kelas {row.kelas}</div>
+                                                    </td>
+                                                    <td className="px-5 py-3 text-center">
+                                                        <span className={`px-2.5 py-1 rounded-full text-xs font-extrabold font-mono ${
+                                                            row.unpaidItems.length > 0 ? 'bg-rose-100 text-rose-700' : 'bg-emerald-100 text-emerald-700'
+                                                        }`}>
+                                                            {row.unpaidItems.length}x
+                                                        </span>
+                                                    </td>
+                                                    <td className="px-5 py-3">
+                                                        <div className="flex flex-wrap gap-1.5">
+                                                            {row.unpaidItems.map(it => (
+                                                                <span key={it.id} className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-rose-50 border border-rose-200/80 text-rose-800 text-[10px] font-semibold">
+                                                                    {it.kategori} • {it.mingguKe || it.tanggal} (Rp {Number(it.nominal || 0).toLocaleString('id-ID')})
+                                                                </span>
+                                                            ))}
+                                                            {row.unpaidItems.length === 0 && (
+                                                                <span className="text-emerald-600 font-semibold text-[11px]">✓ Semua tunggakan sudah lunas</span>
+                                                            )}
+                                                        </div>
+                                                    </td>
+                                                    <td className="px-5 py-3 text-right font-extrabold font-mono text-rose-600">
+                                                        Rp {row.totalUnpaid.toLocaleString('id-ID')}
+                                                    </td>
+                                                    <td className="px-5 py-3 text-right">
+                                                        <div className={`font-bold font-mono ${canPayAll ? 'text-emerald-600' : 'text-rose-500'}`}>
+                                                            Rp {saldoNow.toLocaleString('id-ID')}
+                                                        </div>
+                                                    </td>
+                                                    <td className="px-5 py-3 text-center">
+                                                        {row.unpaidItems.length > 0 ? (
+                                                            <div className="flex items-center justify-center gap-1.5">
+                                                                <button
+                                                                    type="button"
+                                                                    disabled={!canPayAll || isBusy}
+                                                                    onClick={() => handleTarikSemuaTunggakanSantri(row.nis, row.nama, row.unpaidItems, 'tabungan')}
+                                                                    className={`px-2.5 py-1.5 rounded-lg text-[11px] font-bold flex items-center gap-1 transition-all ${
+                                                                        canPayAll && !isBusy
+                                                                            ? 'bg-emerald-600 hover:bg-emerald-700 text-white shadow-2xs'
+                                                                            : 'bg-slate-100 text-slate-400 cursor-not-allowed'
+                                                                    }`}
+                                                                >
+                                                                    <Zap className="w-3 h-3" /> Tarik Semua
+                                                                </button>
+                                                                <button
+                                                                    type="button"
+                                                                    disabled={isBusy}
+                                                                    onClick={() => handleTarikSemuaTunggakanSantri(row.nis, row.nama, row.unpaidItems, 'tunai')}
+                                                                    className="px-2.5 py-1.5 rounded-lg text-[11px] font-bold bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 transition-all"
+                                                                >
+                                                                    Lunas Tunai
+                                                                </button>
+                                                            </div>
+                                                        ) : (
+                                                            <span className="text-emerald-600 font-bold text-[11px]">Lunas</span>
+                                                        )}
+                                                    </td>
+                                                </tr>
+                                            );
+                                        })
+                                    )}
+                                </tbody>
+                            </table>
+                        </div>
+                        )}
+
+                        {/* Pagination Tunggakan */}
+                        {totalTunggakanPages > 1 && (
+                            <div className="px-6 py-3.5 bg-canvas/40 border-t border-whisper flex flex-col sm:flex-row items-center justify-between gap-3 text-xs">
+                                <div className="text-steel">
+                                    Menampilkan <span className="font-semibold text-ink">{((tunggakanPage - 1) * tunggakanPerPage) + 1}</span> - <span className="font-semibold text-ink">{Math.min(tunggakanPage * tunggakanPerPage, activeTunggakanListLength)}</span> dari <span className="font-semibold text-ink">{activeTunggakanListLength}</span> data
+                                </div>
+                                <div className="flex items-center gap-1.5">
+                                    <button
+                                        type="button"
+                                        disabled={tunggakanPage === 1}
+                                        onClick={() => setTunggakanPage(p => Math.max(1, p - 1))}
+                                        className={`px-2.5 py-1.5 rounded-lg border flex items-center gap-1 font-semibold transition-all ${
+                                            tunggakanPage === 1
+                                                ? 'bg-slate-100 text-slate-400 border-whisper cursor-not-allowed'
+                                                : 'bg-white hover:bg-slate-50 text-ink border-whisper shadow-xs'
+                                        }`}
+                                    >
+                                        <ChevronLeft className="w-3.5 h-3.5" /> Sebelumnya
+                                    </button>
+                                    <span className="px-3 py-1 font-bold text-rose-700 bg-rose-50 border border-rose-200 rounded-lg">
+                                        {tunggakanPage} / {totalTunggakanPages}
+                                    </span>
+                                    <button
+                                        type="button"
+                                        disabled={tunggakanPage === totalTunggakanPages}
+                                        onClick={() => setTunggakanPage(p => Math.min(totalTunggakanPages, p + 1))}
+                                        className={`px-2.5 py-1.5 rounded-lg border flex items-center gap-1 font-semibold transition-all ${
+                                            tunggakanPage === totalTunggakanPages
+                                                ? 'bg-slate-100 text-slate-400 border-whisper cursor-not-allowed'
+                                                : 'bg-white hover:bg-slate-50 text-ink border-whisper shadow-xs'
+                                        }`}
+                                    >
+                                        Selanjutnya <ChevronRight className="w-3.5 h-3.5" />
+                                    </button>
+                                </div>
+                            </div>
+                        )}
+                    </div>
                 </div>
                 )}
 
