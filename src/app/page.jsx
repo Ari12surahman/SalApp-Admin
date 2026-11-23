@@ -1659,34 +1659,37 @@ function App() {
     useEffect(() => {
         if (modalType !== 'FORM_PAKASIR' || !pakasirData.qrString || pakasirData.isPaid) return;
 
-        const interval = setInterval(async () => {
-            try {
-                const tRef = dataTagihan.find(t => t.id === formData.id);
-                const targetTagihanName = tRef ? tRef.tagihan : formData.tagihan;
-                const masterRef = masterTagihanList.find(m => String(targetTagihanName).toLowerCase().includes(String(m.tagihan).toLowerCase()));
-                const slug = masterRef?.pakasirSlug || masterRef?.pakasir_slug || masterRef?.PAKASIR_SLUG || appConfig.pakasirSlug || appConfig.pakasir_slug || appConfig.PAKASIR_SLUG || 'depodomain';
-                const apiKey = masterRef?.pakasirApiKey || masterRef?.pakasir_apikey || masterRef?.PAKASIR_APIKEY || appConfig.pakasirApiKey || appConfig.pakasir_apikey || appConfig.PAKASIR_APIKEY || 'xxx123';
+        let inFlight = false;
+        let settled = false;
+        const targetOrderId = pakasirData.uniqueOrderId || pakasirData.txnId || formData.id;
 
-                let data;
+        const interval = setInterval(async () => {
+            if (inFlight || settled) return;
+            inFlight = true;
+            try {
                 const res = await fetch('/api/wijayapay', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ action: 'checkStatus', data: { orderId: pakasirData.txnId || formData.id } })
+                    body: JSON.stringify({ action: 'checkStatus', data: { orderId: targetOrderId } })
                 });
-                data = await res.json();
+                const data = await res.json();
 
-                if (data?.isPaid || data?.status === 'SUCCESS') {
+                if ((data?.isPaid || data?.status === 'SUCCESS') && !settled) {
+                    settled = true;
+                    clearInterval(interval);
                     setPakasirData(prev => ({ ...prev, isPaid: true }));
                     showNotification("Pembayaran berhasil dikonfirmasi!");
                     setTimeout(() => {
                         processPelunasanOtomatis(new Date().toISOString());
-                    }, 2000);
+                    }, 1200);
                 }
-            } catch (err) { }
-        }, 5000);
+            } catch (err) { } finally {
+                inFlight = false;
+            }
+        }, 4000);
 
         return () => clearInterval(interval);
-    }, [modalType, pakasirData.qrString, pakasirData.isPaid, formData.id]);
+    }, [modalType, pakasirData.qrString, pakasirData.isPaid, pakasirData.uniqueOrderId, formData.id]);
 
 
     const handleGeneratePakasirQR = async (method) => {
@@ -1700,12 +1703,12 @@ function App() {
         setPakasirData(prev => ({ ...prev, loading: true, step: 'LOADING', method, uniqueOrderId }));
 
         try {
-            const pokokAmount = formData.sisa || formData.nominal || 0;
+            const pokokAmount = Number(formData.sisa || formData.nominal || 0);
             const appFee = formData.biaya_aplikasi ? Number(formData.biaya_aplikasi) : 0;
-            const adminFee = (method === 'qris' || method === 'QRIS') ? 0 : ((method || '').includes('bca') ? 4700 : ((method || '').includes('alfa') || (method || '').includes('indo')) ? 3000 : 3500);
-            const amountToPay = pokokAmount + appFee + adminFee;
+            // Kirim nominal nett (pokok + biaya aplikasi) ke WijayaPay; biaya admin bank/QRIS dihitung & dikembalikan langsung oleh WijayaPay
+            const amountNett = pokokAmount + appFee;
             const isQris = method === 'QRIS' || method === 'qris';
-            if (!isQris && amountToPay < 10000) {
+            if (!isQris && amountNett < 10000) {
                 showNotification("Nominal pembayaran via Virtual Account minimal Rp 10.000. Untuk nominal di bawah Rp 10.000, silakan gunakan QRIS.");
                 setPakasirData(prev => ({ ...prev, loading: false, step: 'CHOOSE_METHOD' }));
                 return;
@@ -1716,7 +1719,7 @@ function App() {
               orderId: formData.id,
               pakasirOrderId: uniqueOrderId,
               method,
-              amount: amountToPay,
+              amount: amountNett,
               tagihanData: tRef || formData,
               isBulk: false,
               slug: slug,
@@ -1741,7 +1744,7 @@ function App() {
               action: 'requestPayment', 
               data: { 
                 method, 
-                amount: amountToPay, 
+                amount: amountNett, 
                 orderId: uniqueOrderId, 
                 customerName: formData.nama || 'Santri', 
                 tipe: 'TAGIHAN_ADMIN', 
@@ -1785,9 +1788,22 @@ function App() {
                 const strData = JSON.stringify(data || {}).toLowerCase();
                 const isSandboxApi = strData.includes('"sandbox"') || strData.includes('sandbox.pakasir.com') || String(qrStr).toUpperCase().includes('SANDBOX') || String(checkoutUrl).toUpperCase().includes('SANDBOX') || String(qrStr) === '123123123';
 
-                const txnId = paymentData.txn_id || data.txn_id || '';
+                const actualTotalBayar = Number(paymentData.total_amount || paymentData.amount || amountNett);
+                const actualAdminFee = Math.max(0, actualTotalBayar - amountNett);
+                const txnId = paymentData.trx_reference || paymentData.txn_id || data.txn_id || '';
                 setPakasirTimeLeft(900);
-                setPakasirData(prev => ({ ...prev, loading: false, step: isQris ? 'SHOW_QR' : 'SHOW_VA', qrString: qrStr, checkoutUrl: checkoutUrl, isSandbox: false, txnId: txnId, uniqueOrderId: uniqueOrderId }));
+                setPakasirData(prev => ({
+                    ...prev,
+                    loading: false,
+                    step: isQris ? 'SHOW_QR' : 'SHOW_VA',
+                    qrString: qrStr,
+                    checkoutUrl: checkoutUrl,
+                    isSandbox: false,
+                    txnId: txnId,
+                    uniqueOrderId: uniqueOrderId,
+                    totalAmount: actualTotalBayar,
+                    adminFee: actualAdminFee
+                }));
                 const bankName = getBankDisplayName(method) || method;
                 addLog('INTEGRATION', 'PEMBAYARAN ONLINE', `Membuat pembayaran ${bankName} untuk ${uniqueOrderId}${isSandboxApi ? ' (Sandbox)' : ''}`);
             } else {
@@ -12432,7 +12448,7 @@ Terima kasih atas kerja samanya.`;
                                             </div>
                                             <div className="flex">
                                                 <div className="w-1/3 p-2.5 bg-slate-50/70 border-r border-slate-200 text-slate-500 font-medium text-xs">Biaya Admin</div>
-                                                <div className="w-2/3 p-2.5 text-slate-800 font-semibold text-xs">Rp {((pakasirData.method || '').includes('bca') ? 4700 : ((pakasirData.method || '').includes('alfa') || (pakasirData.method || '').includes('indo')) ? 3000 : 3500).toLocaleString("id-ID")}</div>
+                                                <div className="w-2/3 p-2.5 text-slate-800 font-semibold text-xs">Rp {Number(pakasirData.adminFee ?? 0).toLocaleString("id-ID")}</div>
                                             </div>
                                             <div className="flex">
                                                 <div className="w-1/3 p-2.5 bg-slate-50/70 border-r border-slate-200 text-slate-500 font-medium text-xs">Biaya Aplikasi</div>
@@ -12440,7 +12456,7 @@ Terima kasih atas kerja samanya.`;
                                             </div>
                                             <div className="flex bg-slate-50/40">
                                                 <div className="w-1/3 p-2.5 bg-slate-50 border-r border-slate-200 text-slate-900 font-bold text-sm">Total Bayar</div>
-                                                <div className="w-2/3 p-2.5 text-blue-700 font-bold text-base">Rp {(Number(formData.sisa || formData.nominal || 0) + ((pakasirData.method || '').includes('bca') ? 4700 : ((pakasirData.method || '').includes('alfa') || (pakasirData.method || '').includes('indo')) ? 3000 : 3500) + Number(formData.biaya_aplikasi || 0)).toLocaleString("id-ID")}</div>
+                                                <div className="w-2/3 p-2.5 text-blue-700 font-bold text-base">Rp {Number(pakasirData.totalAmount || (Number(formData.sisa || formData.nominal || 0) + Number(pakasirData.adminFee ?? 0) + Number(formData.biaya_aplikasi || 0))).toLocaleString("id-ID")}</div>
                                             </div>
                                         </div>
                                     </div>
@@ -12484,9 +12500,9 @@ Terima kasih atas kerja samanya.`;
 
                                                         {isRetail && (
                                                             <div className="w-full text-left bg-amber-50 border border-amber-200 rounded-xl p-3 text-xs text-amber-900 leading-relaxed mt-1">
-                                                                <p className="font-bold mb-1">🏪 Petunjuk Pembayaran di Kasir ${retailName}:</p>
+                                                                <p className="font-bold mb-1">🏪 Petunjuk Pembayaran di Kasir {retailName}:</p>
                                                                 <ol className="list-decimal list-inside space-y-1 text-[11px] text-amber-800">
-                                                                    <li>Kunjungi gerai <b>${retailName}</b> terdekat.</li>
+                                                                    <li>Kunjungi gerai <b>{retailName}</b> terdekat.</li>
                                                                     <li>Beri tahu kasir: <i>"Mau bayar tagihan merchant <b>LINKITA</b>"</i>.</li>
                                                                     <li>Tunjukkan / sebutkan <b>Kode Pembayaran</b> di atas ke kasir.</li>
                                                                     <li>Kasir akan menginput kode, bayar sesuai nominal dan simpan struknya.</li>
@@ -12500,7 +12516,7 @@ Terima kasih atas kerja samanya.`;
                                             <div className="w-full p-4 bg-blue-50/60 rounded-2xl flex justify-between items-center border border-blue-100 mb-4">
                                                 <div className="text-left">
                                                     <p className="text-xs text-blue-600 font-medium">Total Pembayaran</p>
-                                                    <p className="text-xl font-extrabold text-blue-950">Rp {(Number(formData.sisa || formData.nominal || 0) + ((pakasirData.method || '').includes('bca') ? 4700 : ((pakasirData.method || '').includes('alfa') || (pakasirData.method || '').includes('indo')) ? 3000 : 3500) + Number(formData.biaya_aplikasi || 0)).toLocaleString("id-ID")}</p>
+                                                    <p className="text-xl font-extrabold text-blue-950">Rp {Number(pakasirData.totalAmount || (Number(formData.sisa || formData.nominal || 0) + Number(pakasirData.adminFee ?? 0) + Number(formData.biaya_aplikasi || 0))).toLocaleString("id-ID")}</p>
                                                 </div>
                                                 <div className="flex items-center gap-2 text-xs font-bold text-blue-600">
                                                     <span className="w-2 h-2 rounded-full bg-blue-600 animate-ping"></span> {((pakasirData.method || '').includes('alfa') || (pakasirData.method || '').includes('indo')) ? 'Menunggu Pembayaran di Kasir...' : 'Menunggu Transfer...'}

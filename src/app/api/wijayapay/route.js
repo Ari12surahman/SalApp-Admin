@@ -67,13 +67,31 @@ export async function POST(request) {
       const cleanOrigin = origin.startsWith('http') ? origin : `https://${origin}`;
       const callbackUrl = payload.callbackUrl || `${cleanOrigin}/api/wijayapay/webhook`;
 
+      // Hitung nominalToSend agar pesantren selalu terima NETT 100% dari amount
+      let nominalToSend = amount;
+      if (codePayment === 'QRIS') {
+        for (let s = amount; s <= amount + 50; s++) {
+          const wpGross = s + Math.ceil(s * 0.007 + 300);
+          const wpFee = Math.ceil(wpGross * 0.007 + 300);
+          const wpNett = wpGross - wpFee;
+          if (wpNett >= amount) {
+            nominalToSend = s;
+            break;
+          }
+        }
+      } else if (codePayment === 'CIMBVA') {
+        nominalToSend = amount + 3500;
+      } else {
+        nominalToSend = amount;
+      }
+
       const createPayload = {
         code_merchant: codeMerchant,
         api_key: apiKey,
         code_payment: codePayment,
         ref_id: orderId,
         customer_name: customerName,
-        nominal: amount,
+        nominal: nominalToSend,
         callback_url: callbackUrl
       };
 
@@ -139,6 +157,9 @@ export async function POST(request) {
       const qrImg = d.qr_image || '';
       const paymentCode = isQRIS ? qrStr : vaNum;
 
+      const totalBayarFinal = Number(d.total_bayar || amount);
+      const actualAdminFee = Math.max(0, totalBayarFinal - amount);
+
       const paymentObj = {
         va_number: vaNum,
         payment_number: paymentCode,
@@ -147,9 +168,10 @@ export async function POST(request) {
         qr_string: qrStr,
         qr_image: qrImg,
         checkout_url: d.checkout_url || '',
-        amount: d.total_bayar || amount,
-        total_fee: d.total_fee || 0,
-        total_diterima: d.total_diterima || amount,
+        amount: totalBayarFinal,
+        total_amount: totalBayarFinal,
+        total_fee: actualAdminFee || Number(d.total_fee || 0),
+        total_diterima: Number(d.total_diterima || amount),
         trx_reference: d.trx_reference || '',
         expired: d.expired || '',
         instructions: d.tutorial_pembayaran || '',
@@ -177,7 +199,7 @@ export async function POST(request) {
       // Cek dulu di database lokal jika sudah lunas
       try {
         const { data: dbOrder } = await supabase.from('PakasirOrders').select('*').eq('order_id', orderId).maybeSingle();
-        if (dbOrder && (dbOrder.status === 'SUCCESS' || dbOrder.status === 'PAID')) {
+        if (dbOrder && (dbOrder.status === 'SUCCESS' || dbOrder.status === 'PAID' || dbOrder.status === 'COMPLETED')) {
           return NextResponse.json({
             status: 'SUCCESS',
             isPaid: true,
@@ -193,8 +215,15 @@ export async function POST(request) {
       });
 
       const resData = await res.json();
-      const statusStr = String(resData?.status_pembayaran || '').toLowerCase();
-      const isPaid = statusStr === 'paid' || statusStr === 'success' || statusStr === 'settlement';
+      const rawObj = resData?.data || resData || {};
+      const statusStr = String(
+        rawObj?.status_pembayaran ||
+        rawObj?.status ||
+        resData?.status_pembayaran ||
+        resData?.status ||
+        ''
+      ).toLowerCase();
+      const isPaid = ['paid', 'success', 'settlement', 'berhasil', 'completed'].includes(statusStr);
 
       if (isPaid) {
         try {
