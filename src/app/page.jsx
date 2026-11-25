@@ -528,6 +528,9 @@ function App() {
     const [formData, setFormData] = useState({});
     const [searchTerm, setSearchTerm] = useState('');
     const [currentPage, setCurrentPage] = useState(1);
+    const [logSearch, setLogSearch] = useState('');
+    const [logAksiFilter, setLogAksiFilter] = useState('Semua');
+    const [logModulFilter, setLogModulFilter] = useState('Semua');
     const [tabunganSubTab, setTabunganSubTab] = useState('transaksi'); // 'transaksi' | 'limit' | 'iuran'
     // --- IURAN & KAS INSIDENTAL (POTONG OTOMATIS) ---
     const defaultMasterInsidental = [
@@ -12238,22 +12241,126 @@ Terima kasih atas kerja samanya.`;
     };
 
     const renderLogAktivitas = () => {
-        const itemsPerPage = 10;
-        const totalPages = Math.ceil(dataLog.length / itemsPerPage);
-        const paginatedLog = dataLog.slice((currentPage - 1) * itemsPerPage, currentPage * itemsPerPage);
+        const logAksiOptions = Array.from(new Set(dataLog.map(l => String(l.aksi || '').trim()).filter(Boolean)));
+        const logModulOptions = Array.from(new Set(dataLog.map(l => formatLogModul(l.modul)).filter(Boolean)));
+
+        const tokens = logSearch.trim().toLowerCase().split(/\s+/).filter(Boolean);
+        const filteredLog = dataLog.filter((l) => {
+            if (logAksiFilter !== 'Semua' && String(l.aksi || '').trim() !== logAksiFilter) return false;
+            if (logModulFilter !== 'Semua' && formatLogModul(l.modul) !== logModulFilter) return false;
+            if (tokens.length > 0) {
+                const haystack = [
+                    l.id,
+                    l.waktu,
+                    l.user,
+                    l.aksi,
+                    l.modul,
+                    formatLogModul(l.modul),
+                    l.detail,
+                    formatLogDetail(l.detail),
+                ].join(' ').toLowerCase();
+                if (!tokens.every(tok => haystack.includes(tok))) return false;
+            }
+            return true;
+        });
+
+        const hasActiveFilter = Boolean(logSearch.trim()) || logAksiFilter !== 'Semua' || logModulFilter !== 'Semua';
+        const itemsPerPage = 15;
+        const totalPages = Math.max(1, Math.ceil(filteredLog.length / itemsPerPage));
+        const safePage = Math.min(currentPage, totalPages);
+        const paginatedLog = filteredLog.slice((safePage - 1) * itemsPerPage, safePage * itemsPerPage);
 
         return (
             <div className="space-y-6 animate-in fade-in duration-500">
                 <div className="flex flex-col xl:flex-row justify-between items-start xl:items-center gap-4 mb-6 w-full">
                     <div className="flex-1 min-w-0 pr-4"><h2 className="text-2xl font-semibold tracking-tight text-ink">Audit & Log Aktivitas</h2><p className="text-sm text-steel">Rekam jejak tindakan pengguna pada sistem (Anti-Fraud).</p></div>
-                    <button onClick={() => downloadStyledExcel('Log Aktivitas', ['ID', 'Waktu', 'Pengguna', 'Aksi', 'Modul', 'Detail Aktivitas'], dataLog.map(l => [l.id, l.waktu, l.user, l.aksi, formatLogModul(l.modul), formatLogDetail(l.detail)]), 'Log_Aktivitas')} className={btnOutline}><FileSpreadsheet className="w-4 h-4 text-accent" /> Unduh</button>
+                    <button onClick={() => downloadStyledExcel('Log Aktivitas', ['ID', 'Waktu', 'Pengguna', 'Aksi', 'Modul', 'Detail Aktivitas'], filteredLog.map(l => [l.id, l.waktu, l.user, l.aksi, formatLogModul(l.modul), formatLogDetail(l.detail)]), 'Log_Aktivitas')} className={btnOutline}><FileSpreadsheet className="w-4 h-4 text-accent" /> Unduh</button>
                 </div>
                 <div className="bg-surface border border-whisper shadow-sm rounded-card overflow-hidden">
+                    <div className="bg-canvas/30 border-b border-whisper/50 p-4 flex flex-col lg:flex-row items-stretch lg:items-center justify-between gap-3">
+                        <div className="relative flex-1 min-w-0">
+                            <Search className="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-steel" />
+                            <input
+                                type="text"
+                                placeholder="Cari apapun di log (pengguna, santri, nominal, tanggal, modul, detail)..."
+                                value={logSearch}
+                                onChange={(e) => {
+                                    setLogSearch(e.target.value);
+                                    setCurrentPage(1);
+                                }}
+                                className={`${inputBase} pl-10 pr-9 text-xs sm:text-sm`}
+                            />
+                            {logSearch && (
+                                <button
+                                    type="button"
+                                    onClick={() => {
+                                        setLogSearch('');
+                                        setCurrentPage(1);
+                                    }}
+                                    title="Hapus pencarian"
+                                    className="absolute right-3 top-1/2 -translate-y-1/2 text-steel hover:text-ink"
+                                >
+                                    <X className="w-4 h-4" />
+                                </button>
+                            )}
+                        </div>
+                        <div className="flex flex-wrap items-center gap-2">
+                            <select
+                                value={logAksiFilter}
+                                onChange={(e) => {
+                                    setLogAksiFilter(e.target.value);
+                                    setCurrentPage(1);
+                                }}
+                                className={`${inputBase} w-auto py-2 text-xs font-medium`}
+                            >
+                                <option value="Semua">Semua Aksi</option>
+                                {logAksiOptions.map(aksi => (
+                                    <option key={aksi} value={aksi}>{aksi}</option>
+                                ))}
+                            </select>
+                            <select
+                                value={logModulFilter}
+                                onChange={(e) => {
+                                    setLogModulFilter(e.target.value);
+                                    setCurrentPage(1);
+                                }}
+                                className={`${inputBase} w-auto py-2 text-xs font-medium`}
+                            >
+                                <option value="Semua">Semua Modul</option>
+                                {logModulOptions.map(modul => (
+                                    <option key={modul} value={modul}>{modul}</option>
+                                ))}
+                            </select>
+                            <span className="text-xs text-steel font-medium px-1 whitespace-nowrap">
+                                Menampilkan <span className="font-semibold text-ink">{filteredLog.length}</span> dari <span className="font-semibold text-ink">{dataLog.length}</span> log
+                            </span>
+                            {hasActiveFilter && (
+                                <button
+                                    type="button"
+                                    onClick={() => {
+                                        setLogSearch('');
+                                        setLogAksiFilter('Semua');
+                                        setLogModulFilter('Semua');
+                                        setCurrentPage(1);
+                                    }}
+                                    className="px-2.5 py-1.5 text-xs font-semibold text-danger bg-dangerBg hover:bg-red-100 rounded-lg border border-red-200 transition-colors"
+                                >
+                                    Reset
+                                </button>
+                            )}
+                        </div>
+                    </div>
                     <div className="overflow-x-auto hidden md:block">
                         <table className="w-full text-sm text-left">
                             <thead className="bg-canvas/60 text-steel border-b border-whisper/50"><tr><th className="px-6 py-3">Waktu</th><th className="px-6 py-3">Pengguna</th><th className="px-6 py-3 text-center">Aksi</th><th className="px-6 py-3">Modul</th><th className="px-6 py-3 w-1/2">Detail Aktivitas</th>{currentUser?.role === 'superadmin' && <th className="px-6 py-3 text-center">Tindakan</th>}</tr></thead>
                             <tbody className="divide-y divide-slate-100">
-                                {paginatedLog.map((log) => (
+                                {paginatedLog.length === 0 ? (
+                                    <tr>
+                                        <td colSpan={currentUser?.role === 'superadmin' ? 6 : 5} className="px-6 py-10 text-center text-steel text-sm">
+                                            {hasActiveFilter ? 'Tidak ada log aktivitas yang cocok dengan pencarian atau filter.' : 'Belum ada riwayat aktivitas.'}
+                                        </td>
+                                    </tr>
+                                ) : paginatedLog.map((log) => (
                                     <tr key={log.id} className="bg-surface hover:bg-canvas transition-colors">
                                         <td className="px-6 py-3 whitespace-nowrap text-steel">{log.waktu}</td>
                                         <td className="px-6 py-3 font-medium text-ink">{log.user}</td>
@@ -12275,7 +12382,9 @@ Terima kasih atas kerja samanya.`;
                     </div>
                     <div className="md:hidden flex flex-col divide-y divide-whisper/50">
                         {paginatedLog.length === 0 ? (
-                            <div className="text-center py-8 text-steel text-sm">Belum ada riwayat aktivitas.</div>
+                            <div className="text-center py-8 text-steel text-sm">
+                                {hasActiveFilter ? 'Tidak ada log aktivitas yang cocok dengan pencarian atau filter.' : 'Belum ada riwayat aktivitas.'}
+                            </div>
                         ) : paginatedLog.map((log) => (
                             <div key={log.id} className="p-4 flex flex-col gap-2 bg-surface">
                                 <div className="flex justify-between items-start gap-3">
@@ -12299,11 +12408,11 @@ Terima kasih atas kerja samanya.`;
                         ))}
                     </div>
                     
-                    {totalPages > 0 && (
+                    {filteredLog.length > 0 && (
                         <div className="flex justify-center items-center gap-4 p-4 border-t border-whisper/50 bg-canvas/30">
-                            <button onClick={() => setCurrentPage(p => Math.max(1, p - 1))} disabled={currentPage === 1} className="px-3 py-1.5 text-sm font-medium border border-whisper rounded-lg bg-surface hover:bg-canvas disabled:opacity-50 disabled:cursor-not-allowed text-ink">Prev</button>
-                            <span className="text-sm text-steel font-medium">Hal {currentPage} dari {totalPages}</span>
-                            <button onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))} disabled={currentPage === totalPages} className="px-3 py-1.5 text-sm font-medium border border-whisper rounded-lg bg-surface hover:bg-canvas disabled:opacity-50 disabled:cursor-not-allowed text-ink">Next</button>
+                            <button onClick={() => setCurrentPage(Math.max(1, safePage - 1))} disabled={safePage === 1} className="px-3 py-1.5 text-sm font-medium border border-whisper rounded-lg bg-surface hover:bg-canvas disabled:opacity-50 disabled:cursor-not-allowed text-ink">Prev</button>
+                            <span className="text-sm text-steel font-medium">Hal {safePage} dari {totalPages}</span>
+                            <button onClick={() => setCurrentPage(Math.min(totalPages, safePage + 1))} disabled={safePage === totalPages} className="px-3 py-1.5 text-sm font-medium border border-whisper rounded-lg bg-surface hover:bg-canvas disabled:opacity-50 disabled:cursor-not-allowed text-ink">Next</button>
                         </div>
                     )}
                 </div>
