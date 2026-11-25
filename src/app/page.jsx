@@ -12241,13 +12241,8 @@ Terima kasih atas kerja samanya.`;
     };
 
     const renderLogAktivitas = () => {
-        const logAksiOptions = Array.from(new Set(dataLog.map(l => String(l.aksi || '').trim()).filter(Boolean)));
-        const logModulOptions = Array.from(new Set(dataLog.map(l => formatLogModul(l.modul)).filter(Boolean)));
-
         const tokens = logSearch.trim().toLowerCase().split(/\s+/).filter(Boolean);
         const filteredLog = dataLog.filter((l) => {
-            if (logAksiFilter !== 'Semua' && String(l.aksi || '').trim() !== logAksiFilter) return false;
-            if (logModulFilter !== 'Semua' && formatLogModul(l.modul) !== logModulFilter) return false;
             if (tokens.length > 0) {
                 const haystack = [
                     l.id,
@@ -12264,7 +12259,7 @@ Terima kasih atas kerja samanya.`;
             return true;
         });
 
-        const hasActiveFilter = Boolean(logSearch.trim()) || logAksiFilter !== 'Semua' || logModulFilter !== 'Semua';
+        const hasActiveFilter = Boolean(logSearch.trim());
         const itemsPerPage = 15;
         const totalPages = Math.max(1, Math.ceil(filteredLog.length / itemsPerPage));
         const safePage = Math.min(currentPage, totalPages);
@@ -12277,18 +12272,22 @@ Terima kasih atas kerja samanya.`;
                     <button onClick={() => downloadStyledExcel('Log Aktivitas', ['ID', 'Waktu', 'Pengguna', 'Aksi', 'Modul', 'Detail Aktivitas'], filteredLog.map(l => [l.id, l.waktu, l.user, l.aksi, formatLogModul(l.modul), formatLogDetail(l.detail)]), 'Log_Aktivitas')} className={btnOutline}><FileSpreadsheet className="w-4 h-4 text-accent" /> Unduh</button>
                 </div>
                 <div className="bg-surface border border-whisper shadow-sm rounded-card overflow-hidden">
-                    <div className="p-4 border-b border-whisper/50 bg-canvas/40 flex flex-col md:flex-row md:items-center gap-3">
-                        <div className="relative flex-1 min-w-[220px]">
+                    <div className="p-4 border-b border-whisper/50 flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-canvas/40">
+                        <div className="text-xs text-steel font-medium">
+                            Menampilkan <span className="font-semibold text-ink">{filteredLog.length}</span> dari <span className="font-semibold text-ink">{dataLog.length}</span> log aktivitas
+                        </div>
+                        <div className="relative w-full sm:w-96">
                             <Search className="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-steel pointer-events-none" />
                             <input
                                 type="text"
-                                placeholder="Cari apapun di log (pengguna, santri, nominal, tanggal, modul, detail)..."
+                                placeholder="Cari pengguna, aksi, modul, nominal, tanggal..."
                                 value={logSearch}
                                 onChange={(e) => {
                                     setLogSearch(e.target.value);
                                     setCurrentPage(1);
                                 }}
-                                className="w-full h-10 rounded-xl border border-whisper bg-surface pl-10 pr-9 text-sm text-ink placeholder:text-slate focus:outline-none focus:border-accent focus:ring-2 focus:ring-accent/20 transition-all"
+                                style={{ paddingLeft: '2.5rem', paddingRight: logSearch ? '2.25rem' : '1rem' }}
+                                className="w-full h-10 rounded-xl border border-whisper bg-surface text-sm text-ink placeholder:text-steel/70 focus:outline-none focus:border-accent focus:ring-2 focus:ring-accent/20 transition-all"
                             />
                             {logSearch && (
                                 <button
@@ -12301,51 +12300,6 @@ Terima kasih atas kerja samanya.`;
                                     className="absolute right-3 top-1/2 -translate-y-1/2 text-steel hover:text-ink"
                                 >
                                     <X className="w-4 h-4" />
-                                </button>
-                            )}
-                        </div>
-                        <div className="flex flex-wrap items-center gap-2 shrink-0">
-                            <select
-                                value={logAksiFilter}
-                                onChange={(e) => {
-                                    setLogAksiFilter(e.target.value);
-                                    setCurrentPage(1);
-                                }}
-                                className="h-10 rounded-xl border border-whisper bg-surface px-3 text-xs font-medium text-ink focus:outline-none focus:border-accent focus:ring-2 focus:ring-accent/20 transition-all cursor-pointer"
-                            >
-                                <option value="Semua">Semua Aksi</option>
-                                {logAksiOptions.map(aksi => (
-                                    <option key={aksi} value={aksi}>{aksi}</option>
-                                ))}
-                            </select>
-                            <select
-                                value={logModulFilter}
-                                onChange={(e) => {
-                                    setLogModulFilter(e.target.value);
-                                    setCurrentPage(1);
-                                }}
-                                className="h-10 rounded-xl border border-whisper bg-surface px-3 text-xs font-medium text-ink focus:outline-none focus:border-accent focus:ring-2 focus:ring-accent/20 transition-all cursor-pointer"
-                            >
-                                <option value="Semua">Semua Modul</option>
-                                {logModulOptions.map(modul => (
-                                    <option key={modul} value={modul}>{modul}</option>
-                                ))}
-                            </select>
-                            <span className="h-10 inline-flex items-center px-3 rounded-xl bg-surface border border-whisper text-xs text-steel font-medium whitespace-nowrap">
-                                Menampilkan <span className="font-semibold text-ink mx-1">{filteredLog.length}</span> / {dataLog.length}
-                            </span>
-                            {hasActiveFilter && (
-                                <button
-                                    type="button"
-                                    onClick={() => {
-                                        setLogSearch('');
-                                        setLogAksiFilter('Semua');
-                                        setLogModulFilter('Semua');
-                                        setCurrentPage(1);
-                                    }}
-                                    className="h-10 px-3 text-xs font-semibold text-danger bg-dangerBg hover:bg-red-100 rounded-xl border border-red-200 transition-colors whitespace-nowrap"
-                                >
-                                    Reset
                                 </button>
                             )}
                         </div>
