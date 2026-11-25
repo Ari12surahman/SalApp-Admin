@@ -12244,17 +12244,16 @@ Terima kasih atas kerja samanya.`;
         const tokens = logSearch.trim().toLowerCase().split(/\s+/).filter(Boolean);
         const filteredLog = dataLog.filter((l) => {
             if (tokens.length > 0) {
-                const haystack = [
-                    l.id,
-                    l.waktu,
-                    l.user,
-                    l.aksi,
-                    l.modul,
-                    formatLogModul(l.modul),
-                    l.detail,
-                    formatLogDetail(l.detail),
+                const rawHaystack = [
+                    ...Object.values(l || {}),
+                    formatLogModul(l?.modul),
+                    formatLogDetail(l?.detail),
                 ].join(' ').toLowerCase();
-                if (!tokens.every(tok => haystack.includes(tok))) return false;
+                const normalizedHaystack = rawHaystack.replace(/[.,]/g, '');
+                if (!tokens.every(tok => {
+                    const normTok = tok.replace(/[.,]/g, '');
+                    return rawHaystack.includes(tok) || (normTok.length > 0 && normalizedHaystack.includes(normTok));
+                })) return false;
             }
             return true;
         });
@@ -12280,7 +12279,7 @@ Terima kasih atas kerja samanya.`;
                             <Search className="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-steel pointer-events-none" />
                             <input
                                 type="text"
-                                placeholder="Cari pengguna, aksi, modul, nominal, tanggal..."
+                                placeholder="Cari detail aktivitas, santri, nominal, pengguna, modul..."
                                 value={logSearch}
                                 onChange={(e) => {
                                     setLogSearch(e.target.value);
