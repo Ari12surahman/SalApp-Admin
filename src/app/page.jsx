@@ -3348,45 +3348,842 @@ function App() {
         }
     };
 
-    // === STYLED EXCEL DOWNLOAD UTILITY ===
-    const downloadStyledExcel = (title, headers, rows, filename) => {
+    // === DIRECT PDF DOWNLOAD ENGINE (TANPA POPUP PRINT DIALOG) ===
+    const downloadHtmlDirectPDF = async (htmlContent, filename, orientation = 'portrait', widthPx = 920) => {
+        let overlay = null;
         try {
-            const d = formatDateID(new Date());
-            const wb = XLSX.utils.book_new();
-            const headerRows = [
-                [title],
-                [`${appConfig.appName || 'SalApp Bendahara'} — Diunduh: ${d}`],
-                [],
-                headers
-            ];
-            const aoa = [...headerRows, ...rows];
-            const ws = XLSX.utils.aoa_to_sheet(aoa);
+            showNotification("Sedang merender file PDF, mohon tunggu sebentar...");
+            overlay = document.createElement('div');
+            overlay.id = 'pdf-universal-export-overlay';
+            overlay.style.cssText = `
+                position: fixed; top: 0; left: 0; width: 100vw; height: 100vh;
+                background: rgba(15, 23, 42, 0.72); backdrop-filter: blur(4px);
+                z-index: 999999; display: flex; flex-direction: column;
+                align-items: center; justify-content: center; overflow: hidden;
+            `;
+            const card = document.createElement('div');
+            card.style.cssText = `
+                background: #ffffff; border-radius: 18px; padding: 26px 36px;
+                box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.35);
+                text-align: center; max-width: 400px; z-index: 1000000;
+            `;
+            card.innerHTML = `
+                <div style="font-size: 32px; margin-bottom: 8px;">📄</div>
+                <div style="font-size: 15px; font-weight: 800; color: #0f172a; margin-bottom: 4px;">Sedang Mengunduh File PDF...</div>
+                <div style="font-size: 12px; color: #64748b; line-height: 1.45;">Dokumen sedang disusun ke dalam file <b>${filename}.pdf</b> dan akan otomatis tersimpan di komputer Anda.</div>
+            `;
+            overlay.appendChild(card);
 
-            for (let c = 0; c < headers.length; c++) {
-                const cellAddr = XLSX.utils.encode_cell({ r: 3, c });
-                if (ws[cellAddr]) {
-                    ws[cellAddr].s = {
-                        fill: { fgColor: { rgb: "10B981" } },
-                        font: { color: { rgb: "FFFFFF" }, bold: true },
-                        border: { top: { style: "thin", color: { rgb: "D1D5DB" } }, bottom: { style: "thin", color: { rgb: "D1D5DB" } }, left: { style: "thin", color: { rgb: "D1D5DB" } }, right: { style: "thin", color: { rgb: "D1D5DB" } } }
-                    };
+            const targetContainer = document.createElement('div');
+            targetContainer.style.cssText = `
+                position: absolute; top: 0; left: 0; width: ${widthPx}px;
+                background: #ffffff; padding: 24px; box-sizing: border-box;
+                z-index: 1; opacity: 0.99; color: #0f172a;
+                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
+            `;
+            targetContainer.innerHTML = htmlContent;
+            overlay.appendChild(targetContainer);
+            document.body.appendChild(overlay);
+
+            const images = targetContainer.querySelectorAll('img');
+            await Promise.all(Array.from(images).map(img => {
+                if (img.complete) return Promise.resolve();
+                return new Promise(res => { img.onload = res; img.onerror = res; });
+            }));
+            await new Promise(r => setTimeout(r, 200));
+
+            const html2canvas = (await import('html2canvas')).default;
+            const { jsPDF } = await import('jspdf');
+
+            const canvas = await html2canvas(targetContainer, {
+                scale: 2,
+                useCORS: true,
+                logging: false,
+                backgroundColor: '#ffffff',
+                windowWidth: widthPx,
+                width: widthPx
+            });
+
+            const isLandscape = orientation === 'landscape';
+            const pdf = new jsPDF(isLandscape ? 'landscape' : 'portrait', 'mm', 'a4');
+            const pdfWidth = isLandscape ? 281 : 194;
+            const pdfHeight = isLandscape ? 194 : 281;
+            const mmPerPx = pdfWidth / canvas.width;
+            const totalHeightMm = canvas.height * mmPerPx;
+            const pageCanvasHeight = (canvas.width * pdfHeight) / pdfWidth;
+
+            if (totalHeightMm <= pdfHeight) {
+                const imgData = canvas.toDataURL('image/jpeg', 0.95);
+                pdf.addImage(imgData, 'JPEG', 8, 8, pdfWidth, totalHeightMm);
+            } else {
+                let renderedHeight = 0;
+                let pageIdx = 0;
+                while (renderedHeight < canvas.height) {
+                    const sliceHeight = Math.min(pageCanvasHeight, canvas.height - renderedHeight);
+                    const sliceCanvas = document.createElement('canvas');
+                    sliceCanvas.width = canvas.width;
+                    sliceCanvas.height = sliceHeight;
+                    const sCtx = sliceCanvas.getContext('2d');
+                    sCtx.fillStyle = '#ffffff';
+                    sCtx.fillRect(0, 0, sliceCanvas.width, sliceCanvas.height);
+                    sCtx.drawImage(canvas, 0, renderedHeight, canvas.width, sliceHeight, 0, 0, canvas.width, sliceHeight);
+                    const sliceImgData = sliceCanvas.toDataURL('image/jpeg', 0.95);
+                    const sliceHeightMm = sliceHeight * mmPerPx;
+                    if (pageIdx > 0) pdf.addPage('a4', isLandscape ? 'landscape' : 'portrait');
+                    pdf.addImage(sliceImgData, 'JPEG', 8, 8, pdfWidth, sliceHeightMm);
+                    renderedHeight += sliceHeight;
+                    pageIdx++;
                 }
             }
-            const titleAddr = XLSX.utils.encode_cell({ r: 0, c: 0 });
-            if (ws[titleAddr]) ws[titleAddr].s = { font: { sz: 16, bold: true, color: { rgb: "18181B" } } };
 
-            const wscols = headers.map(h => ({ wch: Math.max(h.length + 5, 12) }));
-            ws['!cols'] = wscols;
+            const cleanName = String(filename || 'Dokumen').replace(/\.pdf$/i, '');
+            pdf.save(`${cleanName}.pdf`);
 
-            XLSX.utils.book_append_sheet(wb, ws, 'Laporan');
-            XLSX.writeFile(wb, `${filename}.xlsx`);
+            if (overlay && overlay.parentNode) {
+                document.body.removeChild(overlay);
+                overlay = null;
+            }
+            showNotification(`File PDF (${cleanName}.pdf) berhasil diunduh!`);
+            addLog('DOWNLOAD', 'EXPORT_PDF', `Unduh PDF Langsung: ${cleanName}.pdf`);
+        } catch (err) {
+            console.error("Direct PDF error:", err);
+            if (overlay && overlay.parentNode) {
+                document.body.removeChild(overlay);
+            }
+            showNotification("Gagal membuat file PDF.");
+        }
+    };
 
-            showNotification(`${title} berhasil diunduh!`);
-            addLog('DOWNLOAD', 'EXPORT', `Download: ${filename}`);
+    // === GENERATE & DOWNLOAD TABULAR REPORT DIRECTLY TO PDF ===
+    const downloadStyledPDF = async (title, headers, rows, filename, options = {}) => {
+        const d = formatDateTimeID(new Date());
+        const isLandscape = options.orientation ? options.orientation === 'landscape' : headers.length >= 6;
+        const currencyCols = new Set();
+        headers.forEach((h, idx) => {
+            if (/nominal|saldo|total|gaji|tunjangan|potongan|terbayar|omzet|belanja|biaya|harga|sisa/i.test(String(h))) {
+                currencyCols.add(idx);
+            }
+        });
+
+        const colTotals = {};
+        currencyCols.forEach(cIdx => {
+            let sum = 0;
+            rows.forEach(r => {
+                const raw = r[cIdx];
+                if (typeof raw === 'number') {
+                    sum += raw;
+                } else if (typeof raw === 'string') {
+                    const sign = raw.trim().startsWith('-') ? -1 : 1;
+                    const num = parseInt(raw.replace(/\D/g, ''), 10);
+                    if (!isNaN(num)) sum += sign * num;
+                }
+            });
+            colTotals[cIdx] = sum;
+        });
+
+        const formatCellVal = (val, cIdx) => {
+            if (val === null || val === undefined) return '-';
+            if (typeof val === 'number' && currencyCols.has(cIdx)) {
+                return (val < 0 ? '-Rp ' : 'Rp ') + Math.abs(val).toLocaleString('id-ID');
+            }
+            return String(val);
+        };
+
+        const thHtml = `<th style="text-align:center; width:36px;">No</th>` + headers.map((h, idx) =>
+            `<th style="text-align:${currencyCols.has(idx) ? 'right' : 'left'};">${h}</th>`
+        ).join('');
+
+        const trHtml = rows.length === 0
+            ? `<tr><td colspan="${headers.length + 1}" style="text-align:center; padding:18px; color:#64748b;">Tidak ada data.</td></tr>`
+            : rows.map((r, rIdx) => {
+                const bg = rIdx % 2 === 1 ? '#f8fafc' : '#ffffff';
+                const tds = r.map((cell, cIdx) => {
+                    const isCurr = currencyCols.has(cIdx);
+                    const str = formatCellVal(cell, cIdx);
+                    const color = isCurr && String(str).startsWith('-') ? '#e11d48' : (isCurr ? '#047857' : '#0f172a');
+                    return `<td style="background:${bg}; text-align:${isCurr ? 'right' : 'left'}; font-weight:${isCurr ? '700' : '500'}; color:${color};">${str}</td>`;
+                }).join('');
+                return `<tr><td style="background:${bg}; text-align:center; color:#64748b;">${rIdx + 1}</td>${tds}</tr>`;
+            }).join('');
+
+        let totalRowHtml = '';
+        if (currencyCols.size > 0 && rows.length > 0) {
+            const totalTds = headers.map((_, cIdx) => {
+                if (cIdx === 0) return `<td style="background:#e2e8f0; font-weight:800; color:#0f172a;">TOTAL KESELURUHAN (${rows.length} DATA)</td>`;
+                if (currencyCols.has(cIdx)) {
+                    const tot = colTotals[cIdx] || 0;
+                    return `<td style="background:#e2e8f0; text-align:right; font-weight:800; color:#047857;">${tot < 0 ? '-Rp ' : 'Rp '}${Math.abs(tot).toLocaleString('id-ID')}</td>`;
+                }
+                return `<td style="background:#e2e8f0;"></td>`;
+            }).join('');
+            totalRowHtml = `<tr><td style="background:#e2e8f0;"></td>${totalTds}</tr>`;
+        }
+
+        const html = `
+            <style>
+                .pdf-wrap { font-family: Arial, sans-serif; color: #0f172a; font-size: 10.5px; }
+                .pdf-kop { display: flex; justify-content: space-between; align-items: center; border-bottom: 2.5px solid #0f172a; padding-bottom: 10px; margin-bottom: 14px; }
+                .pdf-kop-left { display: flex; align-items: center; gap: 12px; }
+                .pdf-kop-logo { width: 44px; height: 44px; object-fit: contain; }
+                .pdf-kop-title { font-size: 15px; font-weight: 800; margin: 0; text-transform: uppercase; color: #0f172a; }
+                .pdf-kop-sub { font-size: 10px; color: #475569; margin: 2px 0 0; }
+                .pdf-doc-title { text-align: center; margin: 10px 0 14px; }
+                .pdf-doc-title h2 { margin: 0; font-size: 14px; font-weight: 800; text-transform: uppercase; color: #1e1b4b; }
+                .pdf-doc-title p { margin: 3px 0 0; font-size: 10px; color: #64748b; }
+                .pdf-tbl { width: 100%; border-collapse: collapse; margin-bottom: 16px; font-size: 9.5px; }
+                .pdf-tbl th { background: #0f172a; color: #ffffff; font-weight: 700; text-transform: uppercase; padding: 7px 8px; border: 1px solid #0f172a; font-size: 8.5px; }
+                .pdf-tbl td { border: 1px solid #cbd5e1; padding: 6px 8px; }
+                .pdf-sig { display: flex; justify-content: space-between; margin-top: 24px; font-size: 10px; }
+                .pdf-sig-box { width: 200px; text-align: center; }
+                .pdf-sig-line { border-bottom: 1px solid #0f172a; margin: 45px auto 4px; width: 160px; }
+            </style>
+            <div class="pdf-wrap">
+                <div class="pdf-kop">
+                    <div class="pdf-kop-left">
+                        <img src="${appConfig.appLogo || '/logo.png'}" class="pdf-kop-logo" onerror="this.style.display='none'" />
+                        <div>
+                            <div class="pdf-kop-title">${appConfig.appName || 'SALAPP BENDAHARA'}</div>
+                            <div class="pdf-kop-sub">Sistem Informasi Manajemen Keuangan Pondok Pesantren</div>
+                        </div>
+                    </div>
+                    <div style="text-align:right; font-size:9.5px; color:#64748b;">
+                        <div>Dokumen Resmi Bendahara</div>
+                        <div>Diunduh: ${d}</div>
+                    </div>
+                </div>
+                <div class="pdf-doc-title">
+                    <h2>${title}</h2>
+                    <p>Total Data: ${rows.length} Baris${options.subtitle ? ' • ' + options.subtitle : ''}</p>
+                </div>
+                <table class="pdf-tbl">
+                    <thead><tr>${thHtml}</tr></thead>
+                    <tbody>${trHtml}${totalRowHtml}</tbody>
+                </table>
+                <div class="pdf-sig">
+                    <div class="pdf-sig-box"><div>Mengetahui,</div><div style="font-weight:700;">Pimpinan Pondok Pesantren</div><div class="pdf-sig-line"></div></div>
+                    <div class="pdf-sig-box"><div>Dibuat oleh,</div><div style="font-weight:700;">${currentUser?.nama || 'Bendahara'}</div><div class="pdf-sig-line"></div></div>
+                </div>
+            </div>
+        `;
+        await downloadHtmlDirectPDF(html, filename, isLandscape ? 'landscape' : 'portrait', isLandscape ? 1120 : 840);
+    };
+
+    // === STYLED EXCEL DOWNLOAD UTILITY (DENGAN BORDER, WARNA, & RUMUS SUM OTOMATIS) ===
+    const downloadStyledExcel = (title, headers, rows, filename) => {
+        try {
+            const d = formatDateTimeID(new Date());
+            const wb = XLSXStyle.utils.book_new();
+            const ws = {};
+
+            const borderThin = {
+                top: { style: 'thin', color: { rgb: 'CBD5E1' } },
+                bottom: { style: 'thin', color: { rgb: 'CBD5E1' } },
+                left: { style: 'thin', color: { rgb: 'CBD5E1' } },
+                right: { style: 'thin', color: { rgb: 'CBD5E1' } }
+            };
+            const borderHeader = {
+                top: { style: 'medium', color: { rgb: '0F172A' } },
+                bottom: { style: 'medium', color: { rgb: '0F172A' } },
+                left: { style: 'thin', color: { rgb: '334155' } },
+                right: { style: 'thin', color: { rgb: '334155' } }
+            };
+            const borderTotal = {
+                top: { style: 'medium', color: { rgb: '475569' } },
+                bottom: { style: 'double', color: { rgb: '0F172A' } },
+                left: { style: 'thin', color: { rgb: 'CBD5E1' } },
+                right: { style: 'thin', color: { rgb: 'CBD5E1' } }
+            };
+
+            const setCell = (r, c, val, style, numFmt, formula) => {
+                const addr = XLSXStyle.utils.encode_cell({ r, c });
+                if (formula) {
+                    ws[addr] = { t: 'n', f: formula, v: typeof val === 'number' ? val : 0 };
+                } else if (typeof val === 'number') {
+                    ws[addr] = { t: 'n', v: val };
+                } else {
+                    ws[addr] = { t: 's', v: String(val ?? '') };
+                }
+                if (style) ws[addr].s = style;
+                if (numFmt) ws[addr].z = numFmt;
+            };
+
+            const allHeaders = ['No', ...headers];
+            const lastColIdx = allHeaders.length - 1;
+            ws['!merges'] = [
+                { s: { r: 0, c: 0 }, e: { r: 0, c: lastColIdx } },
+                { s: { r: 1, c: 0 }, e: { r: 1, c: lastColIdx } }
+            ];
+
+            setCell(0, 0, `${(appConfig.appName || 'SALAPP BENDAHARA').toUpperCase()} - ${String(title).toUpperCase()}`, {
+                font: { name: 'Arial', sz: 13, bold: true, color: { rgb: '0F172A' } },
+                alignment: { horizontal: 'center', vertical: 'center' }
+            });
+            setCell(1, 0, `Diunduh pada: ${d} | Oleh: ${currentUser?.nama || 'Admin'} | Total Data: ${rows.length} Baris`, {
+                font: { name: 'Arial', sz: 9.5, italic: true, color: { rgb: '475569' } },
+                alignment: { horizontal: 'center', vertical: 'center' }
+            });
+
+            const currencyCols = new Set();
+            headers.forEach((h, idx) => {
+                if (/nominal|saldo|total|gaji|tunjangan|potongan|terbayar|omzet|belanja|biaya|harga|sisa/i.test(String(h))) {
+                    currencyCols.add(idx + 1); // +1 karena kolom 0 adalah 'No'
+                }
+            });
+
+            allHeaders.forEach((h, col) => {
+                setCell(3, col, h, {
+                    fill: { fgColor: { rgb: '0F172A' } },
+                    font: { name: 'Arial', sz: 9.5, bold: true, color: { rgb: 'FFFFFF' } },
+                    alignment: { horizontal: col === 0 ? 'center' : currencyCols.has(col) ? 'right' : 'left', vertical: 'center' },
+                    border: borderHeader
+                });
+            });
+
+            let curRow = 4;
+            const colTotals = {};
+            rows.forEach((r, rIdx) => {
+                const bg = rIdx % 2 === 1 ? 'F8FAFC' : 'FFFFFF';
+                setCell(curRow, 0, rIdx + 1, {
+                    fill: { fgColor: { rgb: bg } },
+                    font: { name: 'Arial', sz: 9, color: { rgb: '475569' } },
+                    alignment: { horizontal: 'center', vertical: 'center' },
+                    border: borderThin
+                });
+
+                r.forEach((cellVal, cIdx) => {
+                    const col = cIdx + 1;
+                    const isCurr = currencyCols.has(col);
+                    let numVal = cellVal;
+                    if (isCurr && typeof cellVal === 'string') {
+                        const trimmed = cellVal.trim();
+                        const sign = trimmed.startsWith('-') ? -1 : 1;
+                        const parsed = parseInt(trimmed.replace(/\D/g, ''), 10);
+                        if (!isNaN(parsed)) numVal = sign * parsed;
+                    }
+                    if (isCurr && typeof numVal === 'number') {
+                        colTotals[col] = (colTotals[col] || 0) + numVal;
+                        setCell(curRow, col, numVal, {
+                            fill: { fgColor: { rgb: bg } },
+                            font: { name: 'Arial', sz: 9.5, bold: true, color: { rgb: numVal < 0 ? 'E11D48' : '047857' } },
+                            alignment: { horizontal: 'right', vertical: 'center' },
+                            border: borderThin
+                        }, '"Rp "#,##0;-"Rp "#,##0;"Rp "0');
+                    } else {
+                        setCell(curRow, col, cellVal ?? '-', {
+                            fill: { fgColor: { rgb: bg } },
+                            font: { name: 'Arial', sz: 9.5, color: { rgb: '0F172A' } },
+                            alignment: { horizontal: 'left', vertical: 'center' },
+                            border: borderThin
+                        });
+                    }
+                });
+                curRow++;
+            });
+
+            if (currencyCols.size > 0 && rows.length > 0) {
+                const firstDataRowExcel = 5;
+                const lastDataRowExcel = 4 + rows.length;
+                for (let col = 0; col <= lastColIdx; col++) {
+                    if (col === 0) {
+                        setCell(curRow, col, '', { fill: { fgColor: { rgb: 'E2E8F0' } }, border: borderTotal });
+                    } else if (col === 1) {
+                        setCell(curRow, col, `TOTAL KESELURUHAN (${rows.length} DATA)`, {
+                            fill: { fgColor: { rgb: 'E2E8F0' } },
+                            font: { name: 'Arial', sz: 9.5, bold: true, color: { rgb: '0F172A' } },
+                            alignment: { horizontal: 'left', vertical: 'center' },
+                            border: borderTotal
+                        });
+                    } else if (currencyCols.has(col)) {
+                        const colLetter = XLSXStyle.utils.encode_col(col);
+                        const formulaStr = `SUM(${colLetter}${firstDataRowExcel}:${colLetter}${lastDataRowExcel})`;
+                        setCell(curRow, col, colTotals[col] || 0, {
+                            fill: { fgColor: { rgb: 'DCFCE7' } },
+                            font: { name: 'Arial', sz: 10, bold: true, color: { rgb: '047857' } },
+                            alignment: { horizontal: 'right', vertical: 'center' },
+                            border: borderTotal
+                        }, '"Rp "#,##0;-"Rp "#,##0;"Rp "0', formulaStr);
+                    } else {
+                        setCell(curRow, col, '', { fill: { fgColor: { rgb: 'E2E8F0' } }, border: borderTotal });
+                    }
+                }
+                curRow++;
+            }
+
+            ws['!cols'] = allHeaders.map((h, i) => ({
+                wch: i === 0 ? 6 : Math.max(String(h).length + 8, currencyCols.has(i) ? 20 : 16)
+            }));
+            ws['!ref'] = `A1:${XLSXStyle.utils.encode_col(lastColIdx)}${curRow}`;
+
+            XLSXStyle.utils.book_append_sheet(wb, ws, 'Laporan');
+            XLSXStyle.writeFile(wb, `${filename}.xlsx`);
+
+            showNotification(`${title} (.xlsx) berhasil diunduh!`);
+            addLog('DOWNLOAD', 'EXPORT', `Download Excel: ${filename}.xlsx`);
         } catch (e) {
             console.error("Excel Export Error:", e);
             showNotification("Gagal mengunduh Excel (Pastikan format data valid).");
         }
+    };
+
+    // === UNDUH DATA SANTRI MULTI-SHEET PER KELAS (FULL STYLE, BORDER, WARNA, RUMUS EXCEL & TOTAL KESELURUHAN) ===
+    const handleExportDataSantriExcel = (santriList) => {
+        try {
+            const list = Array.isArray(santriList) && santriList.length > 0 ? santriList : dataSantri;
+            const d = formatDateTimeID(new Date());
+            const wb = XLSXStyle.utils.book_new();
+
+            const borderThin = {
+                top: { style: 'thin', color: { rgb: 'CBD5E1' } },
+                bottom: { style: 'thin', color: { rgb: 'CBD5E1' } },
+                left: { style: 'thin', color: { rgb: 'CBD5E1' } },
+                right: { style: 'thin', color: { rgb: 'CBD5E1' } }
+            };
+            const borderHeader = {
+                top: { style: 'medium', color: { rgb: '065F46' } },
+                bottom: { style: 'medium', color: { rgb: '065F46' } },
+                left: { style: 'thin', color: { rgb: '047857' } },
+                right: { style: 'thin', color: { rgb: '047857' } }
+            };
+            const borderTotal = {
+                top: { style: 'medium', color: { rgb: '059669' } },
+                bottom: { style: 'double', color: { rgb: '065F46' } },
+                left: { style: 'thin', color: { rgb: 'A7F3D0' } },
+                right: { style: 'thin', color: { rgb: 'A7F3D0' } }
+            };
+
+            const setCell = (ws, r, c, val, style, numFmt, formula) => {
+                const addr = XLSXStyle.utils.encode_cell({ r, c });
+                if (formula) {
+                    ws[addr] = { t: 'n', f: formula, v: typeof val === 'number' ? val : 0 };
+                } else if (typeof val === 'number') {
+                    ws[addr] = { t: 'n', v: val };
+                } else {
+                    ws[addr] = { t: 's', v: String(val ?? '') };
+                }
+                if (style) ws[addr].s = style;
+                if (numFmt) ws[addr].z = numFmt;
+            };
+
+            // Kelompokkan per kelas
+            const classMap = {};
+            list.forEach(s => {
+                const klsRaw = String(s.kelas || 'Tanpa Kelas').trim() || 'Tanpa Kelas';
+                if (!classMap[klsRaw]) classMap[klsRaw] = [];
+                classMap[klsRaw].push(s);
+            });
+
+            const sortedClasses = Object.keys(classMap).sort((a, b) => a.localeCompare(b, 'id', { numeric: true }));
+            const usedSheetNames = new Set(['Rekap Semua Kelas']);
+            const classSheetMeta = [];
+
+            let grandTotalSantri = 0;
+            let grandAktif = 0;
+            let grandAlumni = 0;
+            let grandTotalSaldo = 0;
+
+            sortedClasses.forEach(kls => {
+                const members = [...classMap[kls]].sort((a, b) => String(a.nama || '').localeCompare(String(b.nama || ''), 'id'));
+                let baseSheetName = (`Kelas ${kls}`).replace(/[\\/?*[\]:]/g, ' ').trim().substring(0, 31) || 'Kelas';
+                let sheetName = baseSheetName;
+                let counter = 2;
+                while (usedSheetNames.has(sheetName)) {
+                    const suffix = ` (${counter++})`;
+                    sheetName = baseSheetName.substring(0, 31 - suffix.length) + suffix;
+                }
+                usedSheetNames.add(sheetName);
+
+                let klsSaldo = 0;
+                let klsAktif = 0;
+                let klsAlumni = 0;
+                members.forEach(m => {
+                    const sld = getSantriSaldoTabungan(m.nis);
+                    klsSaldo += sld;
+                    if ((m.status || 'Aktif') === 'Alumni') klsAlumni++;
+                    else klsAktif++;
+                });
+
+                grandTotalSantri += members.length;
+                grandAktif += klsAktif;
+                grandAlumni += klsAlumni;
+                grandTotalSaldo += klsSaldo;
+
+                classSheetMeta.push({
+                    kelas: kls,
+                    sheetName,
+                    members,
+                    totalSantri: members.length,
+                    aktifCount: klsAktif,
+                    alumniCount: klsAlumni,
+                    totalSaldo: klsSaldo,
+                    totalRowExcel: 5 + members.length // Baris 1-4 header, data mulai baris 5, total di baris 5 + N
+                });
+            });
+
+            // =========================================================================
+            // SHEET 1: REKAP SEMUA KELAS & DAFTAR LENGKAP SELURUH SANTRI
+            // =========================================================================
+            const wsRekap = {};
+            wsRekap['!cols'] = [
+                { wch: 6 },  // A: No
+                { wch: 18 }, // B: Kelas / NIS
+                { wch: 30 }, // C: Jumlah Santri / Nama Lengkap
+                { wch: 16 }, // D: Santri Aktif / Kelas
+                { wch: 16 }, // E: Alumni / Periode
+                { wch: 18 }, // F: Status
+                { wch: 24 }  // G: Saldo Tabungan (Rp)
+            ];
+            wsRekap['!merges'] = [
+                { s: { r: 0, c: 0 }, e: { r: 0, c: 6 } },
+                { s: { r: 1, c: 0 }, e: { r: 1, c: 6 } },
+                { s: { r: 3, c: 0 }, e: { r: 3, c: 6 } }
+            ];
+
+            setCell(wsRekap, 0, 0, `${(appConfig.appName || 'SALAPP BENDAHARA').toUpperCase()} - LAPORAN DATA SANTRI & REKAP SALDO TABUNGAN PER KELAS`, {
+                font: { name: 'Arial', sz: 13, bold: true, color: { rgb: '064E3B' } },
+                alignment: { horizontal: 'center', vertical: 'center' }
+            });
+            setCell(wsRekap, 1, 0, `Diunduh pada: ${d} | Total Kelas: ${classSheetMeta.length} Kelas | Total Santri: ${grandTotalSantri} Santri | Total Saldo: Rp ${grandTotalSaldo.toLocaleString('id-ID')}`, {
+                font: { name: 'Arial', sz: 9.5, italic: true, color: { rgb: '475569' } },
+                alignment: { horizontal: 'center', vertical: 'center' }
+            });
+
+            setCell(wsRekap, 3, 0, 'A. RINGKASAN SALDO TABUNGAN PER KELAS (TERHUBUNG DENGAN RUMUS KE TIAP SHEET KELAS)', {
+                font: { name: 'Arial', sz: 10.5, bold: true, color: { rgb: '0F172A' } }
+            });
+
+            const rekapHeaders = ['No', 'Kelas', 'Total Santri', 'Santri Aktif', 'Alumni', 'Rata-Rata Saldo', 'Total Saldo Kelas (Rp)'];
+            rekapHeaders.forEach((h, col) => {
+                setCell(wsRekap, 4, col, h, {
+                    fill: { fgColor: { rgb: '065F46' } },
+                    font: { name: 'Arial', sz: 9.5, bold: true, color: { rgb: 'FFFFFF' } },
+                    alignment: { horizontal: col === 0 ? 'center' : col >= 2 ? 'right' : 'left', vertical: 'center' },
+                    border: borderHeader
+                });
+            });
+
+            let rIdx = 5;
+            classSheetMeta.forEach((meta, idx) => {
+                const bg = idx % 2 === 1 ? 'F0FDF4' : 'FFFFFF';
+                const rowExcel = rIdx + 1;
+                const escapedSheet = meta.sheetName.replace(/'/g, "''");
+                // Rumus link langsung ke cell total saldo di sheet masing-masing kelas
+                const linkSaldoFormula = `'${escapedSheet}'!G${meta.totalRowExcel}`;
+                const avgFormula = `IF(C${rowExcel}>0,ROUND(G${rowExcel}/C${rowExcel},0),0)`;
+
+                setCell(wsRekap, rIdx, 0, idx + 1, { fill: { fgColor: { rgb: bg } }, font: { name: 'Arial', sz: 9 }, alignment: { horizontal: 'center' }, border: borderThin });
+                setCell(wsRekap, rIdx, 1, `Kelas ${meta.kelas}`, { fill: { fgColor: { rgb: bg } }, font: { name: 'Arial', sz: 9.5, bold: true, color: { rgb: '0F172A' } }, border: borderThin });
+                setCell(wsRekap, rIdx, 2, meta.totalSantri, { fill: { fgColor: { rgb: bg } }, font: { name: 'Arial', sz: 9.5, bold: true }, alignment: { horizontal: 'right' }, border: borderThin }, '#,##0');
+                setCell(wsRekap, rIdx, 3, meta.aktifCount, { fill: { fgColor: { rgb: bg } }, font: { name: 'Arial', sz: 9.5, color: { rgb: '047857' } }, alignment: { horizontal: 'right' }, border: borderThin }, '#,##0');
+                setCell(wsRekap, rIdx, 4, meta.alumniCount, { fill: { fgColor: { rgb: bg } }, font: { name: 'Arial', sz: 9.5, color: { rgb: '7C3AED' } }, alignment: { horizontal: 'right' }, border: borderThin }, '#,##0');
+                setCell(wsRekap, rIdx, 5, meta.totalSantri > 0 ? Math.round(meta.totalSaldo / meta.totalSantri) : 0, { fill: { fgColor: { rgb: bg } }, font: { name: 'Arial', sz: 9 }, alignment: { horizontal: 'right' }, border: borderThin }, '"Rp "#,##0', avgFormula);
+                setCell(wsRekap, rIdx, 6, meta.totalSaldo, { fill: { fgColor: { rgb: bg } }, font: { name: 'Arial', sz: 9.5, bold: true, color: { rgb: '047857' } }, alignment: { horizontal: 'right' }, border: borderThin }, '"Rp "#,##0', linkSaldoFormula);
+                rIdx++;
+            });
+
+            // Baris Grand Total Tabel Ringkasan Kelas
+            const firstClassRow = 6;
+            const lastClassRow = Math.max(6, 5 + classSheetMeta.length);
+            const grandTotalRowExcel = rIdx + 1;
+            setCell(wsRekap, rIdx, 0, '', { fill: { fgColor: { rgb: 'D1FAE5' } }, border: borderTotal });
+            setCell(wsRekap, rIdx, 1, `TOTAL KESELURUHAN (${classSheetMeta.length} KELAS)`, { fill: { fgColor: { rgb: 'D1FAE5' } }, font: { name: 'Arial', sz: 10, bold: true, color: { rgb: '064E3B' } }, border: borderTotal });
+            setCell(wsRekap, rIdx, 2, grandTotalSantri, { fill: { fgColor: { rgb: 'D1FAE5' } }, font: { name: 'Arial', sz: 10, bold: true, color: { rgb: '064E3B' } }, alignment: { horizontal: 'right' }, border: borderTotal }, '#,##0', classSheetMeta.length > 0 ? `SUM(C${firstClassRow}:C${lastClassRow})` : undefined);
+            setCell(wsRekap, rIdx, 3, grandAktif, { fill: { fgColor: { rgb: 'D1FAE5' } }, font: { name: 'Arial', sz: 10, bold: true, color: { rgb: '047857' } }, alignment: { horizontal: 'right' }, border: borderTotal }, '#,##0', classSheetMeta.length > 0 ? `SUM(D${firstClassRow}:D${lastClassRow})` : undefined);
+            setCell(wsRekap, rIdx, 4, grandAlumni, { fill: { fgColor: { rgb: 'D1FAE5' } }, font: { name: 'Arial', sz: 10, bold: true, color: { rgb: '7C3AED' } }, alignment: { horizontal: 'right' }, border: borderTotal }, '#,##0', classSheetMeta.length > 0 ? `SUM(E${firstClassRow}:E${lastClassRow})` : undefined);
+            setCell(wsRekap, rIdx, 5, grandTotalSantri > 0 ? Math.round(grandTotalSaldo / grandTotalSantri) : 0, { fill: { fgColor: { rgb: 'D1FAE5' } }, font: { name: 'Arial', sz: 9.5, bold: true, color: { rgb: '064E3B' } }, alignment: { horizontal: 'right' }, border: borderTotal }, '"Rp "#,##0', classSheetMeta.length > 0 ? `IF(C${grandTotalRowExcel}>0,ROUND(G${grandTotalRowExcel}/C${grandTotalRowExcel},0),0)` : undefined);
+            setCell(wsRekap, rIdx, 6, grandTotalSaldo, { fill: { fgColor: { rgb: 'A7F3D0' } }, font: { name: 'Arial', sz: 10.5, bold: true, color: { rgb: '064E3B' } }, alignment: { horizontal: 'right' }, border: borderTotal }, '"Rp "#,##0', classSheetMeta.length > 0 ? `SUM(G${firstClassRow}:G${lastClassRow})` : undefined);
+            rIdx += 2;
+
+            // Bagian B: Daftar Lengkap Seluruh Santri di Sheet 1
+            wsRekap['!merges'].push({ s: { r: rIdx, c: 0 }, e: { r: rIdx, c: 6 } });
+            setCell(wsRekap, rIdx, 0, 'B. DAFTAR LENGKAP SELURUH SANTRI (SEMUA KELAS)', {
+                font: { name: 'Arial', sz: 10.5, bold: true, color: { rgb: '0F172A' } }
+            });
+            rIdx++;
+
+            const santriHeaders = ['No', 'NIS', 'Nama Lengkap Santri', 'Kelas', 'Periode', 'Status', 'Saldo Tabungan (Rp)'];
+            santriHeaders.forEach((h, col) => {
+                setCell(wsRekap, rIdx, col, h, {
+                    fill: { fgColor: { rgb: '0F172A' } },
+                    font: { name: 'Arial', sz: 9.5, bold: true, color: { rgb: 'FFFFFF' } },
+                    alignment: { horizontal: col === 0 || col === 3 || col === 4 || col === 5 ? 'center' : col === 6 ? 'right' : 'left', vertical: 'center' },
+                    border: borderHeader
+                });
+            });
+            rIdx++;
+
+            const startAllSantriRowExcel = rIdx + 1;
+            let globalNo = 1;
+            classSheetMeta.forEach(meta => {
+                meta.members.forEach(s => {
+                    const bg = globalNo % 2 === 0 ? 'F8FAFC' : 'FFFFFF';
+                    const sld = getSantriSaldoTabungan(s.nis);
+                    const isAlumni = (s.status || 'Aktif') === 'Alumni';
+                    setCell(wsRekap, rIdx, 0, globalNo, { fill: { fgColor: { rgb: bg } }, font: { name: 'Arial', sz: 9 }, alignment: { horizontal: 'center' }, border: borderThin });
+                    setCell(wsRekap, rIdx, 1, String(s.nis || '-'), { fill: { fgColor: { rgb: bg } }, font: { name: 'Arial', sz: 9.5, bold: true }, border: borderThin });
+                    setCell(wsRekap, rIdx, 2, s.nama || '-', { fill: { fgColor: { rgb: bg } }, font: { name: 'Arial', sz: 9.5, bold: true, color: { rgb: '0F172A' } }, border: borderThin });
+                    setCell(wsRekap, rIdx, 3, s.kelas || '-', { fill: { fgColor: { rgb: bg } }, font: { name: 'Arial', sz: 9 }, alignment: { horizontal: 'center' }, border: borderThin });
+                    setCell(wsRekap, rIdx, 4, s.periode || '-', { fill: { fgColor: { rgb: bg } }, font: { name: 'Arial', sz: 9 }, alignment: { horizontal: 'center' }, border: borderThin });
+                    setCell(wsRekap, rIdx, 5, s.status || 'Aktif', {
+                        fill: { fgColor: { rgb: isAlumni ? 'F3E8FF' : 'DCFCE7' } },
+                        font: { name: 'Arial', sz: 8.5, bold: true, color: { rgb: isAlumni ? '6B21A8' : '15803D' } },
+                        alignment: { horizontal: 'center' },
+                        border: borderThin
+                    });
+                    setCell(wsRekap, rIdx, 6, sld, { fill: { fgColor: { rgb: bg } }, font: { name: 'Arial', sz: 9.5, bold: true, color: { rgb: '047857' } }, alignment: { horizontal: 'right' }, border: borderThin }, '"Rp "#,##0');
+                    globalNo++;
+                    rIdx++;
+                });
+            });
+            const endAllSantriRowExcel = Math.max(startAllSantriRowExcel, rIdx);
+
+            // Total Keseluruhan di bawah Daftar Semua Santri
+            setCell(wsRekap, rIdx, 0, '', { fill: { fgColor: { rgb: 'D1FAE5' } }, border: borderTotal });
+            setCell(wsRekap, rIdx, 1, '', { fill: { fgColor: { rgb: 'D1FAE5' } }, border: borderTotal });
+            setCell(wsRekap, rIdx, 2, `TOTAL SALDO SELURUH SANTRI (${grandTotalSantri} SANTRI)`, { fill: { fgColor: { rgb: 'D1FAE5' } }, font: { name: 'Arial', sz: 10, bold: true, color: { rgb: '064E3B' } }, border: borderTotal });
+            setCell(wsRekap, rIdx, 3, '', { fill: { fgColor: { rgb: 'D1FAE5' } }, border: borderTotal });
+            setCell(wsRekap, rIdx, 4, '', { fill: { fgColor: { rgb: 'D1FAE5' } }, border: borderTotal });
+            setCell(wsRekap, rIdx, 5, `${grandTotalSantri} Santri`, { fill: { fgColor: { rgb: 'D1FAE5' } }, font: { name: 'Arial', sz: 9.5, bold: true, color: { rgb: '064E3B' } }, alignment: { horizontal: 'center' }, border: borderTotal });
+            setCell(wsRekap, rIdx, 6, grandTotalSaldo, { fill: { fgColor: { rgb: 'A7F3D0' } }, font: { name: 'Arial', sz: 10.5, bold: true, color: { rgb: '064E3B' } }, alignment: { horizontal: 'right' }, border: borderTotal }, '"Rp "#,##0', grandTotalSantri > 0 ? `SUM(G${startAllSantriRowExcel}:G${endAllSantriRowExcel})` : undefined);
+            rIdx++;
+
+            wsRekap['!ref'] = `A1:G${rIdx}`;
+            XLSXStyle.utils.book_append_sheet(wb, wsRekap, 'Rekap Semua Kelas');
+
+            // =========================================================================
+            // SHEET PER KELAS: MASING-MASING KELAS PUNYA SHEET & RUMUS SUM SENDIRI
+            // =========================================================================
+            classSheetMeta.forEach(meta => {
+                const wsKls = {};
+                wsKls['!cols'] = [
+                    { wch: 6 },  // A: No
+                    { wch: 16 }, // B: NIS
+                    { wch: 32 }, // C: Nama Lengkap
+                    { wch: 14 }, // D: Kelas
+                    { wch: 16 }, // E: Periode
+                    { wch: 16 }, // F: Status
+                    { wch: 24 }  // G: Saldo Tabungan (Rp)
+                ];
+                wsKls['!merges'] = [
+                    { s: { r: 0, c: 0 }, e: { r: 0, c: 6 } },
+                    { s: { r: 1, c: 0 }, e: { r: 1, c: 6 } }
+                ];
+
+                setCell(wsKls, 0, 0, `DATA SANTRI & SALDO TABUNGAN - KELAS ${String(meta.kelas).toUpperCase()}`, {
+                    font: { name: 'Arial', sz: 13, bold: true, color: { rgb: '064E3B' } },
+                    alignment: { horizontal: 'center', vertical: 'center' }
+                });
+                setCell(wsKls, 1, 0, `${appConfig.appName || 'SalApp Bendahara'} | Jumlah Santri: ${meta.totalSantri} | Total Saldo Kelas ${meta.kelas}: Rp ${meta.totalSaldo.toLocaleString('id-ID')} | Diunduh: ${d}`, {
+                    font: { name: 'Arial', sz: 9.5, italic: true, color: { rgb: '475569' } },
+                    alignment: { horizontal: 'center', vertical: 'center' }
+                });
+
+                santriHeaders.forEach((h, col) => {
+                    setCell(wsKls, 3, col, h, {
+                        fill: { fgColor: { rgb: '065F46' } },
+                        font: { name: 'Arial', sz: 9.5, bold: true, color: { rgb: 'FFFFFF' } },
+                        alignment: { horizontal: col === 0 || col === 3 || col === 4 || col === 5 ? 'center' : col === 6 ? 'right' : 'left', vertical: 'center' },
+                        border: borderHeader
+                    });
+                });
+
+                let kr = 4;
+                meta.members.forEach((s, idx) => {
+                    const bg = idx % 2 === 1 ? 'F0FDF4' : 'FFFFFF';
+                    const sld = getSantriSaldoTabungan(s.nis);
+                    const isAlumni = (s.status || 'Aktif') === 'Alumni';
+                    setCell(wsKls, kr, 0, idx + 1, { fill: { fgColor: { rgb: bg } }, font: { name: 'Arial', sz: 9 }, alignment: { horizontal: 'center' }, border: borderThin });
+                    setCell(wsKls, kr, 1, String(s.nis || '-'), { fill: { fgColor: { rgb: bg } }, font: { name: 'Arial', sz: 9.5, bold: true }, border: borderThin });
+                    setCell(wsKls, kr, 2, s.nama || '-', { fill: { fgColor: { rgb: bg } }, font: { name: 'Arial', sz: 9.5, bold: true, color: { rgb: '0F172A' } }, border: borderThin });
+                    setCell(wsKls, kr, 3, s.kelas || '-', { fill: { fgColor: { rgb: bg } }, font: { name: 'Arial', sz: 9 }, alignment: { horizontal: 'center' }, border: borderThin });
+                    setCell(wsKls, kr, 4, s.periode || '-', { fill: { fgColor: { rgb: bg } }, font: { name: 'Arial', sz: 9 }, alignment: { horizontal: 'center' }, border: borderThin });
+                    setCell(wsKls, kr, 5, s.status || 'Aktif', {
+                        fill: { fgColor: { rgb: isAlumni ? 'F3E8FF' : 'DCFCE7' } },
+                        font: { name: 'Arial', sz: 8.5, bold: true, color: { rgb: isAlumni ? '6B21A8' : '15803D' } },
+                        alignment: { horizontal: 'center' },
+                        border: borderThin
+                    });
+                    setCell(wsKls, kr, 6, sld, { fill: { fgColor: { rgb: bg } }, font: { name: 'Arial', sz: 9.5, bold: true, color: { rgb: '047857' } }, alignment: { horizontal: 'right' }, border: borderThin }, '"Rp "#,##0');
+                    kr++;
+                });
+
+                // Baris Total Saldo Kelas (Rumus SUM(G5:G...))
+                const firstDataExcel = 5;
+                const lastDataExcel = Math.max(5, 4 + meta.members.length);
+                setCell(wsKls, kr, 0, '', { fill: { fgColor: { rgb: 'D1FAE5' } }, border: borderTotal });
+                setCell(wsKls, kr, 1, '', { fill: { fgColor: { rgb: 'D1FAE5' } }, border: borderTotal });
+                setCell(wsKls, kr, 2, `TOTAL SALDO KELAS ${String(meta.kelas).toUpperCase()}`, { fill: { fgColor: { rgb: 'D1FAE5' } }, font: { name: 'Arial', sz: 10, bold: true, color: { rgb: '064E3B' } }, border: borderTotal });
+                setCell(wsKls, kr, 3, `Kelas ${meta.kelas}`, { fill: { fgColor: { rgb: 'D1FAE5' } }, font: { name: 'Arial', sz: 9.5, bold: true, color: { rgb: '064E3B' } }, alignment: { horizontal: 'center' }, border: borderTotal });
+                setCell(wsKls, kr, 4, '', { fill: { fgColor: { rgb: 'D1FAE5' } }, border: borderTotal });
+                setCell(wsKls, kr, 5, `${meta.totalSantri} Santri`, { fill: { fgColor: { rgb: 'D1FAE5' } }, font: { name: 'Arial', sz: 9.5, bold: true, color: { rgb: '064E3B' } }, alignment: { horizontal: 'center' }, border: borderTotal }, '#,##0" Santri"', `COUNTA(C${firstDataExcel}:C${lastDataExcel})`);
+                setCell(wsKls, kr, 6, meta.totalSaldo, { fill: { fgColor: { rgb: 'A7F3D0' } }, font: { name: 'Arial', sz: 10.5, bold: true, color: { rgb: '064E3B' } }, alignment: { horizontal: 'right' }, border: borderTotal }, '"Rp "#,##0', `SUM(G${firstDataExcel}:G${lastDataExcel})`);
+                kr++;
+
+                // Baris Rata-rata Saldo Kelas (Rumus AVERAGE(G5:G...))
+                setCell(wsKls, kr, 0, '', { fill: { fgColor: { rgb: 'F0FDF4' } }, border: borderThin });
+                setCell(wsKls, kr, 1, '', { fill: { fgColor: { rgb: 'F0FDF4' } }, border: borderThin });
+                setCell(wsKls, kr, 2, `RATA-RATA SALDO PER SANTRI (KELAS ${String(meta.kelas).toUpperCase()})`, { fill: { fgColor: { rgb: 'F0FDF4' } }, font: { name: 'Arial', sz: 9, bold: true, color: { rgb: '047857' } }, border: borderThin });
+                setCell(wsKls, kr, 3, '', { fill: { fgColor: { rgb: 'F0FDF4' } }, border: borderThin });
+                setCell(wsKls, kr, 4, '', { fill: { fgColor: { rgb: 'F0FDF4' } }, border: borderThin });
+                setCell(wsKls, kr, 5, '', { fill: { fgColor: { rgb: 'F0FDF4' } }, border: borderThin });
+                setCell(wsKls, kr, 6, meta.totalSantri > 0 ? Math.round(meta.totalSaldo / meta.totalSantri) : 0, { fill: { fgColor: { rgb: 'F0FDF4' } }, font: { name: 'Arial', sz: 9.5, bold: true, color: { rgb: '047857' } }, alignment: { horizontal: 'right' }, border: borderThin }, '"Rp "#,##0', `AVERAGE(G${firstDataExcel}:G${lastDataExcel})`);
+                kr++;
+
+                wsKls['!ref'] = `A1:G${kr}`;
+                XLSXStyle.utils.book_append_sheet(wb, wsKls, meta.sheetName);
+            });
+
+            const dateStamp = new Date().toISOString().split('T')[0];
+            XLSXStyle.writeFile(wb, `Data_Santri_Per_Kelas_${dateStamp}.xlsx`);
+            showNotification(`Excel Data Santri (${classSheetMeta.length} Sheet Kelas + Rumus Total) berhasil diunduh!`);
+            addLog('DOWNLOAD', 'EXPORT', `Download Data Santri Multi-Sheet (${classSheetMeta.length} kelas)`);
+        } catch (err) {
+            console.error("Gagal ekspor Data Santri multi-sheet:", err);
+            showNotification("Gagal mengunduh Excel Data Santri.");
+        }
+    };
+
+    // === UNDUH PDF LANGSUNG DATA SANTRI (REKAP PER KELAS + RINCIAN TIAP KELAS + TOTAL KESELURUHAN) ===
+    const handleExportDataSantriPDF = async (santriList) => {
+        const list = Array.isArray(santriList) && santriList.length > 0 ? santriList : dataSantri;
+        const d = formatDateTimeID(new Date());
+        const classMap = {};
+        list.forEach(s => {
+            const kls = String(s.kelas || 'Tanpa Kelas').trim() || 'Tanpa Kelas';
+            if (!classMap[kls]) classMap[kls] = [];
+            classMap[kls].push(s);
+        });
+        const sortedClasses = Object.keys(classMap).sort((a, b) => a.localeCompare(b, 'id', { numeric: true }));
+
+        let grandTotalSaldo = 0;
+        let grandAktif = 0;
+        let grandAlumni = 0;
+
+        const rekapRowsHtml = sortedClasses.map((kls, idx) => {
+            const members = classMap[kls];
+            let klsSaldo = 0;
+            let klsAktif = 0;
+            let klsAlumni = 0;
+            members.forEach(m => {
+                klsSaldo += getSantriSaldoTabungan(m.nis);
+                if ((m.status || 'Aktif') === 'Alumni') klsAlumni++;
+                else klsAktif++;
+            });
+            grandTotalSaldo += klsSaldo;
+            grandAktif += klsAktif;
+            grandAlumni += klsAlumni;
+            const bg = idx % 2 === 1 ? '#f0fdf4' : '#ffffff';
+            return `<tr>
+                <td style="background:${bg}; text-align:center;">${idx + 1}</td>
+                <td style="background:${bg}; font-weight:700;">Kelas ${kls}</td>
+                <td style="background:${bg}; text-align:right; font-weight:700;">${members.length} Santri</td>
+                <td style="background:${bg}; text-align:right; color:#047857;">${klsAktif}</td>
+                <td style="background:${bg}; text-align:right; color:#7c3aed;">${klsAlumni}</td>
+                <td style="background:${bg}; text-align:right; font-weight:800; color:#047857;">Rp ${klsSaldo.toLocaleString('id-ID')}</td>
+            </tr>`;
+        }).join('');
+
+        const perClassTablesHtml = sortedClasses.map(kls => {
+            const members = [...classMap[kls]].sort((a, b) => String(a.nama || '').localeCompare(String(b.nama || ''), 'id'));
+            let klsSaldo = 0;
+            const rowsHtml = members.map((s, idx) => {
+                const sld = getSantriSaldoTabungan(s.nis);
+                klsSaldo += sld;
+                const bg = idx % 2 === 1 ? '#f8fafc' : '#ffffff';
+                return `<tr>
+                    <td style="background:${bg}; text-align:center; width:36px;">${idx + 1}</td>
+                    <td style="background:${bg}; font-family:monospace; font-weight:700; width:90px;">${s.nis || '-'}</td>
+                    <td style="background:${bg}; font-weight:700;">${s.nama || '-'}</td>
+                    <td style="background:${bg}; text-align:center; width:75px;">${s.kelas || '-'}</td>
+                    <td style="background:${bg}; text-align:center; width:95px;">${s.periode || '-'}</td>
+                    <td style="background:${bg}; text-align:center; width:80px; font-weight:700; color:${(s.status || 'Aktif') === 'Alumni' ? '#6b21a8' : '#15803d'};">${s.status || 'Aktif'}</td>
+                    <td style="background:${bg}; text-align:right; width:140px; font-weight:800; color:#047857;">Rp ${sld.toLocaleString('id-ID')}</td>
+                </tr>`;
+            }).join('');
+
+            return `
+                <div style="margin-top:16px;">
+                    <div style="background:#ecfdf5; border:1px solid #a7f3d0; padding:6px 10px; border-radius:6px; display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+                        <span style="font-weight:800; color:#064e3b; font-size:11px; text-transform:uppercase;">DAFTAR SANTRI KELAS ${kls} (${members.length} SANTRI)</span>
+                        <span style="font-weight:800; color:#047857; font-size:11px;">Subtotal Saldo Kelas ${kls}: Rp ${klsSaldo.toLocaleString('id-ID')}</span>
+                    </div>
+                    <table class="pdf-tbl">
+                        <thead>
+                            <tr>
+                                <th style="text-align:center;">No</th>
+                                <th>NIS</th>
+                                <th>Nama Lengkap Santri</th>
+                                <th style="text-align:center;">Kelas</th>
+                                <th style="text-align:center;">Periode</th>
+                                <th style="text-align:center;">Status</th>
+                                <th style="text-align:right;">Saldo Tabungan</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            ${rowsHtml}
+                            <tr>
+                                <td colspan="6" style="background:#d1fae5; font-weight:800; color:#064e3b; text-align:right;">TOTAL SALDO KELAS ${kls} (${members.length} SANTRI)</td>
+                                <td style="background:#a7f3d0; font-weight:800; color:#064e3b; text-align:right;">Rp ${klsSaldo.toLocaleString('id-ID')}</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            `;
+        }).join('');
+
+        const html = `
+            <style>
+                .pdf-wrap { font-family: Arial, sans-serif; color: #0f172a; font-size: 10px; }
+                .pdf-kop { display: flex; justify-content: space-between; align-items: center; border-bottom: 2.5px solid #064e3b; padding-bottom: 10px; margin-bottom: 12px; }
+                .pdf-kop-left { display: flex; align-items: center; gap: 12px; }
+                .pdf-kop-logo { width: 44px; height: 44px; object-fit: contain; }
+                .pdf-tbl { width: 100%; border-collapse: collapse; margin-bottom: 10px; font-size: 9.5px; }
+                .pdf-tbl th { background: #065f46; color: #ffffff; font-weight: 700; text-transform: uppercase; padding: 6px 8px; border: 1px solid #064e3b; font-size: 8.5px; text-align: left; }
+                .pdf-tbl td { border: 1px solid #cbd5e1; padding: 5px 8px; }
+            </style>
+            <div class="pdf-wrap">
+                <div class="pdf-kop">
+                    <div class="pdf-kop-left">
+                        <img src="${appConfig.appLogo || '/logo.png'}" class="pdf-kop-logo" onerror="this.style.display='none'" />
+                        <div>
+                            <div style="font-size:15px; font-weight:800; color:#064e3b; text-transform:uppercase;">${appConfig.appName || 'SALAPP BENDAHARA'}</div>
+                            <div style="font-size:10px; color:#475569;">Laporan Master Data Santri & Rekapitulasi Saldo Tabungan Per Kelas</div>
+                        </div>
+                    </div>
+                    <div style="text-align:right; font-size:9.5px; color:#64748b;">
+                        <div>Diunduh: ${d}</div>
+                        <div style="font-weight:700; color:#047857;">Total Saldo: Rp ${grandTotalSaldo.toLocaleString('id-ID')}</div>
+                    </div>
+                </div>
+
+                <div style="font-weight:800; font-size:11px; color:#0f172a; margin-bottom:6px; text-transform:uppercase;">1. RINGKASAN REKAPITULASI PER KELAS</div>
+                <table class="pdf-tbl">
+                    <thead>
+                        <tr>
+                            <th style="text-align:center; width:36px;">No</th>
+                            <th>Kelas</th>
+                            <th style="text-align:right;">Total Santri</th>
+                            <th style="text-align:right;">Santri Aktif</th>
+                            <th style="text-align:right;">Alumni</th>
+                            <th style="text-align:right;">Total Saldo Kelas</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        ${rekapRowsHtml}
+                        <tr>
+                            <td colspan="2" style="background:#d1fae5; font-weight:800; color:#064e3b;">TOTAL KESELURUHAN (${sortedClasses.length} KELAS)</td>
+                            <td style="background:#d1fae5; text-align:right; font-weight:800; color:#064e3b;">${list.length} Santri</td>
+                            <td style="background:#d1fae5; text-align:right; font-weight:800; color:#047857;">${grandAktif}</td>
+                            <td style="background:#d1fae5; text-align:right; font-weight:800; color:#7c3aed;">${grandAlumni}</td>
+                            <td style="background:#a7f3d0; text-align:right; font-weight:800; color:#064e3b; font-size:11px;">Rp ${grandTotalSaldo.toLocaleString('id-ID')}</td>
+                        </tr>
+                    </tbody>
+                </table>
+
+                ${perClassTablesHtml}
+            </div>
+        `;
+        const dateStamp = new Date().toISOString().split('T')[0];
+        await downloadHtmlDirectPDF(html, `Data_Santri_Per_Kelas_${dateStamp}`, 'portrait', 900);
     };
 
     const handleDownloadExcel = () => {
@@ -3542,8 +4339,7 @@ function App() {
         const fisikLaciNum = rekonFisikLaci !== '' ? (parseInt(String(rekonFisikLaci).replace(/\D/g, ''), 10) || 0) : null;
         const selisihOpname = fisikLaciNum !== null ? (fisikLaciNum - saldoTunaiLaciHariIni) : null;
 
-        const handlePrintRekonsiliasiHarian = () => {
-            const html = `<html><head><title>Berita Acara Tutup Kasir - ${targetDate}</title><style>
+        const getRekonsiliasiHarianHtml = () => `<html><head><title>Berita Acara Tutup Kasir - ${targetDate}</title><style>
                 body { font-family: Arial, sans-serif; padding: 24px; color: #0f172a; max-width: 680px; margin: auto; }
                 .header { text-align: center; border-bottom: 2px solid #0f172a; padding-bottom: 12px; margin-bottom: 16px; }
                 .header h2 { margin: 0; font-size: 18px; text-transform: uppercase; }
@@ -3589,14 +4385,22 @@ function App() {
                     <div class="sig-box"><div>Petugas / Bendahara,</div><div>${currentUser?.nama || 'Bendahara'}</div><div class="sig-line"></div></div>
                 </div>
             </body></html>`;
-            executePrint(html);
+
+        const handlePrintRekonsiliasiHarian = () => {
+            executePrint(getRekonsiliasiHarianHtml());
+        };
+        const handleDownloadRekonsiliasiHarianPDF = () => {
+            downloadHtmlDirectPDF(getRekonsiliasiHarianHtml(), `Berita_Acara_Tutup_Kasir_${targetDate}`, 'portrait', 780);
         };
 
         return (
             <div className="space-y-6 animate-in fade-in duration-500">
                 <div className="flex flex-col xl:flex-row justify-between items-start xl:items-center gap-4 mb-6 w-full">
                     <div className="flex-1 min-w-0 pr-4"><h2 className="text-2xl font-semibold tracking-tight text-ink">Dashboard & Analitik</h2><p className="text-sm text-steel">Ringkasan keuangan pesantren dan rekonsiliasi kas harian bendahara.</p></div>
-                    <button onClick={handleDownloadExcel} className={btnOutline}><FileSpreadsheet className="w-4 h-4 text-green-600" /> Ekspor Lengkap</button>
+                    <div className="flex flex-wrap gap-2">
+                        <button onClick={handleDownloadExcel} className={btnOutline}><FileSpreadsheet className="w-4 h-4 text-green-600" /> Unduh Excel</button>
+                        <button onClick={() => downloadStyledPDF('Laporan Dashboard (Pembayaran)', ['No. Invoice', 'Tanggal', 'NIS', 'Nama Santri', 'Jenis Tagihan', 'Periode Bulan', 'Nominal', 'Status'], dataPembayaran.map(trx => [trx.id, trx.tanggal, trx.nis, trx.nama, trx.tagihan, trx.periode, trx.nominal, trx.status]), 'Laporan_Dashboard')} className={btnOutline}><FileText className="w-4 h-4 text-rose-600" /> Unduh PDF</button>
+                    </div>
                 </div>
                 <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
                     <div className="bg-surface border border-whisper p-5 rounded-card p-6 shadow-card"><div className="flex items-center gap-3 mb-2"><TrendingUp className="w-5 h-5 text-blue-600" /><h3 className="font-medium text-steel">Total Pemasukan</h3></div><div className="text-2xl font-bold text-ink">Rp {totalPemasukan.toLocaleString('id-ID')}</div></div>
@@ -3639,10 +4443,17 @@ function App() {
                             </button>
                             <button
                                 type="button"
+                                onClick={handleDownloadRekonsiliasiHarianPDF}
+                                className="px-3.5 py-1.5 text-xs font-semibold rounded-xl bg-rose-600 hover:bg-rose-700 text-white flex items-center gap-1.5 shadow-xs transition-colors"
+                            >
+                                <Download className="w-3.5 h-3.5" /> Unduh PDF
+                            </button>
+                            <button
+                                type="button"
                                 onClick={handlePrintRekonsiliasiHarian}
                                 className="px-3.5 py-1.5 text-xs font-semibold rounded-xl bg-accent hover:bg-accentDark text-white flex items-center gap-1.5 shadow-xs transition-colors"
                             >
-                                <Printer className="w-3.5 h-3.5" /> Cetak Tutup Kasir
+                                <Printer className="w-3.5 h-3.5" /> Cetak
                             </button>
                         </div>
                     </div>
@@ -3823,7 +4634,8 @@ function App() {
                                 {masterKelasList.map(k => <button key={k} onClick={() => handleNaikKelas(k)} className="w-full text-left px-4 py-2.5 text-sm hover:bg-canvas transition-colors text-steel hover:text-ink">Kelas {k}</button>)}
                             </div>
                         </div>
-                        <button onClick={() => downloadStyledExcel('Data Santri', ['NIS', 'Nama Lengkap', 'Kelas', 'Periode', 'Status', 'Saldo Tabungan (Rp)'], filteredSantri.map(s => [s.nis, s.nama, s.kelas, s.periode, s.status || 'Aktif', getSantriSaldoTabungan(s.nis)]), 'Data_Santri')} className={btnOutline}><FileSpreadsheet className="w-4 h-4 text-accent" /> Unduh</button>
+                        <button onClick={() => handleExportDataSantriExcel(filteredSantri)} className={btnOutline} title="Unduh Excel Berwarna Per Kelas + Rumus Total"><FileSpreadsheet className="w-4 h-4 text-accent" /> Unduh Excel</button>
+                        <button onClick={() => handleExportDataSantriPDF(filteredSantri)} className={btnOutline} title="Unduh File PDF Langsung Per Kelas"><FileText className="w-4 h-4 text-rose-600" /> Unduh PDF</button>
                     </div>
                 </div>
                 <div className="flex flex-wrap items-center justify-between gap-2 mb-4">
@@ -3963,7 +4775,8 @@ function App() {
                     <div className="grid grid-cols-2 sm:flex sm:flex-wrap sm:justify-start xl:justify-end gap-3 w-full xl:w-auto">
                         <button onClick={() => { setFormData({ nip: Math.floor(1000 + Math.random() * 9000).toString(), password: Math.floor(1000 + Math.random() * 9000).toString() }); setModalType('FORM_PEGAWAI'); }} className={btnPrimary}><Plus className="w-4 h-4" /> Tambah Pegawai</button>
                         <button onClick={() => { setFormData({ type: 'pegawai' }); setModalType('IMPORT_CSV'); }} className={btnOutline}><DownloadCloud className="w-4 h-4" /> Import</button>
-                        <button onClick={() => downloadStyledExcel('Data Pegawai', ['NIP', 'Nama', 'Jabatan', 'Gaji Pokok'], dataPegawai.map(p => [p.nip, p.nama, p.jabatan, p.gajiPokok]), 'Data_Pegawai')} className={btnOutline}><FileSpreadsheet className="w-4 h-4 text-accent" /> Unduh</button>
+                        <button onClick={() => downloadStyledExcel('Data Pegawai', ['NIP', 'Nama', 'Jabatan', 'Gaji Pokok'], dataPegawai.map(p => [p.nip, p.nama, p.jabatan, p.gajiPokok]), 'Data_Pegawai')} className={btnOutline}><FileSpreadsheet className="w-4 h-4 text-accent" /> Unduh Excel</button>
+                        <button onClick={() => downloadStyledPDF('Data Pegawai', ['NIP', 'Nama', 'Jabatan', 'Gaji Pokok'], dataPegawai.map(p => [p.nip, p.nama, p.jabatan, p.gajiPokok]), 'Data_Pegawai')} className={btnOutline}><FileText className="w-4 h-4 text-rose-600" /> Unduh PDF</button>
                     </div>
                 </div>
                 <div className="flex flex-wrap gap-2 mb-4">
@@ -4055,7 +4868,8 @@ function App() {
                         <button onClick={() => setModalType('MASTER_TAGIHAN_LIST')} className={btnOutline}><Settings className="w-4 h-4" /> Master Tagihan</button>
                         <button onClick={() => { const d = new Date(); setFormData({ targetType: 'Semua', selectedBulan: [listBulan[d.getMonth()]], tahun: d.getFullYear(), selectedTagihans: [] }); setModalType('GENERATE_MASSAL'); }} className="bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg px-4 py-2 font-medium flex items-center gap-2 text-sm"><Zap className="w-4 h-4" /> Generate Massal</button>
                         <button onClick={() => { const d = new Date(); setFormData({ selectedTagihans: [], tagihanDetails: {}, selectedBulan: [listBulan[d.getMonth()]], tahun: d.getFullYear() }); setModalType('FORM_TAGIHAN_SANTRI'); }} className={btnPrimary}><Plus className="w-4 h-4" /> Buat Tagihan</button>
-                        <button onClick={() => downloadStyledExcel('Tagihan Santri', ['ID', 'Tanggal', 'NIS', 'Nama', 'Tagihan', 'Periode', 'Nominal', 'Terbayar', 'Status'], dataTagihan.map(t => [t.id, t.tanggal, t.nis, t.nama, t.tagihan, t.periode, t.nominal, t.terbayar || 0, t.status]), 'Tagihan_Santri')} className={btnOutline}><FileSpreadsheet className="w-4 h-4 text-accent" /> Unduh</button>
+                        <button onClick={() => downloadStyledExcel('Tagihan Santri', ['ID', 'Tanggal', 'NIS', 'Nama', 'Tagihan', 'Periode', 'Nominal', 'Terbayar', 'Status'], dataTagihan.map(t => [t.id, t.tanggal, t.nis, t.nama, t.tagihan, t.periode, t.nominal, t.terbayar || 0, t.status]), 'Tagihan_Santri')} className={btnOutline}><FileSpreadsheet className="w-4 h-4 text-accent" /> Unduh Excel</button>
+                        <button onClick={() => downloadStyledPDF('Tagihan Santri', ['ID', 'Tanggal', 'NIS', 'Nama', 'Tagihan', 'Periode', 'Nominal', 'Terbayar', 'Status'], dataTagihan.map(t => [t.id, t.tanggal, t.nis, t.nama, t.tagihan, t.periode, t.nominal, t.terbayar || 0, t.status]), 'Tagihan_Santri')} className={btnOutline}><FileText className="w-4 h-4 text-rose-600" /> Unduh PDF</button>
                     </div>
                 </div>
                 <div className="bg-surface border border-whisper shadow-sm rounded-card overflow-hidden">
@@ -4243,7 +5057,8 @@ function App() {
                     <div className="grid grid-cols-2 sm:flex sm:flex-wrap sm:justify-start xl:justify-end gap-3 w-full xl:w-auto">
                         <button onClick={() => { const d = new Date(); setFormData({ targetType: 'Semua', selectedTagihans: [], selectedBulan: [listBulan[d.getMonth()]], tahun: d.getFullYear() }); setModalType('FORM_PEMBAYARAN_MASSAL'); }} className="bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg px-4 py-2 font-medium flex items-center gap-2 text-sm"><CheckCircle2 className="w-4 h-4" /> Catat Massal</button>
                         <button onClick={() => { const d = new Date(); setFormData({ selectedBulan: [listBulan[d.getMonth()]], tahun: d.getFullYear(), selectedTagihanBayar: [] }); setModalType('FORM_PEMBAYARAN'); }} className={btnPrimary}><Plus className="w-4 h-4" /> Catat Uang Masuk</button>
-                        <button onClick={() => downloadStyledExcel('Pembayaran / Uang Masuk', ['Invoice', 'Tanggal', 'NIS', 'Nama', 'Tagihan', 'Periode', 'Nominal', 'Status'], filtered.map(t => [t.id, t.tanggal, t.nis, t.nama, t.tagihan, t.periode, t.nominal, t.status]), 'Pembayaran')} className={btnOutline}><FileSpreadsheet className="w-4 h-4 text-accent" /> Unduh ({filtered.length})</button>
+                        <button onClick={() => downloadStyledExcel('Pembayaran / Uang Masuk', ['Invoice', 'Tanggal', 'NIS', 'Nama', 'Tagihan', 'Periode', 'Nominal', 'Status'], filtered.map(t => [t.id, t.tanggal, t.nis, t.nama, t.tagihan, t.periode, t.nominal, t.status]), 'Pembayaran')} className={btnOutline}><FileSpreadsheet className="w-4 h-4 text-accent" /> Unduh Excel ({filtered.length})</button>
+                        <button onClick={() => downloadStyledPDF('Pembayaran / Uang Masuk', ['Invoice', 'Tanggal', 'NIS', 'Nama', 'Tagihan', 'Periode', 'Nominal', 'Status'], filtered.map(t => [t.id, t.tanggal, t.nis, t.nama, t.tagihan, t.periode, t.nominal, t.status]), 'Pembayaran')} className={btnOutline}><FileText className="w-4 h-4 text-rose-600" /> Unduh PDF</button>
                     </div>
                 </div>
                 <div className="bg-surface border border-whisper shadow-sm rounded-card overflow-hidden">
@@ -4276,6 +5091,11 @@ function App() {
                                         <td className="px-6 py-4 text-right font-medium">Rp {Number(trx.nominal || 0).toLocaleString('id-ID')}</td>
                                         <td className="px-6 py-4 text-center"><span className={`inline-flex px-2 py-1 text-xs font-medium rounded-md ${trx.status === 'Lunas' ? 'bg-emerald-50 text-emerald-700' : trx.status === 'Pending' ? 'bg-canvas text-steel' : 'bg-amber-50 text-amber-700'}`}>{trx.status}</span></td>
                                         <td className="px-6 py-4 text-center flex gap-3 justify-center">
+                                            <button onClick={() => {
+                                                const itemsHtml = trx.items && trx.items.length > 0 ? trx.items.map(item => `<tr><td>${item.tagihan}</td><td>${item.periode}</td><td style="text-align: right;">Rp ${Number(item.nominal || 0).toLocaleString('id-ID')}</td></tr>`).join('') : `<tr><td>${trx.tagihan}</td><td>${trx.periode}</td><td style="text-align: right;">Rp ${Number(trx.nominal || 0).toLocaleString('id-ID')}</td></tr>`;
+                                                const htmlContent = `<html><head><title>Invoice - ${trx.id}</title><style>body { font-family: 'Courier New', Courier, monospace; padding: 20px; color: #000; } .invoice-box { max-width: 450px; margin: auto; border: 1px solid #ddd; padding: 20px; border-radius: 8px; } .header { text-align: center; margin-bottom: 20px; border-bottom: 2px dashed #000; padding-bottom: 10px; } .header img { height: 50px; width: 50px; object-fit: contain; margin: 0 auto 8px auto; display: block; } .header h2 { margin: 0; font-size: 24px; } .row { display: flex; justify-content: space-between; margin-bottom: 5px; font-size: 14px; } table { margin-top: 15px; border-collapse: collapse; width: 100%; } th, td { padding: 8px 0; border-bottom: 1px solid #ddd; text-align: left; font-size: 14px; } .total { font-weight: bold; font-size: 16px; margin-top: 15px; text-align: right; border-top: 2px dashed #000; padding-top: 10px; } .footer { text-align: center; margin-top: 20px; font-size: 12px; color: #555; }</style></head><body><div class="invoice-box"><div class="header"><img src="/logo.png" alt="Logo" /><h2>BUKTI PEMBAYARAN</h2><div>${appConfig.appName || 'SalApp Bendahara'}</div></div><div class="row"><span>No. Inv</span><span>${trx.id}</span></div><div class="row"><span>Tanggal</span><span>${trx.tanggal}</span></div><div class="row"><span>NIS / Nama</span><span>${trx.nis} / ${trx.nama}</span></div><table><thead><tr><th>Deskripsi Tagihan</th><th>Periode</th><th style="text-align: right;">Nominal</th></tr></thead><tbody>${itemsHtml}</tbody></table><div class="total">DIBAYAR: Rp ${Number(trx.nominal || 0).toLocaleString('id-ID')}</div><div class="footer">Status: <strong>${trx.status ? trx.status.toUpperCase() : 'LUNAS'}</strong><br>${trx.sisa > 0 ? `<em>Sisa Tagihan: Rp ${Number(trx.sisa || 0).toLocaleString('id-ID')}</em><br>` : ''}<br>Terima kasih atas pembayaran Anda.</div></div></body></html>`;
+                                                downloadHtmlDirectPDF(htmlContent, `Kwitansi_${trx.id}`, 'portrait', 560);
+                                            }} className="text-rose-600 hover:text-rose-800" title="Unduh Kwitansi PDF Langsung"><Download className="w-4 h-4" /></button>
                                             <button onClick={() => {
                                                 const itemsHtml = trx.items && trx.items.length > 0 ? trx.items.map(item => `<tr><td>${item.tagihan}</td><td>${item.periode}</td><td style="text-align: right;">Rp ${Number(item.nominal || 0).toLocaleString('id-ID')}</td></tr>`).join('') : `<tr><td>${trx.tagihan}</td><td>${trx.periode}</td><td style="text-align: right;">Rp ${Number(trx.nominal || 0).toLocaleString('id-ID')}</td></tr>`;
                                                 const htmlContent = `<html><head><title>Invoice - ${trx.id}</title><style>body { font-family: 'Courier New', Courier, monospace; padding: 20px; color: #000; } .invoice-box { max-width: 450px; margin: auto; border: 1px solid #ddd; padding: 20px; border-radius: 8px; } .header { text-align: center; margin-bottom: 20px; border-bottom: 2px dashed #000; padding-bottom: 10px; } .header img { height: 50px; width: 50px; object-fit: contain; margin: 0 auto 8px auto; display: block; } .header h2 { margin: 0; font-size: 24px; } .row { display: flex; justify-content: space-between; margin-bottom: 5px; font-size: 14px; } table { margin-top: 15px; border-collapse: collapse; width: 100%; } th, td { padding: 8px 0; border-bottom: 1px solid #ddd; text-align: left; font-size: 14px; } .total { font-weight: bold; font-size: 16px; margin-top: 15px; text-align: right; border-top: 2px dashed #000; padding-top: 10px; } .footer { text-align: center; margin-top: 20px; font-size: 12px; color: #555; }</style></head><body><div class="invoice-box"><div class="header"><img src="/logo.png" alt="Logo" /><h2>BUKTI PEMBAYARAN</h2><div>${appConfig.appName || 'SalApp Bendahara'}</div></div><div class="row"><span>No. Inv</span><span>${trx.id}</span></div><div class="row"><span>Tanggal</span><span>${trx.tanggal}</span></div><div class="row"><span>NIS / Nama</span><span>${trx.nis} / ${trx.nama}</span></div><table><thead><tr><th>Deskripsi Tagihan</th><th>Periode</th><th style="text-align: right;">Nominal</th></tr></thead><tbody>${itemsHtml}</tbody></table><div class="total">DIBAYAR: Rp ${Number(trx.nominal || 0).toLocaleString('id-ID')}</div><div class="footer">Status: <strong>${trx.status ? trx.status.toUpperCase() : 'LUNAS'}</strong><br>${trx.sisa > 0 ? `<em>Sisa Tagihan: Rp ${Number(trx.sisa || 0).toLocaleString('id-ID')}</em><br>` : ''}<br>Terima kasih atas pembayaran Anda.</div></div></body></html>`;
@@ -4316,6 +5136,11 @@ function App() {
                                     </div>
                                 </div>
                                 <div className="flex flex-wrap items-center gap-2 justify-end w-full border-t border-whisper/50 pt-3 mt-1">
+                                    <button onClick={() => {
+                                        const itemsHtml = trx.items && trx.items.length > 0 ? trx.items.map(item => `<tr><td>${item.tagihan}</td><td>${item.periode}</td><td style="text-align: right;">Rp ${Number(item.nominal || 0).toLocaleString('id-ID')}</td></tr>`).join('') : `<tr><td>${trx.tagihan}</td><td>${trx.periode}</td><td style="text-align: right;">Rp ${Number(trx.nominal || 0).toLocaleString('id-ID')}</td></tr>`;
+                                        const htmlContent = `<html><head><title>Invoice - ${trx.id}</title><style>body { font-family: 'Courier New', Courier, monospace; padding: 20px; color: #000; } .invoice-box { max-width: 450px; margin: auto; border: 1px solid #ddd; padding: 20px; border-radius: 8px; } .header { text-align: center; margin-bottom: 20px; border-bottom: 2px dashed #000; padding-bottom: 10px; } .header img { height: 50px; width: 50px; object-fit: contain; margin: 0 auto 8px auto; display: block; } .header h2 { margin: 0; font-size: 24px; } .row { display: flex; justify-content: space-between; margin-bottom: 5px; font-size: 14px; } table { margin-top: 15px; border-collapse: collapse; width: 100%; } th, td { padding: 8px 0; border-bottom: 1px solid #ddd; text-align: left; font-size: 14px; } .total { font-weight: bold; font-size: 16px; margin-top: 15px; text-align: right; border-top: 2px dashed #000; padding-top: 10px; } .footer { text-align: center; margin-top: 20px; font-size: 12px; color: #555; }</style></head><body><div class="invoice-box"><div class="header"><img src="/logo.png" alt="Logo" /><h2>BUKTI PEMBAYARAN</h2><div>${appConfig.appName || 'SalApp Bendahara'}</div></div><div class="row"><span>No. Inv</span><span>${trx.id}</span></div><div class="row"><span>Tanggal</span><span>${trx.tanggal}</span></div><div class="row"><span>NIS / Nama</span><span>${trx.nis} / ${trx.nama}</span></div><table><thead><tr><th>Deskripsi Tagihan</th><th>Periode</th><th style="text-align: right;">Nominal</th></tr></thead><tbody>${itemsHtml}</tbody></table><div class="total">DIBAYAR: Rp ${Number(trx.nominal || 0).toLocaleString('id-ID')}</div><div class="footer">Status: <strong>${trx.status ? trx.status.toUpperCase() : 'LUNAS'}</strong><br>${trx.sisa > 0 ? `<em>Sisa Tagihan: Rp ${Number(trx.sisa || 0).toLocaleString('id-ID')}</em><br>` : ''}<br>Terima kasih atas pembayaran Anda.</div></div></body></html>`;
+                                        downloadHtmlDirectPDF(htmlContent, `Kwitansi_${trx.id}`, 'portrait', 560);
+                                    }} className="flex items-center gap-1 text-rose-700 bg-rose-50 hover:bg-rose-100 font-bold text-xs px-3 py-1.5 rounded-lg border border-rose-200"><Download className="w-3.5 h-3.5" /> PDF</button>
                                     <button onClick={() => {
                                         const itemsHtml = trx.items && trx.items.length > 0 ? trx.items.map(item => `<tr><td>${item.tagihan}</td><td>${item.periode}</td><td style="text-align: right;">Rp ${Number(item.nominal || 0).toLocaleString('id-ID')}</td></tr>`).join('') : `<tr><td>${trx.tagihan}</td><td>${trx.periode}</td><td style="text-align: right;">Rp ${Number(trx.nominal || 0).toLocaleString('id-ID')}</td></tr>`;
                                         const htmlContent = `<html><head><title>Invoice - ${trx.id}</title><style>body { font-family: 'Courier New', Courier, monospace; padding: 20px; color: #000; } .invoice-box { max-width: 450px; margin: auto; border: 1px solid #ddd; padding: 20px; border-radius: 8px; } .header { text-align: center; margin-bottom: 20px; border-bottom: 2px dashed #000; padding-bottom: 10px; } .header img { height: 50px; width: 50px; object-fit: contain; margin: 0 auto 8px auto; display: block; } .header h2 { margin: 0; font-size: 24px; } .row { display: flex; justify-content: space-between; margin-bottom: 5px; font-size: 14px; } table { margin-top: 15px; border-collapse: collapse; width: 100%; } th, td { padding: 8px 0; border-bottom: 1px solid #ddd; text-align: left; font-size: 14px; } .total { font-weight: bold; font-size: 16px; margin-top: 15px; text-align: right; border-top: 2px dashed #000; padding-top: 10px; } .footer { text-align: center; margin-top: 20px; font-size: 12px; color: #555; }</style></head><body><div class="invoice-box"><div class="header"><img src="/logo.png" alt="Logo" /><h2>BUKTI PEMBAYARAN</h2><div>${appConfig.appName || 'SalApp Bendahara'}</div></div><div class="row"><span>No. Inv</span><span>${trx.id}</span></div><div class="row"><span>Tanggal</span><span>${trx.tanggal}</span></div><div class="row"><span>NIS / Nama</span><span>${trx.nis} / ${trx.nama}</span></div><table><thead><tr><th>Deskripsi Tagihan</th><th>Periode</th><th style="text-align: right;">Nominal</th></tr></thead><tbody>${itemsHtml}</tbody></table><div class="total">DIBAYAR: Rp ${Number(trx.nominal || 0).toLocaleString('id-ID')}</div><div class="footer">Status: <strong>${trx.status ? trx.status.toUpperCase() : 'LUNAS'}</strong><br>${trx.sisa > 0 ? `<em>Sisa Tagihan: Rp ${Number(trx.sisa || 0).toLocaleString('id-ID')}</em><br>` : ''}<br>Terima kasih atas pembayaran Anda.</div></div></body></html>`;
@@ -7143,6 +7968,20 @@ function App() {
                             >
                                 <FileSpreadsheet className="w-3.5 h-3.5 text-accent" /> Unduh Excel
                             </button>
+                            <button
+                                type="button"
+                                onClick={() => {
+                                    downloadStyledPDF(
+                                        'Riwayat Kas dan Infaq',
+                                        ['Tanggal', 'NIS', 'Nama Santri', 'Jenis', 'Nominal', 'Keterangan'],
+                                        riwayatInsidental.map(t => [t.tanggal, t.nis, t.nama, t.jenis, t.nominal, t.keterangan]),
+                                        'Riwayat_Iuran_Kas_Insidental'
+                                    );
+                                }}
+                                className={btnOutline}
+                            >
+                                <FileText className="w-3.5 h-3.5 text-rose-600" /> Unduh PDF
+                            </button>
                         </div>
                     </div>
 
@@ -7358,6 +8197,50 @@ function App() {
                                     className={btnOutline}
                                 >
                                     <FileSpreadsheet className="w-3.5 h-3.5 text-accent" /> Unduh Excel
+                                </button>
+                                <button
+                                    type="button"
+                                    onClick={() => {
+                                        if (tunggakanViewMode === 'perSantri') {
+                                            downloadStyledPDF(
+                                                'Rekap Tunggakan Iuran Per Santri',
+                                                ['NIS', 'Nama Santri', 'Kelas', 'Jumlah Tunggakan', 'Rincian Periode/Kategori', 'Total Nunggak', 'Saldo Tabungan Saat Ini'],
+                                                rekapTunggakanPerSantri.map(r => [
+                                                    r.nis,
+                                                    r.nama,
+                                                    r.kelas,
+                                                    r.unpaidItems.length,
+                                                    r.unpaidItems.map(i => `${i.kategori} (${i.mingguKe || i.tanggal})`).join('; '),
+                                                    r.totalUnpaid,
+                                                    getSantriSaldoTabungan(r.nis)
+                                                ]),
+                                                'Rekap_Nunggak_Iuran_Per_Santri'
+                                            );
+                                        } else {
+                                            downloadStyledPDF(
+                                                'Data Tunggakan Iuran Mingguan',
+                                                ['Tanggal Tarik', 'Periode Minggu', 'NIS', 'Nama Santri', 'Kelas', 'Kategori', 'Keterangan', 'Nominal', 'Saldo Saat Ini', 'Status', 'Tanggal Lunas', 'Metode'],
+                                                filteredTunggakan.map(t => [
+                                                    t.tanggal,
+                                                    t.mingguKe || getWeekLabelIuran(t.tanggal),
+                                                    t.nis,
+                                                    t.nama,
+                                                    t.kelas,
+                                                    t.kategori,
+                                                    t.keterangan,
+                                                    t.nominal,
+                                                    getSantriSaldoTabungan(t.nis),
+                                                    t.status === 'LUNAS' ? 'Lunas' : 'Belum Lunas',
+                                                    t.tanggalLunas || '-',
+                                                    t.metodeLunas || '-'
+                                                ]),
+                                                'Data_Tunggakan_Iuran_Mingguan'
+                                            );
+                                        }
+                                    }}
+                                    className={btnOutline}
+                                >
+                                    <FileText className="w-3.5 h-3.5 text-rose-600" /> Unduh PDF
                                 </button>
                             </div>
                         </div>
@@ -8310,6 +9193,38 @@ function App() {
                                     </button>
                                     <button
                                         type="button"
+                                        onClick={() => {
+                                            const k = modalKuitansiPencairan;
+                                            const html = `<html><head><title>Kuitansi - ${k.noBukti}</title><style>
+                                                body { font-family: Arial, sans-serif; padding: 24px; color: #0f172a; max-width: 600px; margin: auto; }
+                                                .hdr { display:flex; justify-content:space-between; border-bottom:2px solid #0f172a; padding-bottom:10px; margin-bottom:16px; }
+                                                .row { display:flex; justify-content:space-between; padding:8px 0; border-bottom:1px solid #e2e8f0; font-size:13px; }
+                                                .amt { background:#ecfdf5; border:1px solid #a7f3d0; padding:12px; border-radius:8px; font-size:20px; font-weight:900; color:#047857; text-align:right; margin:12px 0; }
+                                                .sig { display:flex; justify-content:space-between; margin-top:36px; text-align:center; font-size:12px; }
+                                            </style></head><body>
+                                                <div class="hdr">
+                                                    <div><h3 style="margin:0;">BUKTI PENGELUARAN KAS / KUITANSI</h3><div style="font-size:11px; color:#64748b;">${appConfig.appName || 'SalApp Bendahara'}</div></div>
+                                                    <div style="text-align:right; font-family:monospace;"><b>NO: ${k.noBukti}</b><br/><span style="font-size:11px;">${k.tanggal}</span></div>
+                                                </div>
+                                                <div class="row"><span>Akun / Sumber Dana</span><b>${k.akunNama} (${k.akunNis})</b></div>
+                                                <div class="row"><span>Diserahkan Kepada</span><b>${k.penerima}</b></div>
+                                                <div class="amt">Rp ${Number(k.nominal || 0).toLocaleString('id-ID')}</div>
+                                                <div class="row"><span>Terbilang</span><i>"${k.terbilang}"</i></div>
+                                                <div class="row"><span>Untuk Keperluan</span><span>${k.keperluan}</span></div>
+                                                <div class="row"><span>Sisa Saldo Kas Terkini</span><b>Rp ${Number(k.saldoSisa || 0).toLocaleString('id-ID')}</b></div>
+                                                <div class="sig">
+                                                    <div style="width:180px;"><div>Yang Menerima Uang,</div><div style="margin-top:48px; font-weight:bold; text-decoration:underline;">${k.penerima}</div></div>
+                                                    <div style="width:180px;"><div>Yang Menyerahkan,</div><div style="margin-top:48px; font-weight:bold; text-decoration:underline;">Bendahara Pondok</div></div>
+                                                </div>
+                                            </body></html>`;
+                                            downloadHtmlDirectPDF(html, `Kuitansi_Kas_${k.noBukti}`, 'portrait', 680);
+                                        }}
+                                        className="px-4 py-2 bg-rose-600 hover:bg-rose-700 text-white rounded-xl text-xs font-bold shadow-sm flex items-center gap-1.5 transition-all"
+                                    >
+                                        <Download className="w-4 h-4" /> Unduh PDF
+                                    </button>
+                                    <button
+                                        type="button"
                                         onClick={() => window.print()}
                                         className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-bold shadow-sm flex items-center gap-1.5 transition-all"
                                     >
@@ -9194,7 +10109,20 @@ function App() {
                                 runningSaldo,
                                 t.keterangan || ''
                             ];
-                        }), 'Tabungan_Santri')} className={btnOutline}><FileSpreadsheet className="w-4 h-4 text-accent" /> Unduh</button>
+                        }), 'Tabungan_Santri')} className={btnOutline}><FileSpreadsheet className="w-4 h-4 text-accent" /> Unduh Excel</button>
+                        <button onClick={() => downloadStyledPDF('Tabungan Santri', ['Tanggal', 'NIS', 'Nama', 'Jenis', 'Nominal (+/-)', 'Saldo Setelah Transaksi', 'Keterangan'], filtered.map(t => {
+                            const isTarik = String(t.jenis || '').toLowerCase().trim() === 'tarik' || String(t.jenis || '').toLowerCase().trim() === 'keluar';
+                            const runningSaldo = runningBalanceMap[t.id] !== undefined ? runningBalanceMap[t.id] : getSantriSaldoTabungan(t.nis);
+                            return [
+                                t.tanggal, 
+                                t.nis, 
+                                t.nama, 
+                                t.jenis, 
+                                (!isTarik ? 1 : -1) * Number(t.nominal || 0),
+                                runningSaldo,
+                                t.keterangan || ''
+                            ];
+                        }), 'Tabungan_Santri')} className={btnOutline}><FileText className="w-4 h-4 text-rose-600" /> Unduh PDF</button>
                     </div>
                 </div>
 
@@ -9600,9 +10528,10 @@ function App() {
             <div className="space-y-6 animate-in fade-in duration-500">
                 <div className="flex flex-col xl:flex-row justify-between items-start xl:items-center gap-4 mb-6 w-full">
                     <div className="flex-1 min-w-0 pr-4"><h2 className="text-2xl font-semibold tracking-tight text-ink">Penggajian Pegawai</h2><p className="text-sm text-steel">Catat dan bayar gaji ustadz & karyawan.</p></div>
-                    <div className="flex gap-2">
+                    <div className="flex flex-wrap gap-2">
                         <button onClick={() => { const d = new Date(); setFormData({ bulan: listBulan[d.getMonth()], tahun: d.getFullYear() }); setModalType('FORM_GAJI'); }} className={btnPrimary}><Plus className="w-4 h-4" /> Catat Gaji</button>
-                        <button onClick={() => downloadStyledExcel('Penggajian Pegawai', ['ID', 'Tanggal', 'NIP', 'Nama', 'Periode', 'Gaji Pokok', 'Tunjangan', 'Potongan', 'Total Bersih'], dataGaji.map(g => [g.id, g.tanggal, g.nip, g.nama, g.periode, g.gajiPokok, g.tunjangan, g.potongan, g.totalBersih]), 'Penggajian')} className={btnOutline}><FileSpreadsheet className="w-4 h-4 text-accent" /> Unduh</button>
+                        <button onClick={() => downloadStyledExcel('Penggajian Pegawai', ['ID', 'Tanggal', 'NIP', 'Nama', 'Periode', 'Gaji Pokok', 'Tunjangan', 'Potongan', 'Total Bersih'], dataGaji.map(g => [g.id, g.tanggal, g.nip, g.nama, g.periode, g.gajiPokok, g.tunjangan, g.potongan, g.totalBersih]), 'Penggajian')} className={btnOutline}><FileSpreadsheet className="w-4 h-4 text-accent" /> Unduh Excel</button>
+                        <button onClick={() => downloadStyledPDF('Penggajian Pegawai', ['ID', 'Tanggal', 'NIP', 'Nama', 'Periode', 'Gaji Pokok', 'Tunjangan', 'Potongan', 'Total Bersih'], filtered.map(g => [g.id, g.tanggal, g.nip, g.nama, g.periode, g.gajiPokok, g.tunjangan, g.potongan, g.totalBersih]), 'Penggajian')} className={btnOutline}><FileText className="w-4 h-4 text-rose-600" /> Unduh PDF</button>
                     </div>
                 </div>
                 <div className="bg-surface border border-whisper shadow-sm rounded-card overflow-hidden">
@@ -9630,6 +10559,10 @@ function App() {
                                         <td className="px-6 py-4">{g.periode}</td>
                                         <td className="px-6 py-4 text-right font-semibold text-emerald-700">Rp {Number(g.totalBersih || 0).toLocaleString('id-ID')}</td>
                                         <td className="px-6 py-4 text-center flex gap-3 justify-center">
+                                            <button onClick={() => {
+                                                const htmlContent = `<html><head><title>Slip Gaji - ${g.nama}</title><style>body { font-family: 'Courier New', Courier, monospace; padding: 20px; color: #000; } .invoice-box { max-width: 450px; margin: auto; border: 1px solid #ddd; padding: 20px; border-radius: 8px; } .header { text-align: center; margin-bottom: 20px; border-bottom: 2px dashed #000; padding-bottom: 10px; } .header img { height: 50px; width: 50px; object-fit: contain; margin: 0 auto 8px auto; display: block; } .header h2 { margin: 0; font-size: 20px; } .row { display: flex; justify-content: space-between; margin-bottom: 5px; font-size: 14px; } table { margin-top: 15px; border-collapse: collapse; width: 100%; } th, td { padding: 8px 0; border-bottom: 1px solid #ddd; text-align: left; font-size: 14px; } .total { font-weight: bold; font-size: 16px; margin-top: 15px; text-align: right; border-top: 2px dashed #000; padding-top: 10px; } .footer { text-align: center; margin-top: 30px; font-size: 12px; color: #555; }</style></head><body><div class="invoice-box"><div class="header"><img src="/logo.png" alt="Logo" /><h2>SLIP GAJI PEGAWAI</h2><div>${appConfig.appName || 'SalApp Bendahara'}</div></div><div class="row"><span>ID Transaksi</span><span>${g.id}</span></div><div class="row"><span>Tanggal Bayar</span><span>${g.tanggal}</span></div><div class="row"><span>Nama / NIP</span><span>${g.nama} / ${g.nip}</span></div><div class="row"><span>Periode</span><span>${g.periode}</span></div><br/><table><tbody><tr><td>Gaji Pokok</td><td style="text-align: right;">Rp ${(g.gajiPokok || 0).toLocaleString('id-ID')}</td></tr><tr><td>Tunjangan Tambahan</td><td style="text-align: right;">Rp ${(g.tunjangan || 0).toLocaleString('id-ID')}</td></tr><tr><td>Potongan</td><td style="text-align: right; color: red;">- Rp ${(g.potongan || 0).toLocaleString('id-ID')}</td></tr></tbody></table><div class="total">PENERIMAAN BERSIH: Rp ${(g.totalBersih || 0).toLocaleString('id-ID')}</div><div class="footer">Slip gaji ini dicetak oleh sistem secara otomatis dan sah sebagai bukti pembayaran.<br>Terima kasih atas dedikasi Anda.</div></div></body></html>`;
+                                                downloadHtmlDirectPDF(htmlContent, `Slip_Gaji_${g.nama}_${g.id}`, 'portrait', 560);
+                                            }} className="text-rose-600 hover:text-rose-800" title="Unduh Slip Gaji PDF Langsung"><Download className="w-4 h-4" /></button>
                                             <button onClick={() => {
                                                 const htmlContent = `<html><head><title>Slip Gaji - ${g.nama}</title><style>body { font-family: 'Courier New', Courier, monospace; padding: 20px; color: #000; } .invoice-box { max-width: 450px; margin: auto; border: 1px solid #ddd; padding: 20px; border-radius: 8px; } .header { text-align: center; margin-bottom: 20px; border-bottom: 2px dashed #000; padding-bottom: 10px; } .header img { height: 50px; width: 50px; object-fit: contain; margin: 0 auto 8px auto; display: block; } .header h2 { margin: 0; font-size: 20px; } .row { display: flex; justify-content: space-between; margin-bottom: 5px; font-size: 14px; } table { margin-top: 15px; border-collapse: collapse; width: 100%; } th, td { padding: 8px 0; border-bottom: 1px solid #ddd; text-align: left; font-size: 14px; } .total { font-weight: bold; font-size: 16px; margin-top: 15px; text-align: right; border-top: 2px dashed #000; padding-top: 10px; } .footer { text-align: center; margin-top: 30px; font-size: 12px; color: #555; }</style></head><body><div class="invoice-box"><div class="header"><img src="/logo.png" alt="Logo" /><h2>SLIP GAJI PEGAWAI</h2><div>${appConfig.appName || 'SalApp Bendahara'}</div></div><div class="row"><span>ID Transaksi</span><span>${g.id}</span></div><div class="row"><span>Tanggal Bayar</span><span>${g.tanggal}</span></div><div class="row"><span>Nama / NIP</span><span>${g.nama} / ${g.nip}</span></div><div class="row"><span>Periode</span><span>${g.periode}</span></div><br/><table><tbody><tr><td>Gaji Pokok</td><td style="text-align: right;">Rp ${(g.gajiPokok || 0).toLocaleString('id-ID')}</td></tr><tr><td>Tunjangan Tambahan</td><td style="text-align: right;">Rp ${(g.tunjangan || 0).toLocaleString('id-ID')}</td></tr><tr><td>Potongan</td><td style="text-align: right; color: red;">- Rp ${(g.potongan || 0).toLocaleString('id-ID')}</td></tr></tbody></table><div class="total">PENERIMAAN BERSIH: Rp ${(g.totalBersih || 0).toLocaleString('id-ID')}</div><div class="footer">Slip gaji ini dicetak oleh sistem secara otomatis dan sah sebagai bukti pembayaran.<br>Terima kasih atas dedikasi Anda.</div></div></body></html>`;
                                                 executePrint(htmlContent);
@@ -9661,6 +10594,10 @@ function App() {
                                     </div>
                                 </div>
                                 <div className="flex flex-wrap items-center gap-2 justify-end w-full border-t border-whisper/50 pt-3 mt-1">
+                                    <button onClick={() => {
+                                        const htmlContent = `<html><head><title>Slip Gaji - ${g.nama}</title><style>body { font-family: 'Courier New', Courier, monospace; padding: 20px; color: #000; } .invoice-box { max-width: 450px; margin: auto; border: 1px solid #ddd; padding: 20px; border-radius: 8px; } .header { text-align: center; margin-bottom: 20px; border-bottom: 2px dashed #000; padding-bottom: 10px; } .header img { height: 50px; width: 50px; object-fit: contain; margin: 0 auto 8px auto; display: block; } .header h2 { margin: 0; font-size: 20px; } .row { display: flex; justify-content: space-between; margin-bottom: 5px; font-size: 14px; } table { margin-top: 15px; border-collapse: collapse; width: 100%; } th, td { padding: 8px 0; border-bottom: 1px solid #ddd; text-align: left; font-size: 14px; } .total { font-weight: bold; font-size: 16px; margin-top: 15px; text-align: right; border-top: 2px dashed #000; padding-top: 10px; } .footer { text-align: center; margin-top: 30px; font-size: 12px; color: #555; }</style></head><body><div class="invoice-box"><div class="header"><img src="/logo.png" alt="Logo" /><h2>SLIP GAJI PEGAWAI</h2><div>${appConfig.appName || 'SalApp Bendahara'}</div></div><div class="row"><span>ID Transaksi</span><span>${g.id}</span></div><div class="row"><span>Tanggal Bayar</span><span>${g.tanggal}</span></div><div class="row"><span>Nama / NIP</span><span>${g.nama} / ${g.nip}</span></div><div class="row"><span>Periode</span><span>${g.periode}</span></div><br/><table><tbody><tr><td>Gaji Pokok</td><td style="text-align: right;">Rp ${(g.gajiPokok || 0).toLocaleString('id-ID')}</td></tr><tr><td>Tunjangan Tambahan</td><td style="text-align: right;">Rp ${(g.tunjangan || 0).toLocaleString('id-ID')}</td></tr><tr><td>Potongan</td><td style="text-align: right; color: red;">- Rp ${(g.potongan || 0).toLocaleString('id-ID')}</td></tr></tbody></table><div class="total">PENERIMAAN BERSIH: Rp ${(g.totalBersih || 0).toLocaleString('id-ID')}</div><div class="footer">Slip gaji ini dicetak oleh sistem secara otomatis dan sah sebagai bukti pembayaran.<br>Terima kasih atas dedikasi Anda.</div></div></body></html>`;
+                                        downloadHtmlDirectPDF(htmlContent, `Slip_Gaji_${g.nama}_${g.id}`, 'portrait', 560);
+                                    }} className="flex items-center gap-1 text-rose-700 bg-rose-50 hover:bg-rose-100 font-bold text-xs px-3 py-1.5 rounded-lg border border-rose-200"><Download className="w-3.5 h-3.5" /> PDF</button>
                                     <button onClick={() => {
                                         const htmlContent = `<html><head><title>Slip Gaji - ${g.nama}</title><style>body { font-family: 'Courier New', Courier, monospace; padding: 20px; color: #000; } .invoice-box { max-width: 450px; margin: auto; border: 1px solid #ddd; padding: 20px; border-radius: 8px; } .header { text-align: center; margin-bottom: 20px; border-bottom: 2px dashed #000; padding-bottom: 10px; } .header img { height: 50px; width: 50px; object-fit: contain; margin: 0 auto 8px auto; display: block; } .header h2 { margin: 0; font-size: 20px; } .row { display: flex; justify-content: space-between; margin-bottom: 5px; font-size: 14px; } table { margin-top: 15px; border-collapse: collapse; width: 100%; } th, td { padding: 8px 0; border-bottom: 1px solid #ddd; text-align: left; font-size: 14px; } .total { font-weight: bold; font-size: 16px; margin-top: 15px; text-align: right; border-top: 2px dashed #000; padding-top: 10px; } .footer { text-align: center; margin-top: 30px; font-size: 12px; color: #555; }</style></head><body><div class="invoice-box"><div class="header"><img src="/logo.png" alt="Logo" /><h2>SLIP GAJI PEGAWAI</h2><div>${appConfig.appName || 'SalApp Bendahara'}</div></div><div class="row"><span>ID Transaksi</span><span>${g.id}</span></div><div class="row"><span>Tanggal Bayar</span><span>${g.tanggal}</span></div><div class="row"><span>Nama / NIP</span><span>${g.nama} / ${g.nip}</span></div><div class="row"><span>Periode</span><span>${g.periode}</span></div><br/><table><tbody><tr><td>Gaji Pokok</td><td style="text-align: right;">Rp ${(g.gajiPokok || 0).toLocaleString('id-ID')}</td></tr><tr><td>Tunjangan Tambahan</td><td style="text-align: right;">Rp ${(g.tunjangan || 0).toLocaleString('id-ID')}</td></tr><tr><td>Potongan</td><td style="text-align: right; color: red;">- Rp ${(g.potongan || 0).toLocaleString('id-ID')}</td></tr></tbody></table><div class="total">PENERIMAAN BERSIH: Rp ${(g.totalBersih || 0).toLocaleString('id-ID')}</div><div class="footer">Slip gaji ini dicetak oleh sistem secara otomatis dan sah sebagai bukti pembayaran.<br>Terima kasih atas dedikasi Anda.</div></div></body></html>`;
                                         executePrint(htmlContent);
@@ -12295,8 +13232,36 @@ Terima kasih atas kerja samanya.`;
                                     <button onClick={downloadRekapSummaryExcel} className={btnOutline}>
                                         <FileSpreadsheet className="w-4 h-4 text-accent" /> Unduh Ringkasan (Excel)
                                     </button>
+                                    <button onClick={() => {
+                                        const rows = [];
+                                        rekapData.forEach(w => {
+                                            Object.entries(w.perHari).sort(([a], [b]) => b.localeCompare(a)).forEach(([tgl, data]) => {
+                                                rows.push([w.warungName, w.warungId, formatDateID(tgl), data.count, data.total]);
+                                            });
+                                        });
+                                        const labelPeriode = rekapPeriode === 'custom'
+                                            ? `${formatDateID(rekapStartDate)}_sd_${formatDateID(rekapEndDate)}`
+                                            : (rekapPeriode === 'harian' ? 'Hari_Ini' : rekapPeriode === 'mingguan' ? 'Minggu_Ini' : 'Bulan_Ini');
+                                        downloadStyledPDF(`Rekap Ringkasan Transaksi per Warung (${labelPeriode})`, ['Nama Warung', 'ID Warung', 'Tanggal', 'Jumlah Transaksi', 'Total Omzet'], rows, `Rekap_Warung_Ringkasan_${labelPeriode}`);
+                                    }} className={btnOutline}>
+                                        <FileText className="w-4 h-4 text-rose-600" /> Unduh Ringkasan (PDF)
+                                    </button>
                                     <button onClick={downloadRekapDetailSantriExcel} className={btnPrimary}>
                                         <Download className="w-4 h-4" /> Unduh Rincian Belanja Santri (Excel)
+                                    </button>
+                                    <button onClick={() => {
+                                        const rows = [];
+                                        rekapData.forEach(w => {
+                                            (w.transaksiList || []).forEach(trx => {
+                                                rows.push([w.warungName, trx.TrxID || '-', trx.Waktu ? formatDateTimeID(trx.Waktu) : '-', trx.santriNis || '-', trx.santriNama || '-', trx.santriKelas || '-', trx.Metode || 'Tunai', trx.itemSummary || '-', Number(trx.TotalHarga || 0)]);
+                                            });
+                                        });
+                                        const labelPeriode = rekapPeriode === 'custom'
+                                            ? `${formatDateID(rekapStartDate)}_sd_${formatDateID(rekapEndDate)}`
+                                            : (rekapPeriode === 'harian' ? 'Hari_Ini' : rekapPeriode === 'mingguan' ? 'Minggu_Ini' : 'Bulan_Ini');
+                                        downloadStyledPDF(`Rincian Pembelian Santri per Warung (${labelPeriode})`, ['Nama Warung', 'Trx ID', 'Waktu', 'NIS', 'Nama Santri', 'Kelas', 'Metode', 'Item Dibeli', 'Total Belanja'], rows, `Rincian_Pembelian_Santri_${labelPeriode}`);
+                                    }} className="px-4 py-2.5 bg-rose-600 hover:bg-rose-700 text-white rounded-xl font-semibold text-sm flex items-center gap-2 shadow-sm transition-all">
+                                        <FileText className="w-4 h-4" /> Unduh Rincian Belanja (PDF)
                                     </button>
                                 </div>
                             </>
@@ -12864,7 +13829,8 @@ Terima kasih atas kerja samanya.`;
                         <button onClick={() => { setFormData({ newKategori: '', newKategoriType: 'pemasukan' }); setModalType('MASTER_KATEGORI_KAS'); }} className={btnOutline}><Settings className="w-4 h-4" /> Master Kategori</button>
                         <button onClick={() => { setFormData({ tipeKas: 'MASUK' }); setModalType('FORM_KAS'); }} className="bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg px-4 py-2 font-medium flex items-center gap-2 text-sm shadow-sm"><Plus className="w-4 h-4" /> Catat Pemasukan</button>
                         <button onClick={() => { setFormData({ tipeKas: 'KELUAR' }); setModalType('FORM_KAS'); }} className={btnPrimary}><Plus className="w-4 h-4" /> Catat Pengeluaran</button>
-                        <button onClick={() => downloadStyledExcel('Buku Kas', ['ID', 'Tanggal', 'Tipe', 'Kategori', 'Sumber', 'Nominal', 'Keterangan'], filtered.map(k => [k.id, k.tanggal, k.tipeKas, k.kategori || '-', k.sumber || k.sumberTujuan || '-', k.nominal, k.keterangan]), 'Buku_Kas')} className={btnOutline}><FileSpreadsheet className="w-4 h-4 text-accent" /> Unduh ({filtered.length})</button>
+                        <button onClick={() => downloadStyledExcel('Buku Kas', ['ID', 'Tanggal', 'Tipe', 'Kategori', 'Sumber', 'Nominal', 'Keterangan'], filtered.map(k => [k.id, k.tanggal, k.tipeKas, k.kategori || '-', k.sumber || k.sumberTujuan || '-', k.nominal, k.keterangan]), 'Buku_Kas')} className={btnOutline}><FileSpreadsheet className="w-4 h-4 text-accent" /> Unduh Excel ({filtered.length})</button>
+                        <button onClick={() => downloadStyledPDF('Buku Kas', ['ID', 'Tanggal', 'Tipe', 'Kategori', 'Sumber', 'Nominal', 'Keterangan'], filtered.map(k => [k.id, k.tanggal, k.tipeKas, k.kategori || '-', k.sumber || k.sumberTujuan || '-', (k.tipeKas === 'MASUK' ? 1 : -1) * Number(k.nominal || 0), k.keterangan]), 'Buku_Kas')} className={btnOutline}><FileText className="w-4 h-4 text-rose-600" /> Unduh PDF</button>
                     </div>
                 </div>
                 <div className="bg-surface border border-whisper shadow-sm rounded-card overflow-hidden">
@@ -12903,6 +13869,14 @@ Terima kasih atas kerja samanya.`;
                                                 const subTitle = trx.kategori || 'Umum';
                                                 const keterangan = trx.sumber || trx.sumberTujuan || '-';
                                                 const htmlContent = `<html><head><title>Bukti Kas - ${trx.id}</title><style>body { font-family: 'Courier New', Courier, monospace; padding: 20px; color: #000; } .invoice-box { max-width: 450px; margin: auto; border: 1px solid #ddd; padding: 20px; border-radius: 8px; } .header { text-align: center; margin-bottom: 20px; border-bottom: 2px dashed #000; padding-bottom: 10px; } .header img { height: 50px; width: 50px; object-fit: contain; margin: 0 auto 8px auto; display: block; } .header h2 { margin: 0; font-size: 20px; } .row { display: flex; justify-content: space-between; margin-bottom: 8px; font-size: 14px; } .desc { margin-top: 15px; padding: 15px; background: #f9f9f9; border: 1px solid #eee; font-size: 14px; line-height: 1.5; } .total { font-weight: bold; font-size: 18px; margin-top: 15px; text-align: right; border-top: 2px dashed #000; padding-top: 10px; } .footer { text-align: center; margin-top: 30px; font-size: 12px; color: #555; }</style></head><body><div class="invoice-box"><div class="header"><img src="/logo.png" alt="Logo" /><h2>${title}</h2><div>${appConfig.appName || 'SalApp Bendahara'}</div></div><div class="row"><span>ID Transaksi</span><span>${trx.id}</span></div><div class="row"><span>Tanggal</span><span>${trx.tanggal}</span></div><div class="row"><span>Kategori</span><span>${subTitle}</span></div><div class="desc"><strong>Keterangan / Sumber:</strong><br/>${keterangan}<br/><br/><em>Catatan Tambahan: ${trx.keterangan || '-'}</em></div><div class="total">NOMINAL: Rp ${(trx.nominal || 0).toLocaleString('id-ID')}</div><div class="footer">Dicetak oleh sistem pada ${formatDateTimeID(new Date())}</div></div></body></html>`;
+                                                downloadHtmlDirectPDF(htmlContent, `Bukti_Kas_${trx.id}`, 'portrait', 560);
+                                            }} className="text-rose-600 hover:text-rose-800" title="Unduh Bukti Kas PDF Langsung"><Download className="w-4 h-4" /></button>
+                                            <button onClick={() => {
+                                                const isPemasukan = trx.tipeKas === 'MASUK';
+                                                const title = isPemasukan ? 'BUKTI KAS MASUK' : 'BUKTI KAS KELUAR';
+                                                const subTitle = trx.kategori || 'Umum';
+                                                const keterangan = trx.sumber || trx.sumberTujuan || '-';
+                                                const htmlContent = `<html><head><title>Bukti Kas - ${trx.id}</title><style>body { font-family: 'Courier New', Courier, monospace; padding: 20px; color: #000; } .invoice-box { max-width: 450px; margin: auto; border: 1px solid #ddd; padding: 20px; border-radius: 8px; } .header { text-align: center; margin-bottom: 20px; border-bottom: 2px dashed #000; padding-bottom: 10px; } .header img { height: 50px; width: 50px; object-fit: contain; margin: 0 auto 8px auto; display: block; } .header h2 { margin: 0; font-size: 20px; } .row { display: flex; justify-content: space-between; margin-bottom: 8px; font-size: 14px; } .desc { margin-top: 15px; padding: 15px; background: #f9f9f9; border: 1px solid #eee; font-size: 14px; line-height: 1.5; } .total { font-weight: bold; font-size: 18px; margin-top: 15px; text-align: right; border-top: 2px dashed #000; padding-top: 10px; } .footer { text-align: center; margin-top: 30px; font-size: 12px; color: #555; }</style></head><body><div class="invoice-box"><div class="header"><img src="/logo.png" alt="Logo" /><h2>${title}</h2><div>${appConfig.appName || 'SalApp Bendahara'}</div></div><div class="row"><span>ID Transaksi</span><span>${trx.id}</span></div><div class="row"><span>Tanggal</span><span>${trx.tanggal}</span></div><div class="row"><span>Kategori</span><span>${subTitle}</span></div><div class="desc"><strong>Keterangan / Sumber:</strong><br/>${keterangan}<br/><br/><em>Catatan Tambahan: ${trx.keterangan || '-'}</em></div><div class="total">NOMINAL: Rp ${(trx.nominal || 0).toLocaleString('id-ID')}</div><div class="footer">Dicetak oleh sistem pada ${formatDateTimeID(new Date())}</div></div></body></html>`;
                                                 executePrint(htmlContent);
                                             }} className="text-blue-600 hover:text-blue-800" title="Cetak Bukti Kas"><Printer className="w-4 h-4" /></button>
                                             <button onClick={() => confirmDelete('KAS', trx.id, trx.sumber || trx.sumberTujuan || trx.id)} className="text-rose-600 hover:text-rose-800"><Trash2 className="w-4 h-4" /></button>
@@ -12935,6 +13909,14 @@ Terima kasih atas kerja samanya.`;
                                     </div>
                                 </div>
                                 <div className="flex flex-wrap items-center gap-2 justify-end w-full border-t border-whisper/50 pt-3 mt-1">
+                                    <button onClick={() => {
+                                        const isPemasukan = trx.tipeKas === 'MASUK';
+                                        const title = isPemasukan ? 'BUKTI KAS MASUK' : 'BUKTI KAS KELUAR';
+                                        const subTitle = trx.kategori || 'Umum';
+                                        const keterangan = trx.sumber || trx.sumberTujuan || '-';
+                                        const htmlContent = `<html><head><title>Bukti Kas - ${trx.id}</title><style>body { font-family: 'Courier New', Courier, monospace; padding: 20px; color: #000; } .invoice-box { max-width: 450px; margin: auto; border: 1px solid #ddd; padding: 20px; border-radius: 8px; } .header { text-align: center; margin-bottom: 20px; border-bottom: 2px dashed #000; padding-bottom: 10px; } .header img { height: 50px; width: 50px; object-fit: contain; margin: 0 auto 8px auto; display: block; } .header h2 { margin: 0; font-size: 20px; } .row { display: flex; justify-content: space-between; margin-bottom: 8px; font-size: 14px; } .desc { margin-top: 15px; padding: 15px; background: #f9f9f9; border: 1px solid #eee; font-size: 14px; line-height: 1.5; } .total { font-weight: bold; font-size: 18px; margin-top: 15px; text-align: right; border-top: 2px dashed #000; padding-top: 10px; } .footer { text-align: center; margin-top: 30px; font-size: 12px; color: #555; }</style></head><body><div class="invoice-box"><div class="header"><img src="/logo.png" alt="Logo" /><h2>${title}</h2><div>${appConfig.appName || 'SalApp Bendahara'}</div></div><div class="row"><span>ID Transaksi</span><span>${trx.id}</span></div><div class="row"><span>Tanggal</span><span>${trx.tanggal}</span></div><div class="row"><span>Kategori</span><span>${subTitle}</span></div><div class="desc"><strong>Keterangan / Sumber:</strong><br/>${keterangan}<br/><br/><em>Catatan Tambahan: ${trx.keterangan || '-'}</em></div><div class="total">NOMINAL: Rp ${(trx.nominal || 0).toLocaleString('id-ID')}</div><div class="footer">Dicetak oleh sistem pada ${formatDateTimeID(new Date())}</div></div></body></html>`;
+                                        downloadHtmlDirectPDF(htmlContent, `Bukti_Kas_${trx.id}`, 'portrait', 560);
+                                    }} className="flex items-center gap-1 text-rose-700 bg-rose-50 hover:bg-rose-100 font-bold text-xs px-3 py-1.5 rounded-lg border border-rose-200"><Download className="w-3.5 h-3.5" /> PDF</button>
                                     <button onClick={() => {
                                         const isPemasukan = trx.tipeKas === 'MASUK';
                                         const title = isPemasukan ? 'BUKTI KAS MASUK' : 'BUKTI KAS KELUAR';
@@ -13020,7 +14002,10 @@ Terima kasih atas kerja samanya.`;
                         </div>
                         <p className="text-sm text-steel mt-0.5">Rekam jejak tindakan pengguna pada sistem yang dilindungi dari pengeditan dan penghapusan manual.</p>
                     </div>
-                    <button onClick={() => downloadStyledExcel('Log Aktivitas', ['ID', 'Waktu', 'Pengguna', 'Aksi', 'Modul', 'Detail Aktivitas'], filteredLog.map(l => [l.id, l.waktu, l.user, l.aksi, formatLogModul(l.modul), formatLogDetail(l.detail)]), 'Log_Aktivitas')} className={btnOutline}><FileSpreadsheet className="w-4 h-4 text-accent" /> Unduh ({filteredLog.length})</button>
+                    <div className="flex flex-wrap gap-2">
+                        <button onClick={() => downloadStyledExcel('Log Aktivitas', ['ID', 'Waktu', 'Pengguna', 'Aksi', 'Modul', 'Detail Aktivitas'], filteredLog.map(l => [l.id, l.waktu, l.user, l.aksi, formatLogModul(l.modul), formatLogDetail(l.detail)]), 'Log_Aktivitas')} className={btnOutline}><FileSpreadsheet className="w-4 h-4 text-accent" /> Unduh Excel ({filteredLog.length})</button>
+                        <button onClick={() => downloadStyledPDF('Log Aktivitas', ['ID', 'Waktu', 'Pengguna', 'Aksi', 'Modul', 'Detail Aktivitas'], filteredLog.map(l => [l.id, l.waktu, l.user, l.aksi, formatLogModul(l.modul), formatLogDetail(l.detail)]), 'Log_Aktivitas')} className={btnOutline}><FileText className="w-4 h-4 text-rose-600" /> Unduh PDF</button>
+                    </div>
                 </div>
                 <div className="bg-surface border border-whisper shadow-sm rounded-card overflow-hidden">
                     {renderDateRangeToolbar()}
