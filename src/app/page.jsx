@@ -818,11 +818,12 @@ function App() {
                     XLSX.utils.book_append_sheet(wb, ws, sheetName.substring(0, 31));
                 };
 
-                addSheetFromRows('Data Santri', ['ID', 'NIS', 'Nama', 'Kelas', 'Periode', 'Status', 'UID RFID'], dataSantri.map(s => [s.id, s.nis, s.nama, s.kelas, s.periode, s.status, s.uid || '']));
+                const runningMapBackup = computeRunningBalanceMap(dataTabungan);
+                addSheetFromRows('Data Santri', ['ID', 'NIS', 'Nama', 'Kelas', 'Periode', 'Status', 'Saldo Tabungan (Rp)', 'UID RFID'], dataSantri.map(s => [s.id, s.nis, s.nama, s.kelas, s.periode, s.status || 'Aktif', getSantriSaldoTabungan(s.nis), s.uid || '']));
                 addSheetFromRows('Data Pegawai', ['ID', 'NIP', 'Nama', 'Jabatan', 'Gaji Pokok'], dataPegawai.map(p => [p.id, p.nip, p.nama, p.jabatan, p.gajiPokok || 0]));
                 addSheetFromRows('Tagihan Aktif', ['ID', 'Tanggal', 'NIS', 'Nama', 'Tagihan', 'Periode', 'Nominal', 'Terbayar', 'Status'], dataTagihan.map(t => [t.id, t.tanggal, t.nis, t.nama, t.tagihan, t.periode, t.nominal || 0, t.terbayar || 0, t.status]));
                 addSheetFromRows('Pembayaran', ['Invoice', 'Tanggal', 'NIS', 'Nama', 'Tagihan', 'Periode', 'Nominal', 'Status'], dataPembayaran.map(p => [p.id, p.tanggal, p.nis, p.nama, p.tagihan, p.periode, p.nominal || 0, p.status]));
-                addSheetFromRows('Tabungan', ['ID', 'Tanggal', 'NIS', 'Nama', 'Jenis', 'Nominal', 'Keterangan'], dataTabungan.map(t => [t.id, t.tanggal, t.nis, t.nama, t.jenis, t.nominal || 0, t.keterangan || '']));
+                addSheetFromRows('Tabungan', ['ID', 'Tanggal', 'NIS', 'Nama', 'Jenis', 'Nominal', 'Saldo Setelah Transaksi (Rp)', 'Keterangan'], dataTabungan.map(t => [t.id, t.tanggal, t.nis, t.nama, t.jenis, t.nominal || 0, runningMapBackup[t.id] !== undefined ? runningMapBackup[t.id] : getSantriSaldoTabungan(t.nis), t.keterangan || '']));
                 addSheetFromRows('Buku Kas', ['ID', 'Tanggal', 'Tipe', 'Kategori', 'Sumber', 'Nominal', 'Keterangan'], dataKas.map(k => [k.id, k.tanggal, k.tipeKas, k.kategori, k.sumber || k.sumberTujuan || '', k.nominal || 0, k.keterangan || '']));
                 addSheetFromRows('Penggajian', ['ID', 'Tanggal', 'NIP', 'Nama', 'Periode', 'Gaji Pokok', 'Tunjangan', 'Potongan', 'Total Bersih'], dataGaji.map(g => [g.id, g.tanggal, g.nip, g.nama, g.periode, g.gajiPokok || 0, g.tunjangan || 0, g.potongan || 0, g.totalBersih || 0]));
                 addSheetFromRows('Master Tagihan', ['Jenis Tagihan', 'Nominal', 'Tipe', 'Biaya Aplikasi'], masterTagihanList.map(m => [m.tagihan, m.nominal || 0, m.tipe || 'Rutin', m.biaya_aplikasi || 0]));
@@ -3766,7 +3767,7 @@ function App() {
                                 {masterKelasList.map(k => <button key={k} onClick={() => handleNaikKelas(k)} className="w-full text-left px-4 py-2.5 text-sm hover:bg-canvas transition-colors text-steel hover:text-ink">Kelas {k}</button>)}
                             </div>
                         </div>
-                        <button onClick={() => downloadStyledExcel('Data Santri', ['NIS', 'Nama', 'Kelas', 'Periode', 'Status'], filteredSantri.map(s => [s.nis, s.nama, s.kelas, s.periode, s.status]), 'Data_Santri')} className={btnOutline}><FileSpreadsheet className="w-4 h-4 text-accent" /> Unduh</button>
+                        <button onClick={() => downloadStyledExcel('Data Santri', ['NIS', 'Nama Lengkap', 'Kelas', 'Periode', 'Status', 'Saldo Tabungan (Rp)'], filteredSantri.map(s => [s.nis, s.nama, s.kelas, s.periode, s.status || 'Aktif', getSantriSaldoTabungan(s.nis)]), 'Data_Santri')} className={btnOutline}><FileSpreadsheet className="w-4 h-4 text-accent" /> Unduh</button>
                     </div>
                 </div>
                 <div className="flex flex-wrap items-center justify-between gap-2 mb-4">
