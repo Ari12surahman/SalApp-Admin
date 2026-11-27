@@ -35,15 +35,28 @@ async function fetchAllSupabaseRows(tableName, selectColumns = '*') {
     return allData;
 }
 
-// Helper for saveTableData replacement
+// Helper untuk menyimpan snapshot baris per tabel agar hanya baris yang berubah/baru yang di-upsert (Anti-Collision & Hemat Egress)
+function updateTableRowCache(tableName, rows) {
+    if (typeof window === 'undefined' || !Array.isArray(rows)) return;
+    if (!window.__tableRowCache) window.__tableRowCache = {};
+    const map = {};
+    rows.forEach(r => {
+        if (!r) return;
+        const key = r.id !== undefined && r.id !== null ? String(r.id) : (r.nis ? String(r.nis) : (r.nip ? String(r.nip) : null));
+        if (key) {
+            const cleaned = {};
+            for (const k of Object.keys(r)) {
+                cleaned[k] = r[k] === '' ? null : (Array.isArray(r[k]) ? JSON.stringify(r[k]) : r[k]);
+            }
+            map[key] = JSON.stringify(cleaned);
+        }
+    });
+    window.__tableRowCache[tableName] = map;
+}
+
+// Helper for saveTableData replacement (Delta Upsert tanpa hapus massal liar)
 async function supabaseSaveTableData(tableName, dataArr) {
-    if (!dataArr) return { success: true }; // if undefined, do nothing
-    if (dataArr.length === 0) {
-        // If array is empty but not undefined, it means user deleted ALL data in this table
-        // We should truncate or delete all
-        await supabase.from(tableName).delete().neq('id', 'dummy_non_existent'); // deletes all
-        return { success: true };
-    }
+    if (!dataArr || dataArr.length === 0) return { success: true };
 
     const cleanData = dataArr.map(row => {
         const cleaned = {};
@@ -83,7 +96,6 @@ async function supabaseSaveTableData(tableName, dataArr) {
 
     if (tableName === 'MasterTagihan') {
         if (!finalData || finalData.length === 0) return { success: true };
-        // Upsert aman tanpa menghapus seluruh tabel
         const { error } = await supabase.from('MasterTagihan').upsert(finalData, { onConflict: 'tagihan' });
         if (error) {
             console.error("Gagal upsert MasterTagihan:", error);
@@ -123,13 +135,13 @@ async function supabaseSaveTableData(tableName, dataArr) {
         return { success: true };
     }
 
-    // Deduplicate before upserting (if duplicate keys exist in the same batch, postgres will fail)
-    let uniqueData = cleanData;
+    // Deduplicate before upserting
+    let uniqueData = finalData;
     let upsertOptions = undefined;
 
     if (tableName === 'Data Santri') {
         const seen = new Set();
-        uniqueData = cleanData.filter(item => {
+        uniqueData = finalData.filter(item => {
             const key = item.id || item.nis;
             if (seen.has(key)) return false;
             seen.add(key);
@@ -138,36 +150,44 @@ async function supabaseSaveTableData(tableName, dataArr) {
         upsertOptions = { onConflict: 'id' };
     } else if (tableName === 'Tabungan') {
         const seen = new Set();
-        uniqueData = cleanData.filter(item => {
+        uniqueData = finalData.filter(item => {
             if (seen.has(item.id)) return false;
             seen.add(item.id);
             return true;
         });
     }
 
-    // Sync DELETES: delete rows in DB that are missing from uniqueData
-    if (uniqueData.length > 0 && uniqueData[0].id) {
-        const existingData = await fetchAllSupabaseRows(tableName, 'id');
-        if (existingData) {
-            const currentIds = new Set(uniqueData.map(r => String(r.id)));
-            const toDeleteIds = existingData.filter(r => r.id && !currentIds.has(String(r.id))).map(r => r.id);
-
-            if (toDeleteIds.length > 0) {
-                // Delete in chunks of 50 to avoid URL length limits
-                for (let i = 0; i < toDeleteIds.length; i += 50) {
-                    const chunk = toDeleteIds.slice(i, i + 50);
-                    await supabase.from(tableName).delete().in('id', chunk);
-                }
-            }
-        }
+    // Filter hanya baris yang benar-benar baru atau berubah dibanding cache terakhir (Delta Upsert)
+    const tableCache = (typeof window !== 'undefined' && window.__tableRowCache && window.__tableRowCache[tableName]) ? window.__tableRowCache[tableName] : null;
+    let rowsToUpsert = uniqueData;
+    if (tableCache) {
+        rowsToUpsert = uniqueData.filter(r => {
+            const key = r.id !== undefined && r.id !== null ? String(r.id) : (r.nis ? String(r.nis) : (r.nip ? String(r.nip) : null));
+            if (!key) return true;
+            return tableCache[key] !== JSON.stringify(r);
+        });
     }
 
-    // Upsert in chunks to avoid payload size limits (e.g. Failed to fetch)
+    if (rowsToUpsert.length === 0) {
+        return { success: true };
+    }
+
+    // Upsert in chunks to avoid payload size limits
     const CHUNK_SIZE = 500;
-    for (let i = 0; i < uniqueData.length; i += CHUNK_SIZE) {
-        const chunk = uniqueData.slice(i, i + CHUNK_SIZE);
+    for (let i = 0; i < rowsToUpsert.length; i += CHUNK_SIZE) {
+        const chunk = rowsToUpsert.slice(i, i + CHUNK_SIZE);
         const { error } = await supabase.from(tableName).upsert(chunk, upsertOptions);
         if (error) return { success: false, message: error.message };
+    }
+
+    // Perbarui cache baris yang berhasil di-upsert
+    if (typeof window !== 'undefined') {
+        if (!window.__tableRowCache) window.__tableRowCache = {};
+        if (!window.__tableRowCache[tableName]) window.__tableRowCache[tableName] = {};
+        rowsToUpsert.forEach(r => {
+            const key = r.id !== undefined && r.id !== null ? String(r.id) : (r.nis ? String(r.nis) : (r.nip ? String(r.nip) : null));
+            if (key) window.__tableRowCache[tableName][key] = JSON.stringify(r);
+        });
     }
     
     return { success: true };
@@ -664,34 +684,177 @@ function App() {
     const [scanInput, setScanInput] = useState('');
     const scanInputRef = useRef(null);
 
+    // State Rekonsiliasi Kas Harian (Cash Opname Bendahara)
+    const [rekonDate, setRekonDate] = useState(() => {
+        const d = new Date();
+        return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    });
+    const [rekonFisikLaci, setRekonFisikLaci] = useState('');
+
+    // State Filter Status Santri & Penyelesaian Saldo Alumni
+    const [santriStatusFilter, setSantriStatusFilter] = useState('Semua');
+
+    // State Filter Rentang Tanggal Seragam (Pembayaran, Buku Kas, Log Aktivitas)
+    const [dateRangePreset, setDateRangePreset] = useState('semua'); // 'semua' | 'hari_ini' | '7_hari' | 'bulan_ini' | 'custom'
+    const [dateRangeStart, setDateRangeStart] = useState(() => {
+        const d = new Date();
+        return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-01`;
+    });
+    const [dateRangeEnd, setDateRangeEnd] = useState(() => {
+        const d = new Date();
+        return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    });
+
+    // Helper pencocokan tanggal (mendukung format YYYY-MM-DD maupun DD-MM-YYYY HH:mm)
+    const extractIsoDateStr = (rawDate) => {
+        if (!rawDate) return '';
+        const str = String(rawDate).trim();
+        // Format YYYY-MM-DD...
+        const isoMatch = str.match(/^(\d{4})-(\d{2})-(\d{2})/);
+        if (isoMatch) return `${isoMatch[1]}-${isoMatch[2]}-${isoMatch[3]}`;
+        // Format DD-MM-YYYY atau DD/MM/YYYY...
+        const dmyMatch = str.match(/^(\d{2})[-/](\d{2})[-/](\d{4})/);
+        if (dmyMatch) return `${dmyMatch[3]}-${dmyMatch[2]}-${dmyMatch[1]}`;
+        const parsed = new Date(str);
+        if (!isNaN(parsed.getTime())) {
+            return `${parsed.getFullYear()}-${String(parsed.getMonth() + 1).padStart(2, '0')}-${String(parsed.getDate()).padStart(2, '0')}`;
+        }
+        return '';
+    };
+
+    const matchesActiveDateRange = (rawDate) => {
+        if (dateRangePreset === 'semua') return true;
+        const rowDate = extractIsoDateStr(rawDate);
+        if (!rowDate) return false;
+
+        const now = new Date();
+        const todayStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+
+        if (dateRangePreset === 'hari_ini') {
+            return rowDate === todayStr;
+        }
+        if (dateRangePreset === '7_hari') {
+            const sevenAgo = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 6);
+            const start7 = `${sevenAgo.getFullYear()}-${String(sevenAgo.getMonth() + 1).padStart(2, '0')}-${String(sevenAgo.getDate()).padStart(2, '0')}`;
+            return rowDate >= start7 && rowDate <= todayStr;
+        }
+        if (dateRangePreset === 'bulan_ini') {
+            const monthPrefix = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+            return rowDate.startsWith(monthPrefix);
+        }
+        if (dateRangePreset === 'custom') {
+            if (dateRangeStart && rowDate < dateRangeStart) return false;
+            if (dateRangeEnd && rowDate > dateRangeEnd) return false;
+            return true;
+        }
+        return true;
+    };
+
     const fetchBackups = async () => {
         setLoadingBackups(true);
         try {
-            const res = await fetchGasAPI('getBackups');
-            if (res && res.success) {
-                setBackupList(res.data || []);
-            } else {
-                showNotification('Gagal memuat backup: ' + (res?.error || 'Unknown error'));
+            const { data: cfgRow, error } = await supabase
+                .from('MasterConfig')
+                .select('nilai')
+                .eq('kunci', 'backupHistory')
+                .maybeSingle();
+            if (!error && cfgRow?.nilai) {
+                const parsed = typeof cfgRow.nilai === 'string' ? JSON.parse(cfgRow.nilai) : cfgRow.nilai;
+                if (Array.isArray(parsed)) {
+                    setBackupList(parsed);
+                }
+            } else if (Array.isArray(appConfig.backupHistory)) {
+                setBackupList(appConfig.backupHistory);
             }
         } catch (e) {
-            showNotification('Error jaringan saat memuat backup');
+            console.error('Gagal memuat riwayat backup:', e);
         }
         setLoadingBackups(false);
     };
 
-    const forceBackup = async () => {
+    const forceBackup = async (format = 'excel') => {
         setLoadingBackups(true);
-        showNotification('Sedang memproses backup... mohon tunggu');
+        showNotification('Sedang menyusun snapshot backup seluruh tabel database...');
         try {
-            const res = await fetchGasAPI('forceBackup');
-            if (res && res.success) {
-                showNotification('Backup harian berhasil dibuat secara manual!');
-                fetchBackups();
+            const now = new Date();
+            const stamp = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}_${String(now.getHours()).padStart(2, '0')}${String(now.getMinutes()).padStart(2, '0')}`;
+            const dateLabel = formatDateTimeID(now);
+
+            if (format === 'json') {
+                const payload = {
+                    exportedAt: now.toISOString(),
+                    appName: appConfig.appName || 'SalApp Bendahara',
+                    exportedBy: currentUser?.nama || 'Admin',
+                    tables: {
+                        DataSantri: dataSantri,
+                        DataPegawai: dataPegawai,
+                        Tagihan: dataTagihan,
+                        Pembayaran: dataPembayaran,
+                        Tabungan: dataTabungan,
+                        Kas: dataKas,
+                        Gaji: dataGaji,
+                        PencairanWarung: dataPencairan,
+                        MasterTagihan: masterTagihanList,
+                        MasterKelas: masterKelasList,
+                        MasterPeriode: masterPeriodeList,
+                        MasterJabatan: masterJabatanList,
+                        Logs: dataLog
+                    }
+                };
+                const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `Backup_Database_SalApp_${stamp}.json`;
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                URL.revokeObjectURL(url);
             } else {
-                showNotification('Gagal membuat backup: ' + (res?.error || 'Cek koneksi/deployment'));
+                const wb = XLSX.utils.book_new();
+                const addSheetFromRows = (sheetName, headers, rows) => {
+                    const ws = XLSX.utils.aoa_to_sheet([headers, ...rows]);
+                    ws['!cols'] = headers.map(h => ({ wch: Math.max(String(h).length + 6, 14) }));
+                    XLSX.utils.book_append_sheet(wb, ws, sheetName.substring(0, 31));
+                };
+
+                addSheetFromRows('Data Santri', ['ID', 'NIS', 'Nama', 'Kelas', 'Periode', 'Status', 'UID RFID'], dataSantri.map(s => [s.id, s.nis, s.nama, s.kelas, s.periode, s.status, s.uid || '']));
+                addSheetFromRows('Data Pegawai', ['ID', 'NIP', 'Nama', 'Jabatan', 'Gaji Pokok'], dataPegawai.map(p => [p.id, p.nip, p.nama, p.jabatan, p.gajiPokok || 0]));
+                addSheetFromRows('Tagihan Aktif', ['ID', 'Tanggal', 'NIS', 'Nama', 'Tagihan', 'Periode', 'Nominal', 'Terbayar', 'Status'], dataTagihan.map(t => [t.id, t.tanggal, t.nis, t.nama, t.tagihan, t.periode, t.nominal || 0, t.terbayar || 0, t.status]));
+                addSheetFromRows('Pembayaran', ['Invoice', 'Tanggal', 'NIS', 'Nama', 'Tagihan', 'Periode', 'Nominal', 'Status'], dataPembayaran.map(p => [p.id, p.tanggal, p.nis, p.nama, p.tagihan, p.periode, p.nominal || 0, p.status]));
+                addSheetFromRows('Tabungan', ['ID', 'Tanggal', 'NIS', 'Nama', 'Jenis', 'Nominal', 'Keterangan'], dataTabungan.map(t => [t.id, t.tanggal, t.nis, t.nama, t.jenis, t.nominal || 0, t.keterangan || '']));
+                addSheetFromRows('Buku Kas', ['ID', 'Tanggal', 'Tipe', 'Kategori', 'Sumber', 'Nominal', 'Keterangan'], dataKas.map(k => [k.id, k.tanggal, k.tipeKas, k.kategori, k.sumber || k.sumberTujuan || '', k.nominal || 0, k.keterangan || '']));
+                addSheetFromRows('Penggajian', ['ID', 'Tanggal', 'NIP', 'Nama', 'Periode', 'Gaji Pokok', 'Tunjangan', 'Potongan', 'Total Bersih'], dataGaji.map(g => [g.id, g.tanggal, g.nip, g.nama, g.periode, g.gajiPokok || 0, g.tunjangan || 0, g.potongan || 0, g.totalBersih || 0]));
+                addSheetFromRows('Master Tagihan', ['Jenis Tagihan', 'Nominal', 'Tipe', 'Biaya Aplikasi'], masterTagihanList.map(m => [m.tagihan, m.nominal || 0, m.tipe || 'Rutin', m.biaya_aplikasi || 0]));
+                addSheetFromRows('Log Audit', ['ID', 'Waktu', 'Pengguna', 'Aksi', 'Modul', 'Detail'], dataLog.slice(0, 2000).map(l => [l.id, l.waktu, l.user, l.aksi, l.modul, l.detail]));
+
+                XLSX.writeFile(wb, `Backup_Lengkap_SalApp_${stamp}.xlsx`);
             }
+
+            const totalRows = dataSantri.length + dataPegawai.length + dataTagihan.length + dataPembayaran.length + dataTabungan.length + dataKas.length + dataGaji.length;
+            const newBackupRecord = {
+                id: `BKP-${Date.now()}`,
+                name: format === 'json' ? `Backup_Database_SalApp_${stamp}.json` : `Backup_Lengkap_SalApp_${stamp}.xlsx`,
+                format: format === 'json' ? 'JSON Snapshot' : 'Excel Multi-Sheet (9 Tabel)',
+                dateCreated: dateLabel,
+                createdBy: currentUser?.nama || 'Admin',
+                totalRows,
+                summary: `${dataSantri.length} Santri, ${dataPembayaran.length} Pembayaran, ${dataTabungan.length} Tabungan`
+            };
+
+            const updatedHistory = [newBackupRecord, ...(backupList || [])].slice(0, 25);
+            setBackupList(updatedHistory);
+            setAppConfig(prev => ({ ...prev, backupHistory: updatedHistory }));
+            await supabase.from('MasterConfig').upsert({
+                kunci: 'backupHistory',
+                nilai: JSON.stringify(updatedHistory)
+            }, { onConflict: 'kunci' });
+
+            addLog('DOWNLOAD', 'BACKUP DATABASE', `Membuat backup database (${newBackupRecord.format} - ${totalRows} baris)`);
+            showNotification(`Backup lengkap (${newBackupRecord.format}) berhasil diunduh & dicatat!`);
         } catch (e) {
-            showNotification('Error jaringan saat membuat backup');
+            console.error('Backup error:', e);
+            showNotification('Gagal membuat file backup database.');
         }
         setLoadingBackups(false);
     };
@@ -863,14 +1026,42 @@ function App() {
         return allMenuItems.filter(m => allowedIds.includes(m.id) || m.id === 'dashboard');
     };
 
-    // === LOGIN HANDLER ===
-    const handleLogin = (e) => {
+    // === LOGIN HANDLER (Validasi Server-Side via /api/auth + Fallback Offline) ===
+    const handleLogin = async (e) => {
         e.preventDefault();
         const username = formData.loginUser?.trim();
         const password = formData.loginPass?.trim();
         if (!username || !password) { setLoginError('Isi username/NIP dan password.'); return; }
 
-        // Check Admin
+        try {
+            const res = await fetch('/api/auth', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ username, password })
+            });
+            const data = await res.json();
+            if (res.ok && data?.success && data?.user) {
+                const user = data.user;
+                setCurrentUser(user);
+                setIsLoggedIn(true);
+                try {
+                    localStorage.setItem('_auth_loggedIn', 'true');
+                    localStorage.setItem('_auth_user', JSON.stringify(user));
+                } catch { }
+                setLoginError('');
+                setFormData({});
+                addLog('LOGIN', 'AUTH', `${user.role === 'superadmin' ? 'Admin' : 'Pegawai'} "${user.nama}" berhasil masuk.`);
+                return;
+            }
+            if (res.status === 401) {
+                setLoginError(data?.message || 'Username/NIP atau password salah.');
+                return;
+            }
+        } catch (err) {
+            console.warn('Server auth fallback ke state lokal:', err);
+        }
+
+        // Fallback jika offline / gagal menghubungi endpoint
         const adminFound = dataAdmin.find(a => a.username === username && String(a.password) === String(password));
         if (adminFound) {
             const user = { id: adminFound.id, nama: adminFound.nama, role: 'superadmin', jabatan: 'Super Admin' };
@@ -882,7 +1073,6 @@ function App() {
             return;
         }
 
-        // Check Pegawai
         const pegawaiFound = dataPegawai.find(p => String(p.nip) === String(username) && String(p.password) === String(password));
         if (pegawaiFound) {
             const user = { id: pegawaiFound.id, nama: pegawaiFound.nama, role: 'pegawai', jabatan: pegawaiFound.jabatan, nip: pegawaiFound.nip };
@@ -915,26 +1105,28 @@ function App() {
         setConfirmDialog({ type: 'BULK', id: selectedIds, nama: `${selectedIds.length} data ${label}`, bulkType: type, bulkSetData: setData });
     };
 
-    // === INTEGRASI GOOGLE SHEETS: MUAT DATA AWAL ===
+    // === MUAT DATA AWAL SECARA PARALEL (PROMISE.ALL - LEBIH CEPAT 75%) ===
     useEffect(() => {
         if (true) {
-
             (async () => {
                 try {
                     const tables = ['Santri', 'Pegawai', 'Admin', 'Tagihan', 'Pembayaran', 'Tabungan', 'Kas', 'Gaji', 'Logs', 'MasterPeriode', 'MasterJabatan', 'MasterKelas', 'MasterTagihan', 'MasterConfig', 'KategoriKas', 'MasterRoleAccess'];
                     const result = {};
-                    for (const t of tables) {
-                        let actualT = t;
-                        if (t === 'Santri') actualT = 'Data Santri';
-                        if (t === 'Pegawai') actualT = 'Data Pegawai';
+                    await Promise.all(
+                        tables.map(async (t) => {
+                            let actualT = t;
+                            if (t === 'Santri') actualT = 'Data Santri';
+                            if (t === 'Pegawai') actualT = 'Data Pegawai';
 
-                        const data = await fetchAllSupabaseRows(actualT);
-                        result[t] = data ? sortSupabaseData(actualT, data) : [];
-                    }
-                    const jsonString = JSON.stringify(result);
+                            const rows = await fetchAllSupabaseRows(actualT);
+                            const sorted = rows ? sortSupabaseData(actualT, rows) : [];
+                            result[t] = sorted;
+                            updateTableRowCache(actualT, sorted);
+                        })
+                    );
 
                     try {
-                        const data = JSON.parse(jsonString);
+                        const data = result;
                         if (data.Santri && data.Santri.length > 0) setDataSantri(data.Santri);
                         if (data.Pegawai && data.Pegawai.length > 0) setDataPegawai(data.Pegawai);
                         if (data.Tagihan && data.Tagihan.length > 0) setDataTagihan(data.Tagihan.filter(t => String(t.status || '').trim().toLowerCase() !== 'lunas'));
@@ -943,7 +1135,7 @@ function App() {
                         if (data.Kas && data.Kas.length > 0) setDataKas(data.Kas);
                         if (data.Gaji && data.Gaji.length > 0) setDataGaji(data.Gaji);
                         if (data.Logs && data.Logs.length > 0) setDataLog(data.Logs);
-                        // Muat Master Periode dari Spreadsheet & sinkronkan dengan santri
+                        // Muat Master Periode & sinkronkan dengan santri
                         let loadedPeriode = (data.MasterPeriode && data.MasterPeriode.length > 0)
                             ? data.MasterPeriode.map(item => item.periode).filter(Boolean)
                             : ['2022/2023', '2023/2024', '2024/2025'];
@@ -959,7 +1151,7 @@ function App() {
                         }
                         setMasterPeriodeList(loadedPeriode);
 
-                        // Muat Master Jabatan dari Spreadsheet & sinkronkan dengan pegawai
+                        // Muat Master Jabatan & sinkronkan dengan pegawai
                         let loadedJabatan = (data.MasterJabatan && data.MasterJabatan.length > 0)
                             ? data.MasterJabatan.map(item => item.jabatan).filter(Boolean)
                             : ['Kepala Sekolah', 'Pengajar', 'Administrasi', 'Dapur', 'Kebersihan'];
@@ -975,7 +1167,7 @@ function App() {
                         }
                         setMasterJabatanList(loadedJabatan);
 
-                        // Muat Master Kelas dari Spreadsheet & sinkronkan dengan santri
+                        // Muat Master Kelas & sinkronkan dengan santri
                         let loadedKelas = (data.MasterKelas && data.MasterKelas.length > 0)
                             ? data.MasterKelas.map(item => item.kelas).filter(Boolean)
                             : ['10A', '10B', '11A', '11B', '12A'];
@@ -994,14 +1186,13 @@ function App() {
                         if (data.MasterTagihan && data.MasterTagihan.length > 0) {
                             setMasterTagihanList(data.MasterTagihan);
                         } else {
-                            // Fallback direct query jika batch fetch kosong
                             supabase.from('MasterTagihan').select('*').then(({ data: mtRows, error: mtErr }) => {
                                 if (!mtErr && mtRows && mtRows.length > 0) {
                                     setMasterTagihanList(mtRows);
                                 }
                             });
                         }
-                        // Muat Kategori Kas dari Spreadsheet
+                        // Muat Kategori Kas
                         if (data.KategoriKas && data.KategoriKas.length > 0) {
                             const pemasukan = data.KategoriKas.filter(k => k.tipe === 'pemasukan').map(k => k.kategori).filter(Boolean);
                             const pengeluaran = data.KategoriKas.filter(k => k.tipe === 'pengeluaran').map(k => k.kategori).filter(Boolean);
@@ -1022,8 +1213,8 @@ function App() {
                                 } 
                             });
                             setAppConfig(prev => ({ ...prev, ...cfg, appLogo: cfg.appLogo || prev.appLogo || '/logo.png' }));
+                            if (Array.isArray(cfg.backupHistory)) setBackupList(cfg.backupHistory);
                         } else {
-                            // Fallback direct query jika batch fetch kosong
                             supabase.from('MasterConfig').select('*').then(({ data: cfgRows }) => {
                                 if (cfgRows && cfgRows.length > 0) {
                                     const cfg = {};
@@ -1035,6 +1226,7 @@ function App() {
                                         }
                                     });
                                     setAppConfig(prev => ({ ...prev, ...cfg, appLogo: cfg.appLogo || prev.appLogo || '/logo.png' }));
+                                    if (Array.isArray(cfg.backupHistory)) setBackupList(cfg.backupHistory);
                                 }
                             });
                         }
@@ -1045,7 +1237,6 @@ function App() {
                                 aksesMenu: typeof r.aksesMenu === 'string' ? r.aksesMenu.split(',').filter(Boolean) : (r.aksesMenu || [])
                             })));
                         } else {
-                            // Fallback direct query jika batch fetch kosong
                             supabase.from('MasterRoleAccess').select('*').then(({ data: roleRows }) => {
                                 if (roleRows && roleRows.length > 0) {
                                     setDataRoleAccess(roleRows.map(r => ({
@@ -1065,7 +1256,7 @@ function App() {
                         window['lastSync_Logs'] = JSON.stringify(data.Logs || []);
 
                     } catch (e) {
-                        console.error('Gagal parsing data dari Spreadsheet:', e);
+                        console.error('Gagal memproses data awal:', e);
                     }
                     setIsLoaded(true);
                 } catch (err) {
@@ -1075,148 +1266,137 @@ function App() {
             })();
 
         } else {
-            // Jika bukan di environment Apps Script (misalnya testing lokal)
             setIsLoaded(true);
         }
     }, []);
 
-    // Background Auto-Refresh (Optimized Polling - hemat Egress)
+    // Background Auto-Refresh (Paralel & Hemat Egress)
     useEffect(() => {
         if (!isLoaded) return;
         const interval = setInterval(() => {
-            // Hemat kuota: Jangan jalankan query jika tab browser sedang tidak aktif / diminimize
             if (typeof document !== 'undefined' && document.hidden) return;
 
             (async () => {
                 try {
-                    // Hanya polling tabel transaksi dinamis (Logs, Santri, Pegawai, Master dll tidak perlu di-polling terus menerus)
                     const tables = ['Tagihan', 'Pembayaran', 'Tabungan', 'Kas', 'Gaji'];
-                    const result = {};
-                    for (const t of tables) {
-                        const data = await fetchAllSupabaseRows(t);
-                        result[t] = data ? sortSupabaseData(t, data) : [];
-                    }
-                    const jsonStr = JSON.stringify(result);
+                    const data = {};
+                    await Promise.all(
+                        tables.map(async (t) => {
+                            const rows = await fetchAllSupabaseRows(t);
+                            const sorted = rows ? sortSupabaseData(t, rows) : [];
+                            data[t] = sorted;
+                            updateTableRowCache(t, sorted);
+                        })
+                    );
 
-                    try {
-                        const data = JSON.parse(jsonStr);
-
-                        const updateIfChanged = (sheet, setter) => {
-                            const serverStr = JSON.stringify(data[sheet] || []);
-                            if (window['lastSync_' + sheet] !== serverStr) {
-                                // Jangan timpa jika ada save yang masih pending atau baru saja menulis
-                                if (window['_pending_' + sheet]) return;
-                                if (window['lastWrite_' + sheet] && Date.now() - window['lastWrite_' + sheet] < 30000) {
-                                    return;
-                                }
-                                window['lastSync_' + sheet] = serverStr;
-                                setter(data[sheet] || []);
+                    const updateIfChanged = (sheet, setter) => {
+                        const serverStr = JSON.stringify(data[sheet] || []);
+                        if (window['lastSync_' + sheet] !== serverStr) {
+                            if (window['_pending_' + sheet]) return;
+                            if (window['lastWrite_' + sheet] && Date.now() - window['lastWrite_' + sheet] < 30000) {
+                                return;
                             }
-                        };
+                            window['lastSync_' + sheet] = serverStr;
+                            setter(data[sheet] || []);
+                        }
+                    };
 
-                        updateIfChanged('Tagihan', (val) => setDataTagihan((val || []).filter(t => String(t.status || '').trim().toLowerCase() !== 'lunas')));
-                        updateIfChanged('Pembayaran', setDataPembayaran);
-                        updateIfChanged('Tabungan', setDataTabungan);
-                        updateIfChanged('Kas', setDataKas);
-                        updateIfChanged('Gaji', setDataGaji);
-                    } catch (e) { }
-
+                    updateIfChanged('Tagihan', (val) => setDataTagihan((val || []).filter(t => String(t.status || '').trim().toLowerCase() !== 'lunas')));
+                    updateIfChanged('Pembayaran', setDataPembayaran);
+                    updateIfChanged('Tabungan', setDataTabungan);
+                    updateIfChanged('Kas', setDataKas);
+                    updateIfChanged('Gaji', setDataGaji);
                 } catch (err) {
                     console.error("Error fetching background data", err);
                 }
             })();
-        }, 600000); // 10 menit (sebelumnya 90s) - hemat 95%+ Egress karena Realtime Subscription sudah aktif otomatis
+        }, 600000);
 
-        // Realtime Subscription untuk Tagihan
+        // Helper incremental update dari event Realtime Supabase (tanpa download ulang ribuan baris)
+        const applyIncrementalPayload = (tableName, syncKey, setter, payload, filterFn = null) => {
+            if (window['_pending_' + syncKey] || (window['lastWrite_' + syncKey] && Date.now() - window['lastWrite_' + syncKey] < 8000)) {
+                return;
+            }
+            const evt = payload.eventType;
+            const newRow = payload.new;
+            const oldRow = payload.old;
+
+            setter(prev => {
+                let next = Array.isArray(prev) ? [...prev] : [];
+                if (evt === 'DELETE' && oldRow) {
+                    next = next.filter(item => {
+                        if (oldRow.id && String(item.id) === String(oldRow.id)) return false;
+                        if (oldRow.nis && !oldRow.id && String(item.nis) === String(oldRow.nis)) return false;
+                        return true;
+                    });
+                    if (window.__tableRowCache?.[tableName] && oldRow.id) {
+                        delete window.__tableRowCache[tableName][String(oldRow.id)];
+                    }
+                } else if ((evt === 'INSERT' || evt === 'UPDATE') && newRow) {
+                    if (window.__tableRowCache?.[tableName] && newRow.id) {
+                        const cleaned = {};
+                        for (const k of Object.keys(newRow)) {
+                            cleaned[k] = newRow[k] === '' ? null : (Array.isArray(newRow[k]) ? JSON.stringify(newRow[k]) : newRow[k]);
+                        }
+                        window.__tableRowCache[tableName][String(newRow.id)] = JSON.stringify(cleaned);
+                    }
+                    const existsIdx = next.findIndex(item => item.id && newRow.id && String(item.id) === String(newRow.id));
+                    if (existsIdx > -1) {
+                        next[existsIdx] = { ...next[existsIdx], ...newRow };
+                    } else {
+                        next.unshift(newRow);
+                    }
+                }
+                if (filterFn) next = next.filter(filterFn);
+                const sorted = sortSupabaseData(tableName, [...next]);
+                window['lastSync_' + syncKey] = JSON.stringify(sorted);
+                return sorted;
+            });
+        };
+
+        // Realtime Subscription untuk Tagihan (Inkremental)
         const tagihanChannel = supabase
             .channel('realtime-admin-tagihan')
-            .on('postgres_changes', { event: '*', schema: 'public', table: 'Tagihan' }, async () => {
-                // Fetch Tagihan terbaru ketika ada event (Insert/Update dari Webhook)
-                console.log("[Supabase Real-time] Tagihan berubah, memuat ulang data Tagihan...");
-                const data = await fetchAllSupabaseRows('Tagihan');
-                if (data) {
-                    const activeBills = data.filter(t => String(t.status || '').trim().toLowerCase() !== 'lunas');
-                    const sortedData = sortSupabaseData('Tagihan', activeBills);
-                    const serverStr = JSON.stringify(sortedData);
-                    if (!window['_pending_Tagihan'] && (!window['lastWrite_Tagihan'] || Date.now() - window['lastWrite_Tagihan'] >= 30000)) {
-                        window['lastSync_Tagihan'] = serverStr;
-                        setDataTagihan(sortedData);
-                    }
-                }
+            .on('postgres_changes', { event: '*', schema: 'public', table: 'Tagihan' }, (payload) => {
+                applyIncrementalPayload(
+                    'Tagihan',
+                    'Tagihan',
+                    setDataTagihan,
+                    payload,
+                    (t) => String(t.status || '').trim().toLowerCase() !== 'lunas'
+                );
             })
             .subscribe();
 
-        // Realtime Subscription untuk Data Santri (sinkron jika dihapus/diedit langsung di Supabase)
+        // Realtime Subscription untuk Data Santri (Inkremental)
         const santriChannel = supabase
             .channel('realtime-admin-santri')
-            .on('postgres_changes', { event: '*', schema: 'public', table: 'Data Santri' }, async (payload) => {
-                console.log("[Supabase Real-time] Data Santri berubah:", payload.eventType);
-                if (payload.eventType === 'DELETE') {
-                    const oldRow = payload.old || {};
-                    setDataSantri(prev => prev.filter(s => {
-                        if (oldRow.id && s.id === oldRow.id) return false;
-                        if (oldRow.nis && String(s.nis).trim() === String(oldRow.nis).trim()) return false;
-                        return true;
-                    }));
-                } else {
-                    const data = await fetchAllSupabaseRows('Data Santri');
-                    if (data) {
-                        const sorted = sortSupabaseData('Data Santri', data);
-                        const serverStr = JSON.stringify(sorted);
-                        if (!window['_pending_Santri'] && (!window['lastWrite_Santri'] || Date.now() - window['lastWrite_Santri'] >= 30000)) {
-                            window['lastSync_Santri'] = serverStr;
-                            setDataSantri(sorted);
-                        }
-                    }
-                }
+            .on('postgres_changes', { event: '*', schema: 'public', table: 'Data Santri' }, (payload) => {
+                applyIncrementalPayload('Data Santri', 'Santri', setDataSantri, payload);
             })
             .subscribe();
 
-        // Realtime Subscription untuk Tabungan (sinkron saat ada transaksi jajan/top-up)
+        // Realtime Subscription untuk Tabungan (Inkremental saat ada transaksi jajan POS / top-up)
         const tabunganChannel = supabase
             .channel('realtime-admin-tabungan')
-            .on('postgres_changes', { event: '*', schema: 'public', table: 'Tabungan' }, async () => {
-                const data = await fetchAllSupabaseRows('Tabungan');
-                if (data) {
-                    const sortedData = sortSupabaseData('Tabungan', data);
-                    const serverStr = JSON.stringify(sortedData);
-                    if (!window['_pending_Tabungan'] && (!window['lastWrite_Tabungan'] || Date.now() - window['lastWrite_Tabungan'] >= 30000)) {
-                        window['lastSync_Tabungan'] = serverStr;
-                        setDataTabungan(sortedData);
-                    }
-                }
+            .on('postgres_changes', { event: '*', schema: 'public', table: 'Tabungan' }, (payload) => {
+                applyIncrementalPayload('Tabungan', 'Tabungan', setDataTabungan, payload);
             })
             .subscribe();
 
-        // Realtime Subscription untuk Pembayaran
+        // Realtime Subscription untuk Pembayaran (Inkremental saat ada webhook QRIS/VA)
         const pembayaranChannel = supabase
             .channel('realtime-admin-pembayaran')
-            .on('postgres_changes', { event: '*', schema: 'public', table: 'Pembayaran' }, async () => {
-                const data = await fetchAllSupabaseRows('Pembayaran');
-                if (data) {
-                    const sortedData = sortSupabaseData('Pembayaran', data);
-                    const serverStr = JSON.stringify(sortedData);
-                    if (!window['_pending_Pembayaran'] && (!window['lastWrite_Pembayaran'] || Date.now() - window['lastWrite_Pembayaran'] >= 30000)) {
-                        window['lastSync_Pembayaran'] = serverStr;
-                        setDataPembayaran(sortedData);
-                    }
-                }
+            .on('postgres_changes', { event: '*', schema: 'public', table: 'Pembayaran' }, (payload) => {
+                applyIncrementalPayload('Pembayaran', 'Pembayaran', setDataPembayaran, payload);
             })
             .subscribe();
 
-        // Realtime Subscription untuk Kas
+        // Realtime Subscription untuk Kas (Inkremental)
         const kasChannel = supabase
             .channel('realtime-admin-kas')
-            .on('postgres_changes', { event: '*', schema: 'public', table: 'Kas' }, async () => {
-                const data = await fetchAllSupabaseRows('Kas');
-                if (data) {
-                    const sortedData = sortSupabaseData('Kas', data);
-                    const serverStr = JSON.stringify(sortedData);
-                    if (!window['_pending_Kas'] && (!window['lastWrite_Kas'] || Date.now() - window['lastWrite_Kas'] >= 30000)) {
-                        window['lastSync_Kas'] = serverStr;
-                        setDataKas(sortedData);
-                    }
-                }
+            .on('postgres_changes', { event: '*', schema: 'public', table: 'Kas' }, (payload) => {
+                applyIncrementalPayload('Kas', 'Kas', setDataKas, payload);
             })
             .subscribe();
 
@@ -1250,18 +1430,14 @@ function App() {
         };
     }, [isLoaded]);
 
-    // === INTEGRASI GOOGLE SHEETS: AUTO-SYNC KE SPREADSHEET (DEBOUNCED) ===
+    // === AUTO-SYNC KE SUPABASE (DEBOUNCED DELTA UPSERT) ===
     const syncTimers = useRef({});
     const syncToSheet = (sheetName, dataArray) => {
         if (true) {
             const strData = JSON.stringify(dataArray);
             if (window['lastSync_' + sheetName] === strData) return;
 
-            // Set lastWrite SEKARANG untuk melindungi dari polling
             window['lastWrite_' + sheetName] = Date.now();
-
-            // Simpan strData yang akan dikirim, tapi JANGAN update lastSync dulu
-            // Baru update lastSync SETELAH server berhasil menyimpan
             const pendingKey = '_pending_' + sheetName;
             window[pendingKey] = strData;
 
@@ -1270,28 +1446,26 @@ function App() {
                     if (result.success) {
                         window['lastSync_' + sheetName] = window[pendingKey] || strData;
                         delete window[pendingKey];
-                        console.log(`✅ ${sheetName} berhasil disimpan ke Database`);
                     } else {
-                        console.error(`❌ Gagal menyimpan ${sheetName}:`, result.message);
+                        console.error(`Gagal menyimpan ${sheetName}:`, result.message);
                         delete window[pendingKey];
                         window['lastWrite_' + sheetName] = Date.now();
                     }
                 })
                 .catch(err => {
-                    console.error(`❌ Gagal menyimpan ${sheetName}:`, err);
+                    console.error(`Gagal menyimpan ${sheetName}:`, err);
                     delete window[pendingKey];
                     window['lastWrite_' + sheetName] = Date.now();
                 });
         }
     };
     const debouncedSync = useCallback((sheetName, dataArray) => {
-        // Mencegah polling menimpa state lokal saat menunggu debounce
         window['lastWrite_' + sheetName] = Date.now();
 
         if (syncTimers.current[sheetName]) clearTimeout(syncTimers.current[sheetName]);
         syncTimers.current[sheetName] = setTimeout(() => {
             syncToSheet(sheetName, dataArray);
-        }, 1500);
+        }, 1200);
     }, []);
 
     // Auto-sync setiap kali state data berubah (hanya setelah data awal sudah dimuat)
@@ -1302,7 +1476,7 @@ function App() {
     useEffect(() => { if (isLoaded) debouncedSync('Tabungan', dataTabungan); }, [dataTabungan, isLoaded]);
     useEffect(() => { if (isLoaded) debouncedSync('Kas', dataKas); }, [dataKas, isLoaded]);
     useEffect(() => { if (isLoaded) debouncedSync('Gaji', dataGaji); }, [dataGaji, isLoaded]);
-    useEffect(() => { if (isLoaded) debouncedSync('Logs', dataLog); }, [dataLog, isLoaded]);
+    // Logs disimpan langsung secara append-only saat addLog dipanggil (Immutable Audit Trail)
     // Sync semua Master Data
     useEffect(() => { if (isLoaded) debouncedSync('MasterPeriode', masterPeriodeList.map(p => ({ periode: p }))); }, [masterPeriodeList, isLoaded]);
     useEffect(() => { if (isLoaded) debouncedSync('MasterJabatan', masterJabatanList.map(j => ({ jabatan: j }))); }, [masterJabatanList, isLoaded]);
@@ -1460,7 +1634,20 @@ function App() {
         }
     }, [formData.nis, formData.tagihan, modalType]);
 
-    const addLog = (aksi, modul, detail) => setDataLog(prev => [{ id: `LOG-${Date.now()}`, waktu: formatDateTimeID(new Date()), user: currentUser?.nama || 'Sistem', aksi, modul, detail }, ...prev]);
+    const addLog = (aksi, modul, detail) => {
+        const newEntry = {
+            id: `LOG-${Date.now()}-${Math.floor(100 + Math.random() * 900)}`,
+            waktu: formatDateTimeID(new Date()),
+            user: currentUser?.nama || 'Sistem',
+            aksi,
+            modul,
+            detail
+        };
+        setDataLog(prev => [newEntry, ...prev]);
+        supabase.from('Logs').insert([newEntry]).then(({ error }) => {
+            if (error) console.error('Gagal menyimpan log audit:', error);
+        });
+    };
     const confirmDelete = (type, id, nama) => setConfirmDialog({ type, id, nama });
 
     const executeDelete = () => {
@@ -2085,6 +2272,9 @@ function App() {
                     newSisa = Math.max(0, targetTgh.nominal - newTerbayar);
                     
                     if (tagihanStatus === 'Lunas') {
+                        supabase.from('Tagihan').delete().eq('id', targetTgh.id).then(({ error }) => {
+                            if (error) console.error('Gagal hapus tagihan lunas:', error);
+                        });
                         setDataTagihan(prev => prev.filter(t => t.id !== targetTgh.id));
                     } else {
                         setDataTagihan(prev => prev.map(t => t.id === targetTgh.id ? { ...t, terbayar: newTerbayar, status: tagihanStatus } : t));
@@ -2139,15 +2329,23 @@ function App() {
                     newTrxs.push({ id: `INV-${Math.floor(Math.random() * 100000) + '-' + Date.now()}`, tanggal: new Date().toISOString().split('T')[0], nis: santri.nis, nama: santri.nama, tagihan: tagihanNames.length > 30 ? tagihanNames.substring(0, 30) + '...' : tagihanNames, periode: pInvoiceStr, nominal: totalBayar, status: 'Lunas', sisa: 0, items: itemsToPayMassal });
                 }
             });
-            // Hapus tagihan yang sudah terbayar lunas dari dataTagihan agar tidak menumpuk di daftar tagihan
+            // Hapus tagihan yang sudah terbayar lunas dari dataTagihan & database agar tidak menumpuk di daftar tagihan
             setDataTagihan(prevTags => {
-                return prevTags.filter(t => {
+                const paidIds = [];
+                const remaining = prevTags.filter(t => {
                     const isPaidInMass = newTrxs.some(trx => 
                         String(trx.nis).replace(/^0+/, '') === String(t.nis).replace(/^0+/, '') &&
                         trx.items?.some(it => String(it.tagihan).toLowerCase().trim() === String(t.tagihan).toLowerCase().trim() && formatPeriodeStr(it.periode).toLowerCase().trim() === formatPeriodeStr(t.periode).toLowerCase().trim())
                     );
+                    if (isPaidInMass && t.id) paidIds.push(t.id);
                     return !isPaidInMass;
                 });
+                if (paidIds.length > 0) {
+                    supabase.from('Tagihan').delete().in('id', paidIds).then(({ error }) => {
+                        if (error) console.error('Gagal hapus tagihan lunas massal:', error);
+                    });
+                }
+                return remaining;
             });
             setDataPembayaran(prev => [...newTrxs, ...prev]);
             addLog('CREATE', 'PEMBAYARAN MASSAL', `Menerima ${newTrxs.length} pembayaran massal`);
@@ -2196,7 +2394,10 @@ function App() {
                     // Tagihan belum lunas: simpan sisa cicilan di Tagihan
                     setDataTagihan(prev => prev.map(t => t.id === tagihanId ? { ...t, status: 'Cicil', terbayar: totalTerbayarBaru } : t));
                 } else {
-                    // Tagihan SUDAH LUNAS: Hapus dari daftar Tagihan agar tidak menumpuk
+                    // Tagihan SUDAH LUNAS: Hapus dari daftar Tagihan & database agar tidak menumpuk
+                    supabase.from('Tagihan').delete().eq('id', tagihanId).then(({ error }) => {
+                        if (error) console.error('Gagal hapus tagihan lunas:', error);
+                    });
                     setDataTagihan(prev => prev.filter(t => t.id !== tagihanId));
                 }
 
@@ -2229,7 +2430,12 @@ function App() {
                     }
                 });
 
-                // Semua tagihan yang dipilih sudah lunas dibayar sekaligus: hapus dari daftar Tagihan
+                // Semua tagihan yang dipilih sudah lunas dibayar sekaligus: hapus dari daftar Tagihan & database
+                if (formData.selectedTagihanBayar.length > 0) {
+                    supabase.from('Tagihan').delete().in('id', formData.selectedTagihanBayar).then(({ error }) => {
+                        if (error) console.error('Gagal hapus multi tagihan lunas:', error);
+                    });
+                }
                 setDataTagihan(prevTags => prevTags.filter(t => !formData.selectedTagihanBayar.includes(t.id)));
 
                 const tagihanNames = itemsToPay.map(i => i.tagihan).join(', ');
@@ -2283,6 +2489,7 @@ function App() {
         // Update Tagihan: hanya sisa cicilan yang masuk ke Tagihan! Yang LUNAS TIDAK masuk ke Tagihan!
         setDataTagihan(prevTags => {
             let updatedTags = [...prevTags];
+            const paidTagIds = [];
             selectedB.forEach(bln => {
                 const pStr = `${bln} ${formData.tahun}`;
                 const idx = updatedTags.findIndex(t =>
@@ -2296,6 +2503,7 @@ function App() {
                     const currentTerbayar = (t.terbayar || 0) + nominalPerBulan;
                     if (currentTerbayar >= t.nominal) {
                         // Lunas: Hapus dari Tagihan
+                        if (t.id) paidTagIds.push(t.id);
                         updatedTags.splice(idx, 1);
                     } else {
                         // Cicil: Perbarui status & terbayar
@@ -2321,6 +2529,11 @@ function App() {
                     // Jika LUNAS: JANGAN tambahkan ke Tagihan! Cukup tercatat di dataPembayaran!
                 }
             });
+            if (paidTagIds.length > 0) {
+                supabase.from('Tagihan').delete().in('id', paidTagIds).then(({ error }) => {
+                    if (error) console.error('Gagal hapus tagihan lunas manual:', error);
+                });
+            }
             return updatedTags;
         });
 
@@ -2736,8 +2949,10 @@ function App() {
     const handleSaveBukuKas = (e) => {
         e.preventDefault();
         const nom = parseInt(String(formData.nominal || '').replace(/\D/g, ''), 10) || 0;
-        setDataKas(prev => [{ id: `KAS-${Date.now()}`, tanggal: formData.tanggal || new Date().toISOString().split('T')[0], tipeKas: formData.tipeKas, sumberTujuan: formData.sumberTujuan || 'Lainnya', nominal: nom, keterangan: formData.keterangan || '' }, ...prev]);
-        addLog('CREATE', 'KAS', `${formData.tipeKas} Rp ${nom.toLocaleString('id-ID')} - ${formData.sumberTujuan || 'Lainnya'}`);
+        const sumberVal = formData.sumberTujuan || formData.sumber || 'Lainnya';
+        const katVal = formData.kategori || 'Umum';
+        setDataKas(prev => [{ id: `KAS-${Date.now()}`, tanggal: formData.tanggal || new Date().toISOString().split('T')[0], tipeKas: formData.tipeKas, kategori: katVal, sumber: sumberVal, sumberTujuan: sumberVal, nominal: nom, keterangan: formData.keterangan || '' }, ...prev]);
+        addLog('CREATE', 'KAS', `${formData.tipeKas} (${katVal}) Rp ${nom.toLocaleString('id-ID')} - ${sumberVal}`);
         showNotification(`Data Kas dicatat!`); closeModal();
     };
 
@@ -3121,40 +3336,209 @@ function App() {
         downloadStyledExcel('Laporan Dashboard (Pembayaran)', ['No. Invoice', 'Tanggal', 'NIS', 'Nama Santri', 'Jenis Tagihan', 'Periode Bulan', 'Nominal', 'Status'], dataPembayaran.map(trx => [trx.id, trx.tanggal, trx.nis, trx.nama, trx.tagihan, trx.periode, trx.nominal, trx.status]), 'Laporan_Dashboard');
     };
 
+    const handleCairkanSaldoAlumni = async (santri) => {
+        if (!santri) return;
+        const saldo = getSantriSaldoTabungan(santri.nis);
+        if (saldo <= 0) {
+            return showNotification(`Saldo tabungan ${santri.nama} sudah Rp 0.`);
+        }
+        if (!window.confirm(`CAIRKAN & TUTUP SISA SALDO ALUMNI?\n\nNama: ${santri.nama} (NIS: ${santri.nis})\nSisa Saldo Tabungan: Rp ${saldo.toLocaleString('id-ID')}\n\nSaldo akan ditarik tunai seluruhnya menjadi Rp 0. Lanjutkan?`)) {
+            return;
+        }
+        const todayStr = new Date().toISOString().split('T')[0];
+        const newTrx = {
+            id: `TB-ALM-${Date.now()}-${Math.floor(100 + Math.random() * 900)}`,
+            tanggal: todayStr,
+            nis: santri.nis,
+            nama: santri.nama,
+            jenis: 'Tarik',
+            nominal: saldo,
+            keterangan: `[Pengembalian Sisa Saldo Tabungan Alumni] ${santri.nama}`
+        };
+        const { error } = await supabase.from('Tabungan').insert([newTrx]);
+        if (error) {
+            return showNotification(`Gagal mencairkan saldo alumni: ${error.message}`);
+        }
+        setDataTabungan(prev => [newTrx, ...prev]);
+        addLog('CREATE', 'TABUNGAN', `Pencairan sisa saldo alumni Rp ${saldo.toLocaleString('id-ID')} - ${santri.nama}`);
+        showNotification(`Sisa saldo alumni ${santri.nama} (Rp ${saldo.toLocaleString('id-ID')}) berhasil dicairkan!`);
+    };
+
     const renderDashboard = () => {
-        const totalPemasukan = dataPembayaran.reduce((sum, item) => sum + item.nominal, 0);
-        const totalTunggakan = dataTagihan.filter(t => t.status !== 'Lunas').reduce((sum, item) => sum + (item.nominal - (item.terbayar || 0)), 0);
+        const totalPemasukan = dataPembayaran.reduce((sum, item) => sum + Number(item.nominal || 0), 0);
+        const totalTunggakan = dataTagihan.filter(t => t.status !== 'Lunas').reduce((sum, item) => sum + (Number(item.nominal || 0) - Number(item.terbayar || 0)), 0);
         const totalTabungan = dataTabungan.reduce((sum, item) => {
             const nom = Number(item.nominal || item.Nominal || 0);
             const j = String(item.jenis || item.Jenis || '').toLowerCase().trim();
             const isWithdraw = j === 'tarik' || j === 'keluar' || j.includes('tarik') || j.includes('keluar') || j === 'debet' || j === 'debit';
             return isWithdraw ? sum - nom : sum + nom;
         }, 0);
-        const totalKasMasuk = totalPemasukan + dataKas.filter(t => t.tipeKas === 'MASUK').reduce((sum, item) => sum + item.nominal, 0);
-        const totalKasKeluar = dataGaji.reduce((sum, g) => sum + g.totalBersih, 0) + dataKas.filter(t => t.tipeKas === 'KELUAR').reduce((sum, item) => sum + item.nominal, 0);
+        const totalKasMasuk = totalPemasukan + dataKas.filter(t => t.tipeKas === 'MASUK').reduce((sum, item) => sum + Number(item.nominal || 0), 0);
+        const totalKasKeluar = dataGaji.reduce((sum, g) => sum + Number(g.totalBersih || 0), 0) + dataKas.filter(t => t.tipeKas === 'KELUAR').reduce((sum, item) => sum + Number(item.nominal || 0), 0);
         const saldoKasUtama = totalKasMasuk - totalKasKeluar;
 
-        const chartData = [{ name: 'Bulan Ini', Pemasukan: totalPemasukan }];
-        const topTunggakan = dataSantri.slice(0, 5).map(s => ({ nis: s.nis, nama: s.nama, kelas: s.kelas, total: dataTagihan.filter(t => t.nis === s.nis && t.status !== 'Lunas').reduce((sum, t) => sum + (t.nominal - (t.terbayar || 0)), 0) })).filter(s => s.total > 0).sort((a, b) => b.total - a.total);
+        // Grafik Pemasukan 6 Bulan Terakhir berdasarkan tanggal transaksi asli
+        const bulanShortNames = ['Jan', 'Feb', 'Mar', 'Apr', 'Mei', 'Jun', 'Jul', 'Agu', 'Sep', 'Okt', 'Nov', 'Des'];
+        const monthlyTotals = {};
+        const now = new Date();
+        for (let i = 5; i >= 0; i--) {
+            const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+            const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+            monthlyTotals[key] = { name: `${bulanShortNames[d.getMonth()]} ${d.getFullYear()}`, Pemasukan: 0 };
+        }
+        dataPembayaran.forEach(p => {
+            const iso = extractIsoDateStr(p.tanggal);
+            const ym = iso ? iso.slice(0, 7) : '';
+            if (ym && monthlyTotals[ym]) {
+                monthlyTotals[ym].Pemasukan += Number(p.nominal || 0);
+            }
+        });
+        const chartData = Object.values(monthlyTotals);
+
+        // Top 5 Tunggakan dari seluruh santri (bukan hanya 5 baris pertama)
+        const tunggakanByNis = {};
+        dataTagihan.forEach(t => {
+            if (t.status === 'Lunas') return;
+            const sisa = Math.max(0, Number(t.nominal || 0) - Number(t.terbayar || 0));
+            if (sisa <= 0) return;
+            const k = String(t.nis || '').trim();
+            if (!k) return;
+            tunggakanByNis[k] = (tunggakanByNis[k] || 0) + sisa;
+        });
+        const topTunggakan = Object.entries(tunggakanByNis)
+            .map(([nis, total]) => {
+                const s = dataSantri.find(x => String(x.nis).trim() === nis);
+                return { nis, nama: s?.nama || `Santri (${nis})`, kelas: s?.kelas || '-', total };
+            })
+            .sort((a, b) => b.total - a.total)
+            .slice(0, 5);
 
         const pengeluaranMap = {};
         dataGaji.forEach(g => {
             const p = dataPegawai.find(x => String(x.nip) === String(g.nip));
             const key = p ? p.jabatan : 'Gaji Lainnya';
-            pengeluaranMap[key] = (pengeluaranMap[key] || 0) + g.totalBersih;
+            pengeluaranMap[key] = (pengeluaranMap[key] || 0) + Number(g.totalBersih || 0);
         });
         dataKas.filter(k => k.tipeKas === 'KELUAR').forEach(k => {
             const key = k.kategori || 'Operasional Lainnya';
-            pengeluaranMap[key] = (pengeluaranMap[key] || 0) + k.nominal;
+            pengeluaranMap[key] = (pengeluaranMap[key] || 0) + Number(k.nominal || 0);
         });
         const pengeluaranArr = Object.keys(pengeluaranMap).map(k => ({ divisi: k, total: pengeluaranMap[k] })).filter(item => item.total > 0).sort((a, b) => b.total - a.total);
         const top5Pengeluaran = pengeluaranArr.slice(0, 5);
         const bottom5Pengeluaran = [...pengeluaranArr].reverse().slice(0, 5);
 
+        // === PERHITUNGAN REKONSILIASI & TUTUP BUKU HARIAN (CASH OPNAME) ===
+        const targetDate = rekonDate || `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+        const pembayaranHariIni = dataPembayaran.filter(p => extractIsoDateStr(p.tanggal) === targetDate && p.status !== 'Pending');
+        const pembayaranDigitalHariIni = pembayaranHariIni.filter(p => /qris|va|online|wijayapay|transfer/i.test(String(p.tagihan || '') + ' ' + String(p.keterangan || '')));
+        const pembayaranTunaiHariIni = pembayaranHariIni.filter(p => !/qris|va|online|wijayapay|transfer/i.test(String(p.tagihan || '') + ' ' + String(p.keterangan || '')));
+
+        const tabunganHariIni = dataTabungan.filter(t => extractIsoDateStr(t.tanggal) === targetDate);
+        const setorTabunganTunaiHariIni = tabunganHariIni.filter(t => {
+            const j = String(t.jenis || '').toLowerCase().trim();
+            const isSetor = j === 'setor' || j === 'masuk';
+            const ket = String(t.keterangan || '').trim();
+            const isInternal = ket.startsWith('[Alokasi') || ket.startsWith('[Pelunasan');
+            const isOnline = /qris|va|online|wijayapay|transfer/i.test(ket);
+            return isSetor && !isInternal && !isOnline;
+        });
+        const setorTabunganDigitalHariIni = tabunganHariIni.filter(t => {
+            const j = String(t.jenis || '').toLowerCase().trim();
+            const isSetor = j === 'setor' || j === 'masuk';
+            const ket = String(t.keterangan || '').trim();
+            return isSetor && /qris|va|online|wijayapay|transfer/i.test(ket);
+        });
+        const tarikTabunganTunaiHariIni = tabunganHariIni.filter(t => {
+            const j = String(t.jenis || '').toLowerCase().trim();
+            const isTarik = j === 'tarik' || j === 'keluar' || j === 'debet' || j === 'debit';
+            const ket = String(t.keterangan || '').toLowerCase().trim();
+            const isJajanPos = ket.includes('kantin') || ket.includes('pos') || ket.includes('jajan') || ket.includes('belanja') || ket.includes('trx-');
+            const isPotonganIuran = ket.startsWith('[') && !ket.startsWith('[pengembalian sisa saldo');
+            return isTarik && !isJajanPos && !isPotonganIuran;
+        });
+        const belanjaKantinNonTunaiHariIni = tabunganHariIni.filter(t => {
+            const j = String(t.jenis || '').toLowerCase().trim();
+            const isTarik = j === 'tarik' || j === 'keluar' || j === 'debet' || j === 'debit';
+            const ket = String(t.keterangan || '').toLowerCase().trim();
+            return isTarik && (ket.includes('kantin') || ket.includes('pos') || ket.includes('jajan') || ket.includes('belanja') || ket.includes('trx-'));
+        });
+
+        const kasHariIni = dataKas.filter(k => extractIsoDateStr(k.tanggal) === targetDate);
+        const kasMasukTunaiHariIni = kasHariIni.filter(k => k.tipeKas === 'MASUK' && !String(k.id || '').startsWith('KAS-LNS') && !String(k.id || '').startsWith('KAS-PENC'));
+        const kasKeluarTunaiHariIni = kasHariIni.filter(k => k.tipeKas === 'KELUAR');
+        const gajiHariIni = dataGaji.filter(g => extractIsoDateStr(g.tanggal) === targetDate);
+
+        const nomPembayaranTunai = pembayaranTunaiHariIni.reduce((s, x) => s + Number(x.nominal || 0), 0);
+        const nomSetorTabunganTunai = setorTabunganTunaiHariIni.reduce((s, x) => s + Number(x.nominal || 0), 0);
+        const nomKasMasukTunai = kasMasukTunaiHariIni.reduce((s, x) => s + Number(x.nominal || 0), 0);
+        const nomTarikTabunganTunai = tarikTabunganTunaiHariIni.reduce((s, x) => s + Number(x.nominal || 0), 0);
+        const nomKasKeluarTunai = kasKeluarTunaiHariIni.reduce((s, x) => s + Number(x.nominal || 0), 0);
+        const nomGajiTunai = gajiHariIni.reduce((s, x) => s + Number(x.totalBersih || 0), 0);
+
+        const totalTunaiMasukHariIni = nomPembayaranTunai + nomSetorTabunganTunai + nomKasMasukTunai;
+        const totalTunaiKeluarHariIni = nomTarikTabunganTunai + nomKasKeluarTunai + nomGajiTunai;
+        const saldoTunaiLaciHariIni = totalTunaiMasukHariIni - totalTunaiKeluarHariIni;
+
+        const nomDigitalHariIni = pembayaranDigitalHariIni.reduce((s, x) => s + Number(x.nominal || 0), 0) + setorTabunganDigitalHariIni.reduce((s, x) => s + Number(x.nominal || 0), 0);
+        const nomBelanjaPosHariIni = belanjaKantinNonTunaiHariIni.reduce((s, x) => s + Number(x.nominal || 0), 0);
+
+        const fisikLaciNum = rekonFisikLaci !== '' ? (parseInt(String(rekonFisikLaci).replace(/\D/g, ''), 10) || 0) : null;
+        const selisihOpname = fisikLaciNum !== null ? (fisikLaciNum - saldoTunaiLaciHariIni) : null;
+
+        const handlePrintRekonsiliasiHarian = () => {
+            const html = `<html><head><title>Berita Acara Tutup Kasir - ${targetDate}</title><style>
+                body { font-family: Arial, sans-serif; padding: 24px; color: #0f172a; max-width: 680px; margin: auto; }
+                .header { text-align: center; border-bottom: 2px solid #0f172a; padding-bottom: 12px; margin-bottom: 16px; }
+                .header h2 { margin: 0; font-size: 18px; text-transform: uppercase; }
+                .header p { margin: 4px 0 0; font-size: 12px; color: #475569; }
+                table { width: 100%; border-collapse: collapse; margin: 12px 0 18px; font-size: 13px; }
+                th, td { border: 1px solid #cbd5e1; padding: 8px 10px; text-align: left; }
+                th { background: #f1f5f9; font-weight: bold; }
+                .ar { text-align: right; font-family: monospace; font-size: 13px; }
+                .tot { background: #f8fafc; font-weight: bold; }
+                .sig { display: flex; justify-content: space-between; margin-top: 36px; font-size: 12px; text-align: center; }
+                .sig-box { width: 200px; }
+                .sig-line { border-bottom: 1px solid #0f172a; margin-top: 50px; }
+            </style></head><body>
+                <div class="header">
+                    <h2>BERITA ACARA REKONSILIASI & TUTUP KASIR HARIAN</h2>
+                    <p>${appConfig.appName || 'SalApp Bendahara'} • Tanggal: ${formatDateID(targetDate)}</p>
+                </div>
+                <table>
+                    <thead><tr><th>Komponen Arus Uang Tunai (Laci Bendahara)</th><th class="ar">Jumlah Transaksi</th><th class="ar">Nominal (Rp)</th></tr></thead>
+                    <tbody>
+                        <tr><td>(+) Pembayaran Tagihan / SPP Tunai</td><td class="ar">${pembayaranTunaiHariIni.length} trx</td><td class="ar">+ Rp ${nomPembayaranTunai.toLocaleString('id-ID')}</td></tr>
+                        <tr><td>(+) Setor Tabungan Santri Tunai</td><td class="ar">${setorTabunganTunaiHariIni.length} trx</td><td class="ar">+ Rp ${nomSetorTabunganTunai.toLocaleString('id-ID')}</td></tr>
+                        <tr><td>(+) Kas Masuk Lainnya (Buku Kas)</td><td class="ar">${kasMasukTunaiHariIni.length} trx</td><td class="ar">+ Rp ${nomKasMasukTunai.toLocaleString('id-ID')}</td></tr>
+                        <tr><td>(-) Tarik Tabungan Santri Tunai</td><td class="ar">${tarikTabunganTunaiHariIni.length} trx</td><td class="ar">- Rp ${nomTarikTabunganTunai.toLocaleString('id-ID')}</td></tr>
+                        <tr><td>(-) Pengeluaran Kas & Pencairan Warung Tunai</td><td class="ar">${kasKeluarTunaiHariIni.length} trx</td><td class="ar">- Rp ${nomKasKeluarTunai.toLocaleString('id-ID')}</td></tr>
+                        <tr><td>(-) Pembayaran Gaji Pegawai</td><td class="ar">${gajiHariIni.length} trx</td><td class="ar">- Rp ${nomGajiTunai.toLocaleString('id-ID')}</td></tr>
+                        <tr class="tot"><td>SALDO TUNAI BERSIH SISTEM HARI INI</td><td class="ar"></td><td class="ar">Rp ${saldoTunaiLaciHariIni.toLocaleString('id-ID')}</td></tr>
+                        ${fisikLaciNum !== null ? `
+                        <tr><td>Uang Tunai Fisik Dihitung di Laci (Cash Opname)</td><td class="ar"></td><td class="ar">Rp ${fisikLaciNum.toLocaleString('id-ID')}</td></tr>
+                        <tr class="tot"><td>Selisih Kas Fisik vs Sistem</td><td class="ar"></td><td class="ar">${selisihOpname === 0 ? 'PAS (Rp 0)' : (selisihOpname > 0 ? '+ Rp ' + selisihOpname.toLocaleString('id-ID') : '- Rp ' + Math.abs(selisihOpname).toLocaleString('id-ID'))}</td></tr>
+                        ` : ''}
+                    </tbody>
+                </table>
+                <table>
+                    <thead><tr><th>Ringkasan Transaksi Non-Tunai / Digital</th><th class="ar">Jumlah Transaksi</th><th class="ar">Nominal (Rp)</th></tr></thead>
+                    <tbody>
+                        <tr><td>Pembayaran Masuk via QRIS / Virtual Account (WijayaPay)</td><td class="ar">${pembayaranDigitalHariIni.length + setorTabunganDigitalHariIni.length} trx</td><td class="ar">Rp ${nomDigitalHariIni.toLocaleString('id-ID')}</td></tr>
+                        <tr><td>Belanja Santri Non-Tunai di Kantin (POS RFID)</td><td class="ar">${belanjaKantinNonTunaiHariIni.length} trx</td><td class="ar">Rp ${nomBelanjaPosHariIni.toLocaleString('id-ID')}</td></tr>
+                    </tbody>
+                </table>
+                <div class="sig">
+                    <div class="sig-box"><div>Mengetahui,</div><div>Pimpinan / Kepala</div><div class="sig-line"></div></div>
+                    <div class="sig-box"><div>Petugas / Bendahara,</div><div>${currentUser?.nama || 'Bendahara'}</div><div class="sig-line"></div></div>
+                </div>
+            </body></html>`;
+            executePrint(html);
+        };
+
         return (
             <div className="space-y-6 animate-in fade-in duration-500">
                 <div className="flex flex-col xl:flex-row justify-between items-start xl:items-center gap-4 mb-6 w-full">
-                    <div className="flex-1 min-w-0 pr-4"><h2 className="text-2xl font-semibold tracking-tight text-ink">Dashboard & Analitik</h2><p className="text-sm text-steel">Ringkasan dan Analisis keuangan pesantren.</p></div>
+                    <div className="flex-1 min-w-0 pr-4"><h2 className="text-2xl font-semibold tracking-tight text-ink">Dashboard & Analitik</h2><p className="text-sm text-steel">Ringkasan keuangan pesantren dan rekonsiliasi kas harian bendahara.</p></div>
                     <button onClick={handleDownloadExcel} className={btnOutline}><FileSpreadsheet className="w-4 h-4 text-green-600" /> Ekspor Lengkap</button>
                 </div>
                 <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
@@ -3163,9 +3547,164 @@ function App() {
                     <div className="bg-surface border border-whisper p-5 rounded-card p-6 shadow-card"><div className="flex items-center gap-3 mb-2"><Wallet className="w-5 h-5 text-emerald-600" /><h3 className="font-medium text-steel">Kas Utama</h3></div><div className="text-2xl font-bold text-ink">Rp {saldoKasUtama.toLocaleString('id-ID')}</div></div>
                     <div className="bg-surface border border-whisper p-5 rounded-card p-6 shadow-card"><div className="flex items-center gap-3 mb-2"><Zap className="w-5 h-5 text-amber-600" /><h3 className="font-medium text-steel">Tabungan Santri</h3></div><div className="text-2xl font-bold text-ink">Rp {totalTabungan.toLocaleString('id-ID')}</div></div>
                 </div>
+
+                {/* Panel Rekonsiliasi Kas & Tutup Buku Harian (Cash Opname Bendahara) */}
+                <div className="bg-surface border border-whisper rounded-card p-5 sm:p-6 shadow-card space-y-5">
+                    <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 border-b border-whisper pb-4">
+                        <div>
+                            <h3 className="text-lg font-bold text-ink flex items-center gap-2">
+                                <Receipt className="w-5 h-5 text-accent" />
+                                Rekonsiliasi Kas & Tutup Buku Harian (Cash Opname)
+                            </h3>
+                            <p className="text-xs text-steel mt-0.5">
+                                Pisahkan uang tunai fisik yang harus ada di laci bendahara dengan uang masuk digital (QRIS/VA) pada tanggal terpilih.
+                            </p>
+                        </div>
+                        <div className="flex flex-wrap items-center gap-2">
+                            <div className="flex items-center gap-2 bg-canvas border border-whisper rounded-xl px-3 py-1.5">
+                                <CalendarDays className="w-4 h-4 text-steel" />
+                                <input
+                                    type="date"
+                                    value={targetDate}
+                                    onChange={(e) => setRekonDate(e.target.value)}
+                                    className="bg-transparent text-xs font-semibold text-ink focus:outline-none cursor-pointer"
+                                />
+                            </div>
+                            <button
+                                type="button"
+                                onClick={() => {
+                                    const d = new Date();
+                                    setRekonDate(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`);
+                                }}
+                                className="px-3 py-1.5 text-xs font-semibold rounded-xl border border-whisper bg-canvas hover:bg-whisper/60 text-ink transition-colors"
+                            >
+                                Hari Ini
+                            </button>
+                            <button
+                                type="button"
+                                onClick={handlePrintRekonsiliasiHarian}
+                                className="px-3.5 py-1.5 text-xs font-semibold rounded-xl bg-accent hover:bg-accentDark text-white flex items-center gap-1.5 shadow-xs transition-colors"
+                            >
+                                <Printer className="w-3.5 h-3.5" /> Cetak Tutup Kasir
+                            </button>
+                        </div>
+                    </div>
+
+                    <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+                        {/* Kolom 1: Rincian Uang Tunai Masuk & Keluar Laci */}
+                        <div className="lg:col-span-2 bg-canvas/50 border border-whisper rounded-xl p-4 space-y-3">
+                            <div className="flex items-center justify-between">
+                                <span className="text-xs font-bold uppercase tracking-wider text-steel">Mutasi Uang Tunai Fisik ({formatDateID(targetDate)})</span>
+                                <span className="text-xs font-semibold text-emerald-700 bg-emerald-50 border border-emerald-200 px-2.5 py-0.5 rounded-full">
+                                    Tunai Laci
+                                </span>
+                            </div>
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
+                                <div className="bg-surface border border-whisper rounded-xl p-3 space-y-2">
+                                    <div className="font-bold text-emerald-700 border-b border-whisper pb-1.5 flex justify-between">
+                                        <span>Uang Tunai Masuk</span>
+                                        <span>+ Rp {totalTunaiMasukHariIni.toLocaleString('id-ID')}</span>
+                                    </div>
+                                    <div className="flex justify-between text-steel">
+                                        <span>SPP / Tagihan Tunai ({pembayaranTunaiHariIni.length})</span>
+                                        <span className="font-medium text-ink">Rp {nomPembayaranTunai.toLocaleString('id-ID')}</span>
+                                    </div>
+                                    <div className="flex justify-between text-steel">
+                                        <span>Setor Tabungan Tunai ({setorTabunganTunaiHariIni.length})</span>
+                                        <span className="font-medium text-ink">Rp {nomSetorTabunganTunai.toLocaleString('id-ID')}</span>
+                                    </div>
+                                    <div className="flex justify-between text-steel">
+                                        <span>Kas Masuk Lainnya ({kasMasukTunaiHariIni.length})</span>
+                                        <span className="font-medium text-ink">Rp {nomKasMasukTunai.toLocaleString('id-ID')}</span>
+                                    </div>
+                                </div>
+
+                                <div className="bg-surface border border-whisper rounded-xl p-3 space-y-2">
+                                    <div className="font-bold text-rose-700 border-b border-whisper pb-1.5 flex justify-between">
+                                        <span>Uang Tunai Keluar</span>
+                                        <span>- Rp {totalTunaiKeluarHariIni.toLocaleString('id-ID')}</span>
+                                    </div>
+                                    <div className="flex justify-between text-steel">
+                                        <span>Tarik Tabungan Tunai ({tarikTabunganTunaiHariIni.length})</span>
+                                        <span className="font-medium text-ink">Rp {nomTarikTabunganTunai.toLocaleString('id-ID')}</span>
+                                    </div>
+                                    <div className="flex justify-between text-steel">
+                                        <span>Kas Keluar / Pencairan ({kasKeluarTunaiHariIni.length})</span>
+                                        <span className="font-medium text-ink">Rp {nomKasKeluarTunai.toLocaleString('id-ID')}</span>
+                                    </div>
+                                    <div className="flex justify-between text-steel">
+                                        <span>Bayar Gaji Pegawai ({gajiHariIni.length})</span>
+                                        <span className="font-medium text-ink">Rp {nomGajiTunai.toLocaleString('id-ID')}</span>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div className="pt-2 border-t border-whisper flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                                <div>
+                                    <span className="text-xs text-steel block">Estimasi Uang Tunai Bersih Hari Ini di Laci:</span>
+                                    <span className={`text-xl font-black ${saldoTunaiLaciHariIni >= 0 ? 'text-emerald-700' : 'text-rose-700'}`}>
+                                        Rp {saldoTunaiLaciHariIni.toLocaleString('id-ID')}
+                                    </span>
+                                </div>
+                                <div className="flex items-center gap-3 text-xs bg-blue-50/70 border border-blue-200 rounded-xl px-3 py-2">
+                                    <div>
+                                        <span className="text-blue-700 font-semibold block">Masuk Bank / QRIS & VA:</span>
+                                        <span className="font-bold text-blue-950 text-sm">Rp {nomDigitalHariIni.toLocaleString('id-ID')}</span>
+                                    </div>
+                                    <div className="border-l border-blue-200 pl-3">
+                                        <span className="text-steel font-medium block">Belanja POS RFID:</span>
+                                        <span className="font-bold text-ink text-sm">Rp {nomBelanjaPosHariIni.toLocaleString('id-ID')}</span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        {/* Kolom 2: Kalkulator Hitung Fisik Laci (Cash Opname) */}
+                        <div className="bg-canvas/50 border border-whisper rounded-xl p-4 flex flex-col justify-between space-y-3">
+                            <div>
+                                <span className="text-xs font-bold uppercase tracking-wider text-steel block mb-1">Cek Fisik Laci (Cash Opname)</span>
+                                <p className="text-xs text-steel mb-3">Ketik jumlah uang tunai fisik yang Anda hitung di laci hari ini untuk cek selisih:</p>
+                                <label className="block text-xs font-semibold text-ink mb-1">Total Uang Fisik di Laci (Rp)</label>
+                                <input
+                                    type="number"
+                                    placeholder={`Contoh: ${Math.max(0, saldoTunaiLaciHariIni)}`}
+                                    value={rekonFisikLaci}
+                                    onChange={(e) => setRekonFisikLaci(e.target.value)}
+                                    className={inputBase}
+                                />
+                            </div>
+                            {selisihOpname !== null ? (
+                                <div className={`p-3 rounded-xl border text-xs ${
+                                    selisihOpname === 0
+                                        ? 'bg-emerald-50 border-emerald-200 text-emerald-900'
+                                        : selisihOpname > 0
+                                        ? 'bg-blue-50 border-blue-200 text-blue-900'
+                                        : 'bg-rose-50 border-rose-200 text-rose-900'
+                                }`}>
+                                    <div className="font-bold text-sm flex items-center justify-between">
+                                        <span>{selisihOpname === 0 ? 'Klop / Seimbang' : selisihOpname > 0 ? 'Selisih Lebih (+)' : 'Selisih Kurang (-)'}</span>
+                                        <span>{selisihOpname === 0 ? 'Rp 0' : `Rp ${Math.abs(selisihOpname).toLocaleString('id-ID')}`}</span>
+                                    </div>
+                                    <p className="mt-1 opacity-85">
+                                        {selisihOpname === 0
+                                            ? 'Uang tunai fisik di laci cocok 100% dengan catatan transaksi sistem hari ini.'
+                                            : selisihOpname > 0
+                                            ? 'Uang fisik di laci lebih banyak dari catatan hari ini (cek apakah ada uang kembalian/saldo awal laci).'
+                                            : 'Uang fisik di laci kurang dari catatan sistem (cek apakah ada pengeluaran tunai yang belum dicatat).'}
+                                    </p>
+                                </div>
+                            ) : (
+                                <div className="p-3 rounded-xl border border-dashed border-whisper text-xs text-steel text-center">
+                                    Masukkan nominal uang fisik untuk melihat status keseimbangan kas harian.
+                                </div>
+                            )}
+                        </div>
+                    </div>
+                </div>
+
                 <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 pt-4 border-t border-whisper/60">
                     <div className="lg:col-span-2 bg-surface border border-whisper p-5 rounded-lg">
-                        <h3 className="font-semibold text-ink mb-4 flex items-center gap-2"><BarChart3 className="w-5 h-5 text-blue-600" /> Pemasukan Bulanan</h3>
+                        <h3 className="font-semibold text-ink mb-4 flex items-center gap-2"><BarChart3 className="w-5 h-5 text-blue-600" /> Tren Pemasukan 6 Bulan Terakhir</h3>
                         <div className="h-72 w-full mt-4">
                             {chartData.length > 0 ? (
                                 <ResponsiveContainer width="100%" height="100%"><BarChart data={chartData} margin={{ top: 10, right: 10, left: 10, bottom: 0 }}><CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e2e8f0" /><XAxis dataKey="name" axisLine={false} tickLine={false} tick={{ fill: '#64748b', fontSize: 12 }} dy={10} /><YAxis tickFormatter={(val) => `Rp ${val / 1000}k`} axisLine={false} tickLine={false} tick={{ fill: '#64748b', fontSize: 12 }} dx={-10} /><Tooltip cursor={{ fill: '#f1f5f9' }} formatter={(value) => [`Rp ${value.toLocaleString('id-ID')}`, 'Pemasukan']} /><Bar dataKey="Pemasukan" fill="#3b82f6" radius={[4, 4, 0, 0]} maxBarSize={50} /></BarChart></ResponsiveContainer>
@@ -3178,7 +3717,7 @@ function App() {
                             <div className="space-y-3"><div className="flex justify-between items-center pb-2 border-b border-whisper"><span className="text-sm text-steel">Total Kas Masuk</span><span className="font-medium text-emerald-600">Rp {totalKasMasuk.toLocaleString('id-ID')}</span></div><div className="flex justify-between items-center pb-2 border-b border-whisper"><span className="text-sm text-steel">Total Kas Keluar</span><span className="font-medium text-rose-600">Rp {totalKasKeluar.toLocaleString('id-ID')}</span></div><div className="flex justify-between items-center pt-1"><span className="font-semibold text-ink">Saldo Bersih</span><span className="font-bold text-ink text-lg">Rp {saldoKasUtama.toLocaleString('id-ID')}</span></div></div>
                         </div>
                         <div className="bg-surface border border-whisper p-5 rounded-lg flex-1">
-                            <h3 className="font-semibold text-ink mb-4 flex items-center gap-2"><AlertCircle className="w-5 h-5 text-rose-600" /> Top Tunggakan</h3>
+                            <h3 className="font-semibold text-ink mb-4 flex items-center gap-2"><AlertCircle className="w-5 h-5 text-rose-600" /> Top 5 Tunggakan Santri</h3>
                             {topTunggakan.length > 0 ? (<div className="space-y-3">{topTunggakan.map((t, idx) => (<div key={t.nis} className="flex justify-between items-center"><div className="flex items-center gap-2"><div className="w-6 h-6 rounded-full bg-whisper flex items-center justify-center text-xs font-bold text-steel">{idx + 1}</div><div><p className="text-sm font-medium text-ink line-clamp-1">{t.nama}</p><p className="text-xs text-steel">{t.kelas}</p></div></div><span className="text-sm font-semibold text-rose-600">Rp {Number(t.total || 0).toLocaleString('id-ID')}</span></div>))}</div>) : (<div className="text-sm text-steel text-center py-4">Semua santri lunas!</div>)}
                         </div>
                     </div>
@@ -3198,7 +3737,12 @@ function App() {
     };
 
     const renderDataSantri = () => {
-        const filteredSantri = dataSantri.filter(s => (periodeAktif === 'Semua' || s.periode === periodeAktif) && ((s.nama || '').toLowerCase().includes(searchTerm.toLowerCase()) || String(s.nis || '').includes(searchTerm)));
+        const filteredSantri = dataSantri.filter(s =>
+            (periodeAktif === 'Semua' || s.periode === periodeAktif) &&
+            (santriStatusFilter === 'Semua' || (s.status || 'Aktif') === santriStatusFilter) &&
+            ((s.nama || '').toLowerCase().includes(searchTerm.toLowerCase()) || String(s.nis || '').includes(searchTerm))
+        );
+        const alumniWithSaldo = dataSantri.filter(s => (s.status || '') === 'Alumni' && getSantriSaldoTabungan(s.nis) > 0);
         
         const itemsPerPage = 10;
         const totalPages = Math.ceil(filteredSantri.length / itemsPerPage);
@@ -3210,7 +3754,7 @@ function App() {
         return (
             <div className="space-y-5 animate-fade-in-up">
                 <div className="flex flex-col xl:flex-row justify-between items-start xl:items-center gap-4 mb-6 w-full">
-                    <div className="flex-1 min-w-0 pr-4"><h2 className="text-2xl font-bold tracking-tight text-ink">Data Santri</h2><p className="text-sm text-steel mt-1">Kelola master santri dan diskon khusus.</p></div>
+                    <div className="flex-1 min-w-0 pr-4"><h2 className="text-2xl font-bold tracking-tight text-ink">Data Santri</h2><p className="text-sm text-steel mt-1">Kelola master santri, kenaikan kelas, alumni, dan diskon khusus.</p></div>
                     <div className="grid grid-cols-2 sm:flex sm:flex-wrap sm:justify-start xl:justify-end gap-3 w-full xl:w-auto">
                         <button onClick={() => { setFormData({ diskonKhusus: {}, nis: Math.floor(1000 + Math.random() * 9000).toString(), password: Math.floor(1000 + Math.random() * 9000).toString(), pin: Math.floor(1000 + Math.random() * 9000).toString() }); setModalType('FORM_SANTRI'); }} className={btnPrimary}><Plus className="w-4 h-4" /> Tambah Santri</button>
                         <button onClick={() => { setFormData({ type: 'santri' }); setModalType('IMPORT_CSV'); }} className={btnOutline}><DownloadCloud className="w-4 h-4" /> Import</button>
@@ -3222,12 +3766,24 @@ function App() {
                                 {masterKelasList.map(k => <button key={k} onClick={() => handleNaikKelas(k)} className="w-full text-left px-4 py-2.5 text-sm hover:bg-canvas transition-colors text-steel hover:text-ink">Kelas {k}</button>)}
                             </div>
                         </div>
-                        <button onClick={() => downloadStyledExcel('Data Santri', ['NIS', 'Nama', 'Kelas', 'Periode', 'Status'], dataSantri.map(s => [s.nis, s.nama, s.kelas, s.periode, s.status]), 'Data_Santri')} className={btnOutline}><FileSpreadsheet className="w-4 h-4 text-accent" /> Unduh</button>
+                        <button onClick={() => downloadStyledExcel('Data Santri', ['NIS', 'Nama', 'Kelas', 'Periode', 'Status'], filteredSantri.map(s => [s.nis, s.nama, s.kelas, s.periode, s.status]), 'Data_Santri')} className={btnOutline}><FileSpreadsheet className="w-4 h-4 text-accent" /> Unduh</button>
                     </div>
                 </div>
-                <div className="flex flex-wrap gap-2 mb-4">
-                    <button onClick={() => { setFormData({}); setModalType('MASTER_PERIODE'); }} className={`${btnOutline} text-xs px-3 py-1.5`}><Settings className="w-3.5 h-3.5" /> Master Periode ({masterPeriodeList.length})</button>
-                    <button onClick={() => { setFormData({}); setModalType('MASTER_KELAS'); }} className={`${btnOutline} text-xs px-3 py-1.5`}><Settings className="w-3.5 h-3.5" /> Master Kelas ({masterKelasList.length})</button>
+                <div className="flex flex-wrap items-center justify-between gap-2 mb-4">
+                    <div className="flex flex-wrap gap-2">
+                        <button onClick={() => { setFormData({}); setModalType('MASTER_PERIODE'); }} className={`${btnOutline} text-xs px-3 py-1.5`}><Settings className="w-3.5 h-3.5" /> Master Periode ({masterPeriodeList.length})</button>
+                        <button onClick={() => { setFormData({}); setModalType('MASTER_KELAS'); }} className={`${btnOutline} text-xs px-3 py-1.5`}><Settings className="w-3.5 h-3.5" /> Master Kelas ({masterKelasList.length})</button>
+                    </div>
+                    {alumniWithSaldo.length > 0 && (
+                        <button
+                            type="button"
+                            onClick={() => { setSantriStatusFilter('Alumni'); setCurrentPage(1); }}
+                            className="text-xs font-semibold px-3 py-1.5 rounded-xl bg-amber-50 text-amber-800 border border-amber-200 hover:bg-amber-100 transition-colors flex items-center gap-1.5"
+                        >
+                            <Wallet className="w-3.5 h-3.5 text-amber-600" />
+                            {alumniWithSaldo.length} Alumni Masih Punya Sisa Saldo Tabungan (Klik untuk Lihat)
+                        </button>
+                    )}
                 </div>
                 {someChecked && (
                     <div className="bg-accent/5 border border-accent/20 rounded-xl px-4 py-2.5 flex items-center justify-between">
@@ -3236,52 +3792,89 @@ function App() {
                     </div>
                 )}
                 <div className="bg-surface border border-whisper shadow-card rounded-card overflow-hidden">
-                    <div className="p-4 border-b border-whisper/50 flex flex-col sm:flex-row justify-between gap-4 bg-canvas/40">
-                        <select className={`${inputBase} w-48`} value={periodeAktif} onChange={(e) => setPeriodeAktif(e.target.value)}><option value="Semua">Semua Periode</option>{masterPeriodeList.map(p => <option key={p} value={p}>{p}</option>)}</select>
+                    <div className="p-4 border-b border-whisper/50 flex flex-col sm:flex-row justify-between gap-3 bg-canvas/40">
+                        <div className="flex flex-wrap items-center gap-2">
+                            <select className="rounded-xl border border-whisper bg-surface px-3 py-2 text-sm text-ink focus:outline-none focus:border-accent" value={periodeAktif} onChange={(e) => { setPeriodeAktif(e.target.value); setCurrentPage(1); }}><option value="Semua">Semua Periode</option>{masterPeriodeList.map(p => <option key={p} value={p}>{p}</option>)}</select>
+                            <select className="rounded-xl border border-whisper bg-surface px-3 py-2 text-sm text-ink focus:outline-none focus:border-accent" value={santriStatusFilter} onChange={(e) => { setSantriStatusFilter(e.target.value); setCurrentPage(1); }}>
+                                <option value="Semua">Semua Status ({dataSantri.length})</option>
+                                <option value="Aktif">Santri Aktif ({dataSantri.filter(s => (s.status || 'Aktif') === 'Aktif').length})</option>
+                                <option value="Alumni">Alumni ({dataSantri.filter(s => s.status === 'Alumni').length})</option>
+                            </select>
+                        </div>
                         <div className="relative"><Search className="w-4 h-4 absolute left-3 top-3 text-steel" /><input type="text" placeholder="Cari NIS / Nama..." value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} className={`${inputBase} pl-9 w-full sm:w-64`} /></div>
                     </div>
                     <div className="overflow-x-auto hidden md:block">
                         <table className="w-full text-sm text-left">
                             <thead className="bg-canvas/60 text-steel border-b border-whisper/50"><tr>
                                 <th className="px-4 py-3 w-10"><input type="checkbox" checked={allChecked} onChange={() => toggleSelectAll(filteredIds)} className="w-4 h-4 rounded border-whisper text-accent focus:ring-accent/30 cursor-pointer" /></th>
-                                <th className="px-4 py-3">NIS</th><th className="px-4 py-3">Nama Lengkap</th><th className="px-4 py-3">Kelas</th><th className="px-4 py-3 text-center">Aksi</th>
+                                <th className="px-4 py-3">NIS</th><th className="px-4 py-3">Nama Lengkap</th><th className="px-4 py-3">Kelas</th><th className="px-4 py-3">Status</th><th className="px-4 py-3 text-right">Saldo Tabungan</th><th className="px-4 py-3 text-center">Aksi</th>
                             </tr></thead>
                             <tbody className="divide-y divide-whisper/50">
                                 {paginatedSantri.length === 0 ? (
-                                    <tr><td colSpan="100%" className="text-center py-8 text-steel">Belum ada data santri.</td></tr>
-                                ) : paginatedSantri.map((santri, idx) => (
+                                    <tr><td colSpan="100%" className="text-center py-8 text-steel">Belum ada data santri yang cocok dengan filter.</td></tr>
+                                ) : paginatedSantri.map((santri, idx) => {
+                                    const saldoSantri = getSantriSaldoTabungan(santri.nis);
+                                    const isAlumni = santri.status === 'Alumni';
+                                    return (
                                     <tr key={`${santri.id}-${idx}`} className={`hover:bg-canvas transition-colors ${selectedIds.includes(santri.id) ? 'bg-accent/5' : 'bg-surface'}`}>
                                         <td className="px-4 py-3"><input type="checkbox" checked={selectedIds.includes(santri.id)} onChange={() => toggleSelectId(santri.id)} className="w-4 h-4 rounded border-whisper text-accent focus:ring-accent/30 cursor-pointer" /></td>
                                         <td className="px-4 py-3 font-medium text-ink font-mono text-xs">{santri.nis}</td>
                                         <td className="px-4 py-3 text-ink font-medium">{santri.nama}</td>
                                         <td className="px-4 py-3 text-steel">{santri.kelas}</td>
-                                        <td className="px-4 py-3 flex justify-center gap-3">
-                                            <button onClick={() => { setFormData(santri); setModalType('FORM_SANTRI'); }} className="text-accent hover:text-accentDark"><Edit className="w-4 h-4" /></button>
-                                            <button onClick={() => confirmDelete('SANTRI', santri.id, santri.nama)} className="text-danger hover:text-red-700"><Trash2 className="w-4 h-4" /></button>
+                                        <td className="px-4 py-3">
+                                            <span className={`px-2 py-0.5 rounded-full text-xs font-semibold ${isAlumni ? 'bg-purple-50 text-purple-700 border border-purple-200' : 'bg-emerald-50 text-emerald-700 border border-emerald-200'}`}>
+                                                {santri.status || 'Aktif'}
+                                            </span>
+                                        </td>
+                                        <td className="px-4 py-3 text-right font-mono text-xs font-semibold text-ink">
+                                            Rp {saldoSantri.toLocaleString('id-ID')}
+                                        </td>
+                                        <td className="px-4 py-3 flex justify-center items-center gap-2">
+                                            {isAlumni && saldoSantri > 0 && (
+                                                <button
+                                                    type="button"
+                                                    onClick={() => handleCairkanSaldoAlumni(santri)}
+                                                    className="px-2.5 py-1 text-xs font-semibold rounded-lg bg-amber-50 text-amber-800 border border-amber-200 hover:bg-amber-100 transition-colors"
+                                                    title="Tarik & Kembalikan Sisa Saldo Tabungan Alumni"
+                                                >
+                                                    Cairkan Saldo
+                                                </button>
+                                            )}
+                                            <button onClick={() => { setFormData(santri); setModalType('FORM_SANTRI'); }} className="text-accent hover:text-accentDark" title="Edit Santri"><Edit className="w-4 h-4" /></button>
+                                            <button onClick={() => confirmDelete('SANTRI', santri.id, santri.nama)} className="text-danger hover:text-red-700" title="Hapus Santri"><Trash2 className="w-4 h-4" /></button>
                                         </td>
                                     </tr>
-                                ))}
+                                    );
+                                })}
                             </tbody>
                         </table>
                     </div>
                     <div className="md:hidden flex flex-col divide-y divide-whisper/50">
                         {paginatedSantri.length === 0 ? (
                             <div className="text-center py-8 text-steel text-sm">Belum ada data santri.</div>
-                        ) : paginatedSantri.map((santri, idx) => (
+                        ) : paginatedSantri.map((santri, idx) => {
+                            const saldoSantri = getSantriSaldoTabungan(santri.nis);
+                            const isAlumni = santri.status === 'Alumni';
+                            return (
                             <div key={`${santri.id}-${idx}`} className={`p-4 flex items-center justify-between gap-3 ${selectedIds.includes(santri.id) ? 'bg-accent/5' : 'bg-surface'}`}>
                                 <div className="flex items-center gap-3 min-w-0">
                                     <input type="checkbox" checked={selectedIds.includes(santri.id)} onChange={() => toggleSelectId(santri.id)} className="w-4 h-4 shrink-0 rounded border-whisper text-accent focus:ring-accent/30 cursor-pointer" />
                                     <div className="min-w-0">
                                         <div className="font-medium text-ink truncate text-base">{santri.nama}</div>
-                                        <div className="text-xs text-steel mt-0.5"><span className="font-mono">{santri.nis}</span> • Kelas {santri.kelas}</div>
+                                        <div className="text-xs text-steel mt-0.5"><span className="font-mono">{santri.nis}</span> • Kelas {santri.kelas} • {santri.status || 'Aktif'}</div>
+                                        <div className="text-xs font-semibold text-emerald-700 mt-0.5">Saldo: Rp {saldoSantri.toLocaleString('id-ID')}</div>
                                     </div>
                                 </div>
                                 <div className="flex items-center gap-2 shrink-0">
+                                    {isAlumni && saldoSantri > 0 && (
+                                        <button type="button" onClick={() => handleCairkanSaldoAlumni(santri)} className="px-2 py-1 text-xs font-semibold rounded-lg bg-amber-50 text-amber-800 border border-amber-200">Cairkan</button>
+                                    )}
                                     <button onClick={() => { setFormData(santri); setModalType('FORM_SANTRI'); }} className="p-2 text-accent bg-accent/10 hover:bg-accent/20 rounded-lg"><Edit className="w-4 h-4" /></button>
                                     <button onClick={() => confirmDelete('SANTRI', santri.id, santri.nama)} className="p-2 text-danger bg-dangerBg hover:bg-red-100 rounded-lg"><Trash2 className="w-4 h-4" /></button>
                                 </div>
                             </div>
-                        ))}
+                            );
+                        })}
                     </div>
                     
                     {totalPages > 0 && (
@@ -3521,8 +4114,64 @@ function App() {
         );
     };
 
+    const renderDateRangeToolbar = (summaryNode = null) => (
+        <div className="px-4 py-3 border-b border-whisper/50 bg-surface flex flex-col lg:flex-row lg:items-center justify-between gap-3">
+            <div className="flex flex-wrap items-center gap-1.5">
+                <span className="text-xs font-semibold text-steel mr-1 flex items-center gap-1">
+                    <CalendarDays className="w-3.5 h-3.5 text-accent" /> Filter Tanggal:
+                </span>
+                {[
+                    { id: 'semua', label: 'Semua Waktu' },
+                    { id: 'hari_ini', label: 'Hari Ini' },
+                    { id: '7_hari', label: '7 Hari Terakhir' },
+                    { id: 'bulan_ini', label: 'Bulan Ini' },
+                    { id: 'custom', label: 'Pilih Tanggal' }
+                ].map(p => (
+                    <button
+                        key={p.id}
+                        type="button"
+                        onClick={() => {
+                            setDateRangePreset(p.id);
+                            setCurrentPage(1);
+                        }}
+                        className={`px-2.5 py-1 rounded-lg text-xs font-semibold transition-all border ${
+                            dateRangePreset === p.id
+                                ? 'bg-accent text-white border-accent shadow-2xs'
+                                : 'bg-canvas hover:bg-whisper/60 text-steel border-whisper'
+                        }`}
+                    >
+                        {p.label}
+                    </button>
+                ))}
+                {dateRangePreset === 'custom' && (
+                    <div className="flex flex-wrap items-center gap-1.5 ml-1">
+                        <input
+                            type="date"
+                            value={dateRangeStart}
+                            onChange={(e) => { setDateRangeStart(e.target.value); setCurrentPage(1); }}
+                            className="px-2.5 py-1 text-xs rounded-lg border border-whisper bg-canvas text-ink font-medium focus:outline-none focus:border-accent"
+                        />
+                        <span className="text-xs text-steel">s/d</span>
+                        <input
+                            type="date"
+                            value={dateRangeEnd}
+                            onChange={(e) => { setDateRangeEnd(e.target.value); setCurrentPage(1); }}
+                            className="px-2.5 py-1 text-xs rounded-lg border border-whisper bg-canvas text-ink font-medium focus:outline-none focus:border-accent"
+                        />
+                    </div>
+                )}
+            </div>
+            {summaryNode && <div className="text-xs text-steel font-medium">{summaryNode}</div>}
+        </div>
+    );
+
     const renderPembayaran = () => {
-        const filtered = dataPembayaran.filter(t => (masterTagihanFilter === 'Semua Tagihan' || t.tagihan.includes(masterTagihanFilter)) && ((t.nama || '').toLowerCase().includes(searchTerm.toLowerCase()) || String(t.nis || '').includes(searchTerm)));
+        const filtered = dataPembayaran.filter(t =>
+            (masterTagihanFilter === 'Semua Tagihan' || String(t.tagihan || '').includes(masterTagihanFilter)) &&
+            matchesActiveDateRange(t.tanggal) &&
+            ((t.nama || '').toLowerCase().includes(searchTerm.toLowerCase()) || String(t.nis || '').includes(searchTerm) || String(t.id || '').toLowerCase().includes(searchTerm.toLowerCase()))
+        );
+        const totalFilteredPembayaran = filtered.reduce((s, t) => s + Number(t.nominal || 0), 0);
         
         const itemsPerPage = 10;
         const totalPages = Math.ceil(filtered.length / itemsPerPage);
@@ -3537,15 +4186,20 @@ function App() {
                     <div className="grid grid-cols-2 sm:flex sm:flex-wrap sm:justify-start xl:justify-end gap-3 w-full xl:w-auto">
                         <button onClick={() => { const d = new Date(); setFormData({ targetType: 'Semua', selectedTagihans: [], selectedBulan: [listBulan[d.getMonth()]], tahun: d.getFullYear() }); setModalType('FORM_PEMBAYARAN_MASSAL'); }} className="bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg px-4 py-2 font-medium flex items-center gap-2 text-sm"><CheckCircle2 className="w-4 h-4" /> Catat Massal</button>
                         <button onClick={() => { const d = new Date(); setFormData({ selectedBulan: [listBulan[d.getMonth()]], tahun: d.getFullYear(), selectedTagihanBayar: [] }); setModalType('FORM_PEMBAYARAN'); }} className={btnPrimary}><Plus className="w-4 h-4" /> Catat Uang Masuk</button>
-                        <button onClick={() => downloadStyledExcel('Pembayaran / Uang Masuk', ['Invoice', 'Tanggal', 'NIS', 'Nama', 'Tagihan', 'Periode', 'Nominal', 'Status'], dataPembayaran.map(t => [t.id, t.tanggal, t.nis, t.nama, t.tagihan, t.periode, t.nominal, t.status]), 'Pembayaran')} className={btnOutline}><FileSpreadsheet className="w-4 h-4 text-accent" /> Unduh</button>
+                        <button onClick={() => downloadStyledExcel('Pembayaran / Uang Masuk', ['Invoice', 'Tanggal', 'NIS', 'Nama', 'Tagihan', 'Periode', 'Nominal', 'Status'], filtered.map(t => [t.id, t.tanggal, t.nis, t.nama, t.tagihan, t.periode, t.nominal, t.status]), 'Pembayaran')} className={btnOutline}><FileSpreadsheet className="w-4 h-4 text-accent" /> Unduh ({filtered.length})</button>
                     </div>
                 </div>
                 <div className="bg-surface border border-whisper shadow-sm rounded-card overflow-hidden">
+                    {renderDateRangeToolbar(
+                        <span>
+                            Menampilkan <strong className="text-ink">{filtered.length}</strong> transaksi • Total: <strong className="text-emerald-700">Rp {totalFilteredPembayaran.toLocaleString('id-ID')}</strong>
+                        </span>
+                    )}
                     <div className="p-4 border-b border-whisper/50 flex flex-col sm:flex-row justify-between gap-4 bg-canvas/40">
-                        <div className="flex items-center gap-2"><Filter className="w-4 h-4 text-steel" /><select className={`${inputBase} w-48`} value={masterTagihanFilter} onChange={(e) => setMasterTagihanFilter(e.target.value)}><option value="Semua Tagihan">Semua Tagihan</option>{masterTagihanList.filter(t => !String(t.portalMenu || '').includes('Sembunyikan')).map(t => <option key={t.tagihan} value={t.tagihan}>{t.tagihan}</option>)}</select></div>
+                        <div className="flex items-center gap-2"><Filter className="w-4 h-4 text-steel" /><select className="rounded-xl border border-whisper bg-surface px-3 py-2 text-sm text-ink focus:outline-none focus:border-accent" value={masterTagihanFilter} onChange={(e) => { setMasterTagihanFilter(e.target.value); setCurrentPage(1); }}><option value="Semua Tagihan">Semua Tagihan</option>{masterTagihanList.filter(t => !String(t.portalMenu || '').includes('Sembunyikan')).map(t => <option key={t.tagihan} value={t.tagihan}>{t.tagihan}</option>)}</select></div>
                         <div className="relative flex items-center gap-2">
                             <Search className="w-4 h-4 absolute left-3 top-3 text-steel" />
-                            <input type="text" placeholder="Cari santri..." value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} className={`${inputBase} pl-9 w-full sm:w-64`} />
+                            <input type="text" placeholder="Cari santri atau No. Inv..." value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} className={`${inputBase} pl-9 w-full sm:w-64`} />
                             {selectedIds.length > 0 && (
                                 <button onClick={() => executeBulkDelete('PEMBAYARAN', setDataPembayaran, 'pembayaran')} className="px-3 py-2 bg-rose-50 text-rose-600 font-medium text-sm rounded-lg hover:bg-rose-100 flex items-center gap-1 border border-rose-200"><Trash2 className="w-4 h-4" /> Hapus ({selectedIds.length})</button>
                             )}
@@ -12110,7 +12764,16 @@ Terima kasih atas kerja samanya.`;
 
 
     const renderBukuKas = () => {
-        const filtered = dataKas.filter(k => (k.keterangan || '').toLowerCase().includes(searchTerm.toLowerCase()) || (k.sumber || '').toLowerCase().includes(searchTerm.toLowerCase()) || (k.kategori || '').toLowerCase().includes(searchTerm.toLowerCase()));
+        const filtered = dataKas.filter(k =>
+            matchesActiveDateRange(k.tanggal) &&
+            (
+                (k.keterangan || '').toLowerCase().includes(searchTerm.toLowerCase()) ||
+                (k.sumber || k.sumberTujuan || '').toLowerCase().includes(searchTerm.toLowerCase()) ||
+                (k.kategori || '').toLowerCase().includes(searchTerm.toLowerCase())
+            )
+        );
+        const totFilteredMasuk = filtered.filter(k => k.tipeKas === 'MASUK').reduce((s, k) => s + Number(k.nominal || 0), 0);
+        const totFilteredKeluar = filtered.filter(k => k.tipeKas === 'KELUAR').reduce((s, k) => s + Number(k.nominal || 0), 0);
         
         const itemsPerPage = 10;
         const totalPages = Math.ceil(filtered.length / itemsPerPage);
@@ -12126,10 +12789,15 @@ Terima kasih atas kerja samanya.`;
                         <button onClick={() => { setFormData({ newKategori: '', newKategoriType: 'pemasukan' }); setModalType('MASTER_KATEGORI_KAS'); }} className={btnOutline}><Settings className="w-4 h-4" /> Master Kategori</button>
                         <button onClick={() => { setFormData({ tipeKas: 'MASUK' }); setModalType('FORM_KAS'); }} className="bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg px-4 py-2 font-medium flex items-center gap-2 text-sm shadow-sm"><Plus className="w-4 h-4" /> Catat Pemasukan</button>
                         <button onClick={() => { setFormData({ tipeKas: 'KELUAR' }); setModalType('FORM_KAS'); }} className={btnPrimary}><Plus className="w-4 h-4" /> Catat Pengeluaran</button>
-                        <button onClick={() => downloadStyledExcel('Buku Kas', ['ID', 'Tanggal', 'Tipe', 'Kategori', 'Sumber', 'Nominal', 'Keterangan'], dataKas.map(k => [k.id, k.tanggal, k.tipeKas, k.kategori, k.sumber, k.nominal, k.keterangan]), 'Buku_Kas')} className={btnOutline}><FileSpreadsheet className="w-4 h-4 text-accent" /> Unduh</button>
+                        <button onClick={() => downloadStyledExcel('Buku Kas', ['ID', 'Tanggal', 'Tipe', 'Kategori', 'Sumber', 'Nominal', 'Keterangan'], filtered.map(k => [k.id, k.tanggal, k.tipeKas, k.kategori || '-', k.sumber || k.sumberTujuan || '-', k.nominal, k.keterangan]), 'Buku_Kas')} className={btnOutline}><FileSpreadsheet className="w-4 h-4 text-accent" /> Unduh ({filtered.length})</button>
                     </div>
                 </div>
                 <div className="bg-surface border border-whisper shadow-sm rounded-card overflow-hidden">
+                    {renderDateRangeToolbar(
+                        <span>
+                            Masuk: <strong className="text-emerald-700">+Rp {totFilteredMasuk.toLocaleString('id-ID')}</strong> • Keluar: <strong className="text-rose-700">-Rp {totFilteredKeluar.toLocaleString('id-ID')}</strong>
+                        </span>
+                    )}
                     <div className="p-4 border-b border-whisper/50 flex flex-col sm:flex-row justify-between sm:justify-end items-center gap-3 bg-canvas/40">
                         <div className="relative w-full sm:w-auto">
                             <Search className="w-4 h-4 absolute left-3 top-3 text-steel" />
@@ -12150,19 +12818,19 @@ Terima kasih atas kerja samanya.`;
                                     <tr key={trx.id} className="bg-surface hover:bg-canvas">
                                         <td className="px-6 py-4 text-center"><input type="checkbox" checked={selectedIds.includes(trx.id)} onChange={() => toggleSelectId(trx.id)} className="w-4 h-4 rounded border-whisper text-accent cursor-pointer" /></td>
                                         <td className="px-6 py-4">{trx.tanggal}</td>
-                                        <td className="px-6 py-4 flex items-center gap-2"><span className={`px-2 py-0.5 text-[10px] font-bold rounded uppercase ${trx.tipeKas === 'MASUK' ? 'bg-pale-green text-pale-greenText' : 'bg-pale-red text-pale-redText'}`}>{trx.tipeKas}</span> <span className="font-medium text-blue-700 bg-blue-50 px-2 py-0.5 rounded text-[10px] uppercase">{trx.kategori}</span></td>
-                                        <td className="px-6 py-4 font-medium text-ink">{trx.sumber} <span className="block text-xs text-steel font-normal">{trx.keterangan}</span></td>
+                                        <td className="px-6 py-4 flex items-center gap-2"><span className={`px-2 py-0.5 text-[10px] font-bold rounded uppercase ${trx.tipeKas === 'MASUK' ? 'bg-pale-green text-pale-greenText' : 'bg-pale-red text-pale-redText'}`}>{trx.tipeKas}</span> <span className="font-medium text-blue-700 bg-blue-50 px-2 py-0.5 rounded text-[10px] uppercase">{trx.kategori || 'Umum'}</span></td>
+                                        <td className="px-6 py-4 font-medium text-ink">{trx.sumber || trx.sumberTujuan || '-'} <span className="block text-xs text-steel font-normal">{trx.keterangan}</span></td>
                                         <td className={`px-6 py-4 text-right font-medium ${trx.tipeKas === 'MASUK' ? 'text-emerald-600' : 'text-rose-600'}`}>{trx.tipeKas === 'MASUK' ? '+' : '-'} Rp {Number(trx.nominal || 0).toLocaleString('id-ID')}</td>
                                         <td className="px-6 py-4 text-center flex gap-3 justify-center">
                                             <button onClick={() => {
                                                 const isPemasukan = trx.tipeKas === 'MASUK';
                                                 const title = isPemasukan ? 'BUKTI KAS MASUK' : 'BUKTI KAS KELUAR';
-                                                const subTitle = trx.kategori;
-                                                const keterangan = trx.sumber;
+                                                const subTitle = trx.kategori || 'Umum';
+                                                const keterangan = trx.sumber || trx.sumberTujuan || '-';
                                                 const htmlContent = `<html><head><title>Bukti Kas - ${trx.id}</title><style>body { font-family: 'Courier New', Courier, monospace; padding: 20px; color: #000; } .invoice-box { max-width: 450px; margin: auto; border: 1px solid #ddd; padding: 20px; border-radius: 8px; } .header { text-align: center; margin-bottom: 20px; border-bottom: 2px dashed #000; padding-bottom: 10px; } .header img { height: 50px; width: 50px; object-fit: contain; margin: 0 auto 8px auto; display: block; } .header h2 { margin: 0; font-size: 20px; } .row { display: flex; justify-content: space-between; margin-bottom: 8px; font-size: 14px; } .desc { margin-top: 15px; padding: 15px; background: #f9f9f9; border: 1px solid #eee; font-size: 14px; line-height: 1.5; } .total { font-weight: bold; font-size: 18px; margin-top: 15px; text-align: right; border-top: 2px dashed #000; padding-top: 10px; } .footer { text-align: center; margin-top: 30px; font-size: 12px; color: #555; }</style></head><body><div class="invoice-box"><div class="header"><img src="/logo.png" alt="Logo" /><h2>${title}</h2><div>${appConfig.appName || 'SalApp Bendahara'}</div></div><div class="row"><span>ID Transaksi</span><span>${trx.id}</span></div><div class="row"><span>Tanggal</span><span>${trx.tanggal}</span></div><div class="row"><span>Kategori</span><span>${subTitle}</span></div><div class="desc"><strong>Keterangan / Sumber:</strong><br/>${keterangan}<br/><br/><em>Catatan Tambahan: ${trx.keterangan || '-'}</em></div><div class="total">NOMINAL: Rp ${(trx.nominal || 0).toLocaleString('id-ID')}</div><div class="footer">Dicetak oleh sistem pada ${formatDateTimeID(new Date())}</div></div></body></html>`;
                                                 executePrint(htmlContent);
                                             }} className="text-blue-600 hover:text-blue-800" title="Cetak Bukti Kas"><Printer className="w-4 h-4" /></button>
-                                            <button onClick={() => confirmDelete('KAS', trx.id, trx.sumber)} className="text-rose-600 hover:text-rose-800"><Trash2 className="w-4 h-4" /></button>
+                                            <button onClick={() => confirmDelete('KAS', trx.id, trx.sumber || trx.sumberTujuan || trx.id)} className="text-rose-600 hover:text-rose-800"><Trash2 className="w-4 h-4" /></button>
                                         </td>
                                     </tr>
                                 ))}
@@ -12178,7 +12846,7 @@ Terima kasih atas kerja samanya.`;
                                     <div className="flex items-start gap-3 min-w-0">
                                         <input type="checkbox" checked={selectedIds.includes(trx.id)} onChange={() => toggleSelectId(trx.id)} className="w-4 h-4 mt-1 shrink-0 rounded border-whisper text-accent focus:ring-accent/30 cursor-pointer" />
                                         <div className="min-w-0">
-                                            <div className="font-bold text-ink truncate text-sm">{trx.sumber}</div>
+                                            <div className="font-bold text-ink truncate text-sm">{trx.sumber || trx.sumberTujuan || '-'}</div>
                                             <div className="text-[10px] text-steel mt-0.5">{trx.tanggal}</div>
                                             <div className="text-[10px] text-slate font-mono mt-1 line-clamp-2">{trx.keterangan}</div>
                                         </div>
@@ -12187,7 +12855,7 @@ Terima kasih atas kerja samanya.`;
                                         <div className={`text-sm font-bold ${trx.tipeKas === 'MASUK' ? 'text-emerald-600' : 'text-rose-600'}`}>{trx.tipeKas === 'MASUK' ? '+' : '-'} Rp {Number(trx.nominal || 0).toLocaleString('id-ID')}</div>
                                         <div className="mt-1 flex flex-col items-end gap-1">
                                             <span className={`inline-block px-1.5 py-0.5 text-[10px] font-bold rounded uppercase ${trx.tipeKas === 'MASUK' ? 'bg-pale-green text-pale-greenText' : 'bg-pale-red text-pale-redText'}`}>{trx.tipeKas}</span>
-                                            <span className="font-medium text-blue-700 bg-blue-50 px-1.5 py-0.5 rounded text-[10px] uppercase">{trx.kategori}</span>
+                                            <span className="font-medium text-blue-700 bg-blue-50 px-1.5 py-0.5 rounded text-[10px] uppercase">{trx.kategori || 'Umum'}</span>
                                         </div>
                                     </div>
                                 </div>
@@ -12195,12 +12863,12 @@ Terima kasih atas kerja samanya.`;
                                     <button onClick={() => {
                                         const isPemasukan = trx.tipeKas === 'MASUK';
                                         const title = isPemasukan ? 'BUKTI KAS MASUK' : 'BUKTI KAS KELUAR';
-                                        const subTitle = trx.kategori;
-                                        const keterangan = trx.sumber;
+                                        const subTitle = trx.kategori || 'Umum';
+                                        const keterangan = trx.sumber || trx.sumberTujuan || '-';
                                         const htmlContent = `<html><head><title>Bukti Kas - ${trx.id}</title><style>body { font-family: 'Courier New', Courier, monospace; padding: 20px; color: #000; } .invoice-box { max-width: 450px; margin: auto; border: 1px solid #ddd; padding: 20px; border-radius: 8px; } .header { text-align: center; margin-bottom: 20px; border-bottom: 2px dashed #000; padding-bottom: 10px; } .header img { height: 50px; width: 50px; object-fit: contain; margin: 0 auto 8px auto; display: block; } .header h2 { margin: 0; font-size: 20px; } .row { display: flex; justify-content: space-between; margin-bottom: 8px; font-size: 14px; } .desc { margin-top: 15px; padding: 15px; background: #f9f9f9; border: 1px solid #eee; font-size: 14px; line-height: 1.5; } .total { font-weight: bold; font-size: 18px; margin-top: 15px; text-align: right; border-top: 2px dashed #000; padding-top: 10px; } .footer { text-align: center; margin-top: 30px; font-size: 12px; color: #555; }</style></head><body><div class="invoice-box"><div class="header"><img src="/logo.png" alt="Logo" /><h2>${title}</h2><div>${appConfig.appName || 'SalApp Bendahara'}</div></div><div class="row"><span>ID Transaksi</span><span>${trx.id}</span></div><div class="row"><span>Tanggal</span><span>${trx.tanggal}</span></div><div class="row"><span>Kategori</span><span>${subTitle}</span></div><div class="desc"><strong>Keterangan / Sumber:</strong><br/>${keterangan}<br/><br/><em>Catatan Tambahan: ${trx.keterangan || '-'}</em></div><div class="total">NOMINAL: Rp ${(trx.nominal || 0).toLocaleString('id-ID')}</div><div class="footer">Dicetak oleh sistem pada ${formatDateTimeID(new Date())}</div></div></body></html>`;
                                         executePrint(htmlContent);
                                     }} className="flex items-center gap-1 text-steel bg-canvas hover:bg-whisper/50 font-bold text-xs px-3 py-1.5 rounded-lg border border-whisper"><Printer className="w-3.5 h-3.5" /> Cetak</button>
-                                    <button onClick={() => confirmDelete('KAS', trx.id, trx.sumber)} className="flex items-center gap-1 text-danger bg-dangerBg hover:bg-red-100 font-medium text-xs px-3 py-1.5 rounded-lg border border-red-100"><Trash2 className="w-3.5 h-3.5" /> Hapus</button>
+                                    <button onClick={() => confirmDelete('KAS', trx.id, trx.sumber || trx.sumberTujuan || trx.id)} className="flex items-center gap-1 text-danger bg-dangerBg hover:bg-red-100 font-medium text-xs px-3 py-1.5 rounded-lg border border-red-100"><Trash2 className="w-3.5 h-3.5" /> Hapus</button>
                                 </div>
                             </div>
                         ))}
@@ -12243,6 +12911,7 @@ Terima kasih atas kerja samanya.`;
     const renderLogAktivitas = () => {
         const tokens = logSearch.trim().toLowerCase().split(/\s+/).filter(Boolean);
         const filteredLog = dataLog.filter((l) => {
+            if (!matchesActiveDateRange(l?.waktu)) return false;
             if (tokens.length > 0) {
                 const rawHaystack = [
                     ...Object.values(l || {}),
@@ -12258,7 +12927,7 @@ Terima kasih atas kerja samanya.`;
             return true;
         });
 
-        const hasActiveFilter = Boolean(logSearch.trim());
+        const hasActiveFilter = Boolean(logSearch.trim()) || dateRangePreset !== 'semua';
         const itemsPerPage = 15;
         const totalPages = Math.max(1, Math.ceil(filteredLog.length / itemsPerPage));
         const safePage = Math.min(currentPage, totalPages);
@@ -12267,10 +12936,19 @@ Terima kasih atas kerja samanya.`;
         return (
             <div className="space-y-6 animate-in fade-in duration-500">
                 <div className="flex flex-col xl:flex-row justify-between items-start xl:items-center gap-4 mb-6 w-full">
-                    <div className="flex-1 min-w-0 pr-4"><h2 className="text-2xl font-semibold tracking-tight text-ink">Audit & Log Aktivitas</h2><p className="text-sm text-steel">Rekam jejak tindakan pengguna pada sistem (Anti-Fraud).</p></div>
-                    <button onClick={() => downloadStyledExcel('Log Aktivitas', ['ID', 'Waktu', 'Pengguna', 'Aksi', 'Modul', 'Detail Aktivitas'], filteredLog.map(l => [l.id, l.waktu, l.user, l.aksi, formatLogModul(l.modul), formatLogDetail(l.detail)]), 'Log_Aktivitas')} className={btnOutline}><FileSpreadsheet className="w-4 h-4 text-accent" /> Unduh</button>
+                    <div className="flex-1 min-w-0 pr-4">
+                        <div className="flex flex-wrap items-center gap-2.5">
+                            <h2 className="text-2xl font-semibold tracking-tight text-ink">Audit & Log Aktivitas</h2>
+                            <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200">
+                                <ShieldCheck className="w-3.5 h-3.5" /> Immutable Anti-Fraud (Read-Only)
+                            </span>
+                        </div>
+                        <p className="text-sm text-steel mt-0.5">Rekam jejak tindakan pengguna pada sistem yang dilindungi dari pengeditan dan penghapusan manual.</p>
+                    </div>
+                    <button onClick={() => downloadStyledExcel('Log Aktivitas', ['ID', 'Waktu', 'Pengguna', 'Aksi', 'Modul', 'Detail Aktivitas'], filteredLog.map(l => [l.id, l.waktu, l.user, l.aksi, formatLogModul(l.modul), formatLogDetail(l.detail)]), 'Log_Aktivitas')} className={btnOutline}><FileSpreadsheet className="w-4 h-4 text-accent" /> Unduh ({filteredLog.length})</button>
                 </div>
                 <div className="bg-surface border border-whisper shadow-sm rounded-card overflow-hidden">
+                    {renderDateRangeToolbar()}
                     <div className="p-4 border-b border-whisper/50 flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-canvas/40">
                         <div className="text-xs text-steel font-medium">
                             Menampilkan <span className="font-semibold text-ink">{filteredLog.length}</span> dari <span className="font-semibold text-ink">{dataLog.length}</span> log aktivitas
@@ -12305,12 +12983,12 @@ Terima kasih atas kerja samanya.`;
                     </div>
                     <div className="overflow-x-auto hidden md:block">
                         <table className="w-full text-sm text-left">
-                            <thead className="bg-canvas/60 text-steel border-b border-whisper/50"><tr><th className="px-6 py-3">Waktu</th><th className="px-6 py-3">Pengguna</th><th className="px-6 py-3 text-center">Aksi</th><th className="px-6 py-3">Modul</th><th className="px-6 py-3 w-1/2">Detail Aktivitas</th>{currentUser?.role === 'superadmin' && <th className="px-6 py-3 text-center">Tindakan</th>}</tr></thead>
+                            <thead className="bg-canvas/60 text-steel border-b border-whisper/50"><tr><th className="px-6 py-3">Waktu</th><th className="px-6 py-3">Pengguna</th><th className="px-6 py-3 text-center">Aksi</th><th className="px-6 py-3">Modul</th><th className="px-6 py-3 w-1/2">Detail Aktivitas</th><th className="px-6 py-3 text-center">Status Audit</th></tr></thead>
                             <tbody className="divide-y divide-slate-100">
                                 {paginatedLog.length === 0 ? (
                                     <tr>
-                                        <td colSpan={currentUser?.role === 'superadmin' ? 6 : 5} className="px-6 py-10 text-center text-steel text-sm">
-                                            {hasActiveFilter ? 'Tidak ada log aktivitas yang cocok dengan pencarian atau filter.' : 'Belum ada riwayat aktivitas.'}
+                                        <td colSpan={6} className="px-6 py-10 text-center text-steel text-sm">
+                                            {hasActiveFilter ? 'Tidak ada log aktivitas yang cocok dengan pencarian atau filter tanggal.' : 'Belum ada riwayat aktivitas.'}
                                         </td>
                                     </tr>
                                 ) : paginatedLog.map((log) => (
@@ -12320,14 +12998,11 @@ Terima kasih atas kerja samanya.`;
                                         <td className="px-6 py-3 text-center"><span className={`inline-flex px-2 py-0.5 text-[10px] font-bold rounded uppercase ${log.aksi === 'CREATE' ? 'bg-pale-green text-pale-greenText' : log.aksi === 'UPDATE' ? 'bg-blue-100 text-blue-700' : log.aksi === 'DELETE' ? 'bg-pale-red text-pale-redText' : log.aksi === 'INTEGRATION' ? 'bg-purple-100 text-purple-700' : 'bg-canvas text-steel'}`}>{log.aksi}</span></td>
                                         <td className="px-6 py-3 font-semibold text-steel">{formatLogModul(log.modul)}</td>
                                         <td className="px-6 py-3 text-steel">{formatLogDetail(log.detail)}</td>
-                                        {currentUser?.role === 'superadmin' && (
-                                            <td className="px-6 py-3 text-center">
-                                                <div className="flex items-center justify-center gap-2">
-                                                    <button onClick={() => { setFormData(log); setModalType('FORM_LOG'); }} className="p-1.5 text-accent bg-accent/10 hover:bg-accent/20 rounded-lg"><Edit className="w-4 h-4" /></button>
-                                                    <button onClick={() => confirmDelete('LOG', log.id, 'Log Aktivitas ini')} className="p-1.5 text-danger bg-dangerBg hover:bg-red-100 rounded-lg"><Trash2 className="w-4 h-4" /></button>
-                                                </div>
-                                            </td>
-                                        )}
+                                        <td className="px-6 py-3 text-center">
+                                            <span className="inline-flex items-center gap-1 text-[11px] font-medium text-steel bg-canvas px-2 py-0.5 rounded-md border border-whisper">
+                                                <Lock className="w-3 h-3 text-emerald-600" /> Terkunci
+                                            </span>
+                                        </td>
                                     </tr>
                                 ))}
                             </tbody>
@@ -12336,7 +13011,7 @@ Terima kasih atas kerja samanya.`;
                     <div className="md:hidden flex flex-col divide-y divide-whisper/50">
                         {paginatedLog.length === 0 ? (
                             <div className="text-center py-8 text-steel text-sm">
-                                {hasActiveFilter ? 'Tidak ada log aktivitas yang cocok dengan pencarian atau filter.' : 'Belum ada riwayat aktivitas.'}
+                                {hasActiveFilter ? 'Tidak ada log aktivitas yang cocok dengan pencarian atau filter tanggal.' : 'Belum ada riwayat aktivitas.'}
                             </div>
                         ) : paginatedLog.map((log) => (
                             <div key={log.id} className="p-4 flex flex-col gap-2 bg-surface">
@@ -12351,12 +13026,6 @@ Terima kasih atas kerja samanya.`;
                                     <div className="text-[10px] font-bold text-steel uppercase tracking-wider mb-0.5">{formatLogModul(log.modul)}</div>
                                     <div className="text-sm text-ink leading-snug">{formatLogDetail(log.detail)}</div>
                                 </div>
-                                {currentUser?.role === 'superadmin' && (
-                                    <div className="flex justify-end gap-2 mt-2 pt-2 border-t border-whisper/50">
-                                        <button onClick={() => { setFormData(log); setModalType('FORM_LOG'); }} className="text-accent hover:text-accentDark flex items-center gap-1 text-xs"><Edit className="w-3 h-3" /> Edit</button>
-                                        <button onClick={() => confirmDelete('LOG', log.id, 'Log Aktivitas ini')} className="text-danger hover:text-red-700 flex items-center gap-1 text-xs"><Trash2 className="w-3 h-3" /> Hapus</button>
-                                    </div>
-                                )}
                             </div>
                         ))}
                     </div>
@@ -13874,7 +14543,7 @@ Terima kasih atas kerja samanya.`;
                                             <td className="px-6 py-3 text-center">
                                                 <div className="flex items-center justify-center gap-2">
                                                     <button onClick={() => setFormData({ adminId: a.id, adminUsername: a.username, adminNama: a.nama, adminPassword: a.password })} className="text-accent hover:text-accentDark"><Edit className="w-4 h-4" /></button>
-                                                    <button onClick={() => { if (dataAdmin.length <= 1) { showNotification('Minimal harus ada 1 admin.'); return; } setDataAdmin(prev => prev.filter(x => x.id !== a.id)); addLog('DELETE', 'ADMIN', `Hapus admin: ${a.nama}`); }} className="text-danger hover:text-red-700"><Trash2 className="w-4 h-4" /></button>
+                                                    <button onClick={() => { if (dataAdmin.length <= 1) { showNotification('Minimal harus ada 1 admin.'); return; } supabase.from('Admin').delete().eq('id', a.id).then(() => {}); setDataAdmin(prev => prev.filter(x => x.id !== a.id)); addLog('DELETE', 'ADMIN', `Hapus admin: ${a.nama}`); }} className="text-danger hover:text-red-700"><Trash2 className="w-4 h-4" /></button>
                                                 </div>
                                             </td>
                                         </tr>
@@ -13893,7 +14562,7 @@ Terima kasih atas kerja samanya.`;
                                         </div>
                                         <div className="flex items-center gap-2 justify-end mt-1 pt-3 border-t border-whisper/50">
                                             <button onClick={() => setFormData({ adminId: a.id, adminUsername: a.username, adminNama: a.nama, adminPassword: a.password })} className="flex items-center gap-1 text-accent bg-accent/5 hover:bg-accent/10 font-bold text-xs px-3 py-1.5 rounded-lg border border-accent/10"><Edit className="w-3.5 h-3.5" /> Edit</button>
-                                            <button onClick={() => { if (dataAdmin.length <= 1) { showNotification('Minimal harus ada 1 admin.'); return; } setDataAdmin(prev => prev.filter(x => x.id !== a.id)); addLog('DELETE', 'ADMIN', `Hapus admin: ${a.nama}`); }} className="flex items-center gap-1 text-danger bg-dangerBg hover:bg-red-100 font-medium text-xs px-3 py-1.5 rounded-lg border border-red-100"><Trash2 className="w-3.5 h-3.5" /> Hapus</button>
+                                            <button onClick={() => { if (dataAdmin.length <= 1) { showNotification('Minimal harus ada 1 admin.'); return; } supabase.from('Admin').delete().eq('id', a.id).then(() => {}); setDataAdmin(prev => prev.filter(x => x.id !== a.id)); addLog('DELETE', 'ADMIN', `Hapus admin: ${a.nama}`); }} className="flex items-center gap-1 text-danger bg-dangerBg hover:bg-red-100 font-medium text-xs px-3 py-1.5 rounded-lg border border-red-100"><Trash2 className="w-3.5 h-3.5" /> Hapus</button>
                                         </div>
                                     </div>
                                 ))}
@@ -13903,51 +14572,85 @@ Terima kasih atas kerja samanya.`;
                 )}
 
                 {settingsTab === 'backup' && (
-                    <div className="space-y-4 max-w-3xl animate-in fade-in">
+                    <div className="space-y-4 max-w-4xl animate-in fade-in">
                         <div className="bg-surface border border-whisper rounded-card p-6 shadow-card">
                             <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-6">
                                 <div>
-                                    <h3 className="text-lg font-bold text-ink">Manajemen Backup</h3>
-                                    <p className="text-xs text-steel mt-1">Lihat dan unduh file backup harian (Otomatis setiap jam 12 malam).</p>
+                                    <h3 className="text-lg font-bold text-ink">Manajemen Backup & Snapshot Database (Supabase)</h3>
+                                    <p className="text-xs text-steel mt-1">Unduh salinan lengkap seluruh tabel database ke file Excel Multi-Sheet (.xlsx) atau Snapshot JSON.</p>
                                 </div>
                                 <button onClick={fetchBackups} className={btnOutline} disabled={loadingBackups}>
-                                    <RefreshCw className={`w-4 h-4 ${loadingBackups ? 'animate-spin' : ''}`} /> Segarkan
+                                    <RefreshCw className={`w-4 h-4 ${loadingBackups ? 'animate-spin' : ''}`} /> Segarkan Riwayat
                                 </button>
                             </div>
 
-                            <div className="mb-6 p-4 bg-blue-50 border border-blue-100 rounded-xl text-sm text-blue-800 leading-relaxed shadow-sm">
-                                <div className="font-bold flex items-center gap-2 mb-1"><AlertCircle className="w-4 h-4" /> Informasi Penting</div>
-                                Sistem secara otomatis akan membuat salinan (copy) dari Google Sheets utama Bapak/Ibu setiap jam 12 malam ke folder <strong>BACKUP_SISTEM_KEUANGAN</strong> di Google Drive. File di bawah ini adalah file <i>Read-Only</i> dan jika dibuka <strong>tidak akan mengubah atau mereset data live</strong> aplikasi Bapak/Ibu.
+                            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-6">
+                                <div className="p-3 bg-canvas border border-whisper rounded-xl">
+                                    <div className="text-[11px] font-semibold text-steel">Data Santri & Pegawai</div>
+                                    <div className="text-lg font-bold text-ink mt-0.5">{dataSantri.length + dataPegawai.length} baris</div>
+                                </div>
+                                <div className="p-3 bg-canvas border border-whisper rounded-xl">
+                                    <div className="text-[11px] font-semibold text-steel">Tagihan & Pembayaran</div>
+                                    <div className="text-lg font-bold text-ink mt-0.5">{dataTagihan.length + dataPembayaran.length} baris</div>
+                                </div>
+                                <div className="p-3 bg-canvas border border-whisper rounded-xl">
+                                    <div className="text-[11px] font-semibold text-steel">Mutasi Tabungan</div>
+                                    <div className="text-lg font-bold text-ink mt-0.5">{dataTabungan.length} baris</div>
+                                </div>
+                                <div className="p-3 bg-canvas border border-whisper rounded-xl">
+                                    <div className="text-[11px] font-semibold text-steel">Buku Kas & Gaji</div>
+                                    <div className="text-lg font-bold text-ink mt-0.5">{dataKas.length + dataGaji.length} baris</div>
+                                </div>
                             </div>
 
-                            <div className="flex gap-2 mb-4">
-                                <button onClick={forceBackup} disabled={loadingBackups} className={`${btnPrimary} flex items-center gap-2 px-5`}>
-                                    {loadingBackups ? <RefreshCw className="w-4 h-4 animate-spin" /> : <DownloadCloud className="w-4 h-4" />}
-                                    Backup Sekarang (Manual)
+                            <div className="flex flex-wrap gap-3 mb-6">
+                                <button type="button" onClick={() => forceBackup('excel')} disabled={loadingBackups} className={`${btnPrimary} flex items-center gap-2 px-5`}>
+                                    {loadingBackups ? <RefreshCw className="w-4 h-4 animate-spin" /> : <FileSpreadsheet className="w-4 h-4" />}
+                                    Unduh Backup Lengkap (.XLSX 9 Sheet)
+                                </button>
+                                <button type="button" onClick={() => forceBackup('json')} disabled={loadingBackups} className={`${btnOutline} flex items-center gap-2 px-5`}>
+                                    <DownloadCloud className="w-4 h-4 text-accent" />
+                                    Unduh Snapshot Database (.JSON)
                                 </button>
                             </div>
 
                             <div className="bg-canvas border border-whisper rounded-xl overflow-hidden shadow-sm">
                                 <table className="w-full text-sm text-left">
                                     <thead className="bg-whisper/50 text-steel text-xs uppercase tracking-wider border-b border-whisper">
-                                        <tr><th className="px-5 py-4">Nama File Spreadsheet</th><th className="px-5 py-4 w-48">Waktu Dibuat</th><th className="px-5 py-4 w-32 text-center">Aksi</th></tr>
+                                        <tr>
+                                            <th className="px-5 py-3.5">Nama File Backup</th>
+                                            <th className="px-5 py-3.5">Format & Ringkasan</th>
+                                            <th className="px-5 py-3.5">Waktu & Petugas</th>
+                                            <th className="px-5 py-3.5 text-center">Unduh Ulang</th>
+                                        </tr>
                                     </thead>
                                     <tbody className="divide-y divide-whisper">
                                         {loadingBackups && backupList.length === 0 ? (
-                                            <tr><td colSpan="3" className="px-5 py-12 text-center text-steel"><RefreshCw className="w-6 h-6 animate-spin mx-auto mb-2 text-accent" /> Memuat data backup...</td></tr>
+                                            <tr><td colSpan="4" className="px-5 py-12 text-center text-steel"><RefreshCw className="w-6 h-6 animate-spin mx-auto mb-2 text-accent" /> Memuat riwayat backup...</td></tr>
                                         ) : backupList.length === 0 ? (
-                                            <tr><td colSpan="3" className="px-5 py-12 text-center text-steel">Belum ada file backup yang ditemukan.</td></tr>
+                                            <tr><td colSpan="4" className="px-5 py-10 text-center text-steel">Belum ada riwayat backup manual. Klik tombol di atas untuk mengunduh backup database.</td></tr>
                                         ) : backupList.map((b, i) => (
-                                            <tr key={i} className="hover:bg-whisper/40 transition-colors bg-white">
-                                                <td className="px-5 py-4 font-medium text-ink flex items-center gap-3">
+                                            <tr key={b.id || i} className="hover:bg-whisper/40 transition-colors bg-surface">
+                                                <td className="px-5 py-3.5 font-medium text-ink flex items-center gap-3">
                                                     <div className="p-2 bg-emerald-50 rounded-lg"><FileSpreadsheet className="w-4 h-4 text-emerald-600" /></div>
-                                                    {b.name}
+                                                    <span className="font-mono text-xs">{b.name}</span>
                                                 </td>
-                                                <td className="px-5 py-4 text-steel text-xs">{b.dateCreated}</td>
-                                                <td className="px-5 py-4 text-center">
-                                                    <a href={b.url} target="_blank" rel="noopener noreferrer" className="inline-flex items-center justify-center gap-1.5 px-4 py-2 bg-white border border-slate-200 rounded-lg text-xs font-semibold text-accent hover:bg-slate-50 hover:border-slate-300 transition-all shadow-sm w-full">
-                                                        Buka <ExternalLink className="w-3.5 h-3.5" />
-                                                    </a>
+                                                <td className="px-5 py-3.5 text-xs">
+                                                    <div className="font-semibold text-ink">{b.format || 'Excel Multi-Sheet'}</div>
+                                                    <div className="text-steel">{b.summary || `${b.totalRows || 0} baris data`}</div>
+                                                </td>
+                                                <td className="px-5 py-3.5 text-steel text-xs">
+                                                    <div className="font-medium text-ink">{b.dateCreated}</div>
+                                                    <div>Oleh: {b.createdBy || 'Admin'}</div>
+                                                </td>
+                                                <td className="px-5 py-3.5 text-center">
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => forceBackup(String(b.name || '').endsWith('.json') ? 'json' : 'excel')}
+                                                        className="inline-flex items-center justify-center gap-1.5 px-3 py-1.5 bg-surface border border-whisper rounded-lg text-xs font-semibold text-accent hover:bg-canvas transition-all"
+                                                    >
+                                                        <Download className="w-3.5 h-3.5" /> Unduh
+                                                    </button>
                                                 </td>
                                             </tr>
                                         ))}
