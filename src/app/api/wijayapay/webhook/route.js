@@ -119,66 +119,170 @@ export async function POST(request) {
             }
           }
         }
-      } else if (orderType === 'TOPUP_TABUNGAN') {
-        // --- TOP UP TABUNGAN SANTRI ---
-        const santriNis = String(orderPayload.nis || orderPayload.santriId || '').trim();
-        const finalNominal = amount || Number(orderPayload.amount || 0);
+      } else if (
+        orderType === 'TOPUP_TABUNGAN' ||
+        invoiceNumber.startsWith('TB-') ||
+        orderPayload?.tagihanData?.tagihan === 'Tabungan'
+      ) {
+        // --- SETOR / TOP UP TABUNGAN SANTRI (IDEMPOTENT) ---
+        const tg = orderPayload.tagihanData || {};
+        const santriNis = String(orderPayload.nis || orderPayload.santriId || tg.nis || '').trim();
+        const finalNominal = Number(
+          orderPayload.bayarAmount || orderPayload.nominal || tg.sisa || tg.nominal || orderPayload.amount || amount || 0
+        );
+        const tbId = invoiceNumber.startsWith('TB-')
+          ? invoiceNumber.split('_')[0]
+          : `TAB-${invoiceNumber.replace(/[^a-zA-Z0-9_-]/g, '')}`;
 
         if (santriNis && finalNominal > 0) {
-          const cleanNis = santriNis.replace(/^0+/, '');
-          const tgl = new Date().toISOString().split('T')[0];
+          const { data: existingTab } = await supabase
+            .from('Tabungan')
+            .select('id')
+            .eq('id', tbId)
+            .maybeSingle();
 
-          await supabase.from('Tabungan').insert([{
-            nis: santriNis,
-            tanggal: tgl,
-            jenis: 'Masuk',
-            nominal: finalNominal,
-            keterangan: `Top Up Tabungan Online (${channelName} - Ref: ${trxRef})`,
-            id: `TAB-${Date.now()}`
-          }]);
+          if (!existingTab) {
+            let santriNama = String(orderPayload.nama || tg.nama || '').trim();
+            if (!santriNama) {
+              const cleanNis = santriNis.replace(/^0+/, '');
+              const { data: santriRows } = await supabase.from('Santri').select('nis, nama');
+              const matched = (santriRows || []).find(
+                (s) => String(s.nis || '').replace(/^0+/, '') === cleanNis
+              );
+              santriNama = matched?.nama || `Santri (${santriNis})`;
+            }
+
+            const tgl = new Date().toISOString().split('T')[0];
+            const extraKet = tg.keterangan ? `${tg.keterangan} ` : '';
+            const ket = `${extraKet}Setor Tabungan Online (${channelName}${trxRef ? ` - Ref: ${trxRef}` : ''})`.trim();
+
+            const { error: tabErr } = await supabase.from('Tabungan').upsert([{
+              id: tbId,
+              tanggal: tgl,
+              nis: santriNis,
+              nama: santriNama,
+              jenis: 'Setor',
+              nominal: finalNominal,
+              keterangan: ket
+            }], { onConflict: 'id' });
+            if (tabErr) console.error('Gagal insert Tabungan online:', tabErr);
+          }
         }
 
       } else {
-        // --- TAGIHAN PORTAL SANTRI / SPP ---
-        const billId = orderPayload.billId || orderPayload.id || invoiceNumber;
-        const nowIso = new Date().toISOString();
-        const tglBayar = nowIso.split('T')[0];
+        // --- TAGIHAN PORTAL / ADMIN (SPP, DSP, GEDUNG, DLL) ---
+        const tglBayar = new Date().toISOString().split('T')[0];
+        const methodSuffix = ` (Via ${channelName})`;
+        const tgPayload = orderPayload.tagihanData || {};
+        const pendingTrx = tgPayload.pendingTrx || orderPayload.pendingTrx || null;
 
-        // Cari data tagihan
-        let tagihanRef = null;
-        if (orderPayload.id) {
-          const { data } = await supabase.from('Tagihan').select('*').eq('id', orderPayload.id).maybeSingle();
-          tagihanRef = data;
-        }
+        // Kasus A: Dibuat dari Admin Pembayaran / Tagihan dengan pendingTrx (INV-...)
+        if (pendingTrx && pendingTrx.id) {
+          const invId = String(pendingTrx.id);
+          const { data: existingPay } = await supabase
+            .from('Pembayaran')
+            .select('id')
+            .eq('id', invId)
+            .maybeSingle();
 
-        if (tagihanRef) {
-          // Update status tagihan menjadi lunas
-          await supabase.from('Tagihan').update({
-            status: 'lunas',
-            tanggalBayar: tglBayar
-          }).eq('id', tagihanRef.id);
+          if (!existingPay) {
+            const itemsArr = Array.isArray(pendingTrx.items)
+              ? pendingTrx.items
+              : (typeof pendingTrx.items === 'string' ? JSON.parse(pendingTrx.items || '[]') : []);
+            const linkedIds = Array.isArray(pendingTrx.linkedTagihans) ? pendingTrx.linkedTagihans : [];
 
-          // Catat ke tabel Pembayaran
-          await supabase.from('Pembayaran').insert([{
-            id: `PAY-${Date.now()}`,
-            nis: tagihanRef.nis,
-            tagihan: tagihanRef.tagihan,
-            nominal: tagihanRef.nominal || amount,
-            tanggalBayar: tglBayar,
-            metode: `Online (${channelName})`,
-            status: 'lunas'
-          }]);
+            const payRow = {
+              id: invId,
+              tanggal: tglBayar,
+              nis: pendingTrx.nis || tgPayload.nis || '',
+              nama: pendingTrx.nama || tgPayload.nama || '',
+              tagihan: String(pendingTrx.tagihan || tgPayload.tagihan || 'Pembayaran Tagihan').includes('(Via ')
+                ? String(pendingTrx.tagihan || tgPayload.tagihan)
+                : `${pendingTrx.tagihan || tgPayload.tagihan || 'Pembayaran Tagihan'}${methodSuffix}`,
+              periode: pendingTrx.periode || '-',
+              nominal: Number(pendingTrx.nominal || orderPayload.amount || amount || 0),
+              status: 'Lunas',
+              sisa: 0,
+              items: JSON.stringify(itemsArr),
+              linkedTagihans: linkedIds.length > 0 ? JSON.stringify(linkedIds) : null
+            };
+            const { error: payErr } = await supabase.from('Pembayaran').upsert([payRow], { onConflict: 'id' });
+            if (payErr) console.error('Gagal insert Pembayaran pendingTrx:', payErr);
+
+            // Update status Tagihan terkait
+            if (linkedIds.length > 0) {
+              for (const tid of linkedIds) {
+                const { data: tRow } = await supabase.from('Tagihan').select('*').eq('id', tid).maybeSingle();
+                if (tRow) {
+                  const payNom = linkedIds.length === 1 ? Number(payRow.nominal || 0) : Number(tRow.nominal || 0);
+                  const newTerbayar = Math.min(Number(tRow.nominal || 0), Number(tRow.terbayar || 0) + payNom);
+                  const newStatus = newTerbayar >= Number(tRow.nominal || 0) ? 'Lunas' : 'Cicil';
+                  await supabase.from('Tagihan').update({ status: newStatus, terbayar: newTerbayar }).eq('id', tid);
+                }
+              }
+            }
+          }
         } else {
-          // Fallback update status di Tagihan berdasarkan id tagihan
-          await supabase.from('Tagihan').update({
-            status: 'lunas',
-            tanggalBayar: tglBayar
-          }).eq('id', billId);
+          // Kasus B: Pembayaran langsung pada TGH-... atau bulk tagihan portal
+          const tagihanList = Array.isArray(orderPayload.selectedBulkItems) && orderPayload.selectedBulkItems.length > 0
+            ? orderPayload.selectedBulkItems
+            : (tgPayload?.id ? [tgPayload] : []);
+
+          for (const tg of tagihanList) {
+            if (!tg?.id) continue;
+            const { data: tRow } = await supabase.from('Tagihan').select('*').eq('id', tg.id).maybeSingle();
+            const ref = tRow || tg;
+            const nominalTagihan = Number(ref.nominal || 0);
+            const terbayarLama = Number(ref.terbayar || 0);
+            const sisaLama = Math.max(0, nominalTagihan - terbayarLama);
+            const amountToPay = orderPayload.isBulk
+              ? sisaLama
+              : Number(orderPayload.bayarAmount || orderPayload.amount || tg.sisa || sisaLama || amount || 0);
+
+            if (amountToPay <= 0) continue;
+
+            const orderSuffix = String(invoiceNumber.split('_').pop() || Date.now()).replace(/[^a-zA-Z0-9]/g, '');
+            const invId = `INV-${ref.id}-${orderSuffix}`;
+            const { data: existingPay } = await supabase
+              .from('Pembayaran')
+              .select('id')
+              .eq('id', invId)
+              .maybeSingle();
+
+            if (!existingPay) {
+              const totalTerbayarBaru = terbayarLama + amountToPay;
+              const statusTrx = totalTerbayarBaru < nominalTagihan ? 'Cicil' : 'Lunas';
+              const sisaTagihan = Math.max(0, nominalTagihan - totalTerbayarBaru);
+
+              if (tRow) {
+                await supabase.from('Tagihan').update({
+                  status: statusTrx,
+                  terbayar: totalTerbayarBaru
+                }).eq('id', ref.id);
+              }
+
+              const { error: payErr } = await supabase.from('Pembayaran').upsert([{
+                id: invId,
+                tanggal: tglBayar,
+                nis: ref.nis || '',
+                nama: ref.nama || '',
+                tagihan: `${ref.tagihan || 'Tagihan'}${methodSuffix}`,
+                periode: ref.periode || '-',
+                nominal: amountToPay,
+                status: statusTrx === 'Cicil' ? 'Cicilan' : 'Lunas',
+                sisa: sisaTagihan,
+                items: JSON.stringify([{ tagihan: ref.tagihan || 'Tagihan', periode: ref.periode || '-', nominal: amountToPay }]),
+                linkedTagihans: JSON.stringify([ref.id])
+              }], { onConflict: 'id' });
+              if (payErr) console.error('Gagal insert Pembayaran webhook:', payErr);
+            }
+          }
         }
       }
     }
 
     return NextResponse.json({
+      status: true,
       success: true,
       message: "Webhook processed successfully"
     });

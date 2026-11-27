@@ -2082,66 +2082,138 @@ function App() {
         }
     };
 
-    const processPelunasanOtomatis = (tanggalWaktu) => {
-        if (formData.id.startsWith('TGH-')) {
-            setDataTagihan(prev => {
-                const updated = [...prev];
-                const idx = updated.findIndex(t => t.id === formData.id);
-                if (idx > -1) {
-                    const tRef = updated[idx];
-                    const totalTerbayarBaru = (tRef.terbayar || 0) + formData.sisa;
-                    const statusTrx = totalTerbayarBaru < tRef.nominal ? 'Cicil' : 'Lunas';
-                    const sisaTagihan = Math.max(0, tRef.nominal - totalTerbayarBaru);
-                    updated[idx] = { ...tRef, status: statusTrx, terbayar: totalTerbayarBaru };
+    const processPelunasanOtomatis = async (tanggalWaktu) => {
+        const tanggalStr = (tanggalWaktu || new Date().toISOString()).split('T')[0];
+        const rawMethod = pakasirData.method || 'QRIS';
+        const methodName = (typeof getBankDisplayName === 'function' && getBankDisplayName(rawMethod)) || rawMethod || 'QRIS';
+        const methodTag = ` (Via ${methodName})`;
+        const orderSuffix = String((pakasirData.uniqueOrderId || '').split('_').pop() || Date.now()).replace(/[^a-zA-Z0-9]/g, '');
 
-                    const newTrx = { id: `INV-${Math.floor(Math.random() * 10000) + '-' + Date.now()}`, tanggal: tanggalWaktu.split('T')[0], nis: tRef.nis, nama: tRef.nama, tagihan: tRef.tagihan + ' (Via QRIS)', periode: tRef.periode, nominal: formData.sisa, status: statusTrx === 'Cicil' ? 'Cicilan' : 'Lunas', sisa: sisaTagihan, items: [{ tagihan: tRef.tagihan, periode: tRef.periode, nominal: formData.sisa }] };
-                    setDataPembayaran(p => [newTrx, ...p]);
-                }
-                return updated;
+        if (formData.id?.startsWith('TB-')) {
+            const santriTerpilih = dataSantri.find(s => String(s.nis || '').replace(/^0+/, '') === String(formData.nis || '').replace(/^0+/, ''));
+            const santriNis = santriTerpilih?.nis || formData.nis || '';
+            const santriNama = santriTerpilih?.nama || formData.nama || `Santri (${santriNis})`;
+            const nominalSetor = Number(formData.sisa || formData.nominal || 0);
+            const ketExtra = formData.keterangan ? `${formData.keterangan} ` : '';
+            const newTab = {
+                id: formData.id,
+                tanggal: tanggalStr,
+                nis: santriNis,
+                nama: santriNama,
+                jenis: 'Setor',
+                nominal: nominalSetor,
+                keterangan: `${ketExtra}Setor Tabungan Online${methodTag}`.trim()
+            };
+
+            const { error: tabErr } = await supabase.from('Tabungan').upsert([newTab], { onConflict: 'id' });
+            if (tabErr) console.error('Gagal simpan Setor Tabungan QRIS/Online:', tabErr);
+
+            setDataTabungan(prev => {
+                if (prev.some(tb => tb.id === newTab.id)) return prev;
+                return [newTab, ...prev];
             });
-        } else if (formData.id.startsWith('INV-')) {
-            let invRef = formData.pendingTrx;
-            if (invRef) {
-                invRef = { ...invRef, status: 'Lunas', sisa: 0, tagihan: invRef.tagihan + ' (Via QRIS)' };
-                setDataPembayaran(prev => [invRef, ...prev]);
-            } else {
-                setDataPembayaran(prev => {
-                    const updated = [...prev];
-                    const idx = updated.findIndex(p => p.id === formData.id);
-                    if (idx > -1) {
-                        invRef = updated[idx];
-                        updated[idx] = { ...invRef, status: 'Lunas', sisa: 0, tagihan: invRef.tagihan + ' (Via QRIS)' };
-                    }
-                    return updated;
-                });
+            addLog('CREATE', 'TABUNGAN ONLINE', `Setor tabungan ${santriNama} Rp ${nominalSetor.toLocaleString('id-ID')}${methodTag}`);
+            showNotification("Sistem: Setor Tabungan Online Berhasil Dicatat!");
+            closeModal();
+            return;
+        }
+
+        if (formData.id?.startsWith('TGH-')) {
+            const tRef = dataTagihan.find(t => t.id === formData.id);
+            if (tRef) {
+                const nominalBayar = Number(formData.sisa || 0);
+                const totalTerbayarBaru = (Number(tRef.terbayar) || 0) + nominalBayar;
+                const statusTrx = totalTerbayarBaru < Number(tRef.nominal || 0) ? 'Cicil' : 'Lunas';
+                const sisaTagihan = Math.max(0, Number(tRef.nominal || 0) - totalTerbayarBaru);
+                const invId = `INV-${tRef.id}-${orderSuffix}`;
+                const newTrx = {
+                    id: invId,
+                    tanggal: tanggalStr,
+                    nis: tRef.nis,
+                    nama: tRef.nama,
+                    tagihan: tRef.tagihan + methodTag,
+                    periode: tRef.periode,
+                    nominal: nominalBayar,
+                    status: statusTrx === 'Cicil' ? 'Cicilan' : 'Lunas',
+                    sisa: sisaTagihan,
+                    items: [{ tagihan: tRef.tagihan, periode: tRef.periode, nominal: nominalBayar }],
+                    linkedTagihans: [tRef.id]
+                };
+
+                await supabase.from('Tagihan').update({ status: statusTrx, terbayar: totalTerbayarBaru }).eq('id', tRef.id);
+                const { error: payErr } = await supabase.from('Pembayaran').upsert([{
+                    ...newTrx,
+                    items: JSON.stringify(newTrx.items),
+                    linkedTagihans: JSON.stringify(newTrx.linkedTagihans)
+                }], { onConflict: 'id' });
+                if (payErr) console.error('Gagal simpan Pembayaran TGH online:', payErr);
+
+                setDataTagihan(prev => prev.map(t => t.id === tRef.id ? { ...t, status: statusTrx, terbayar: totalTerbayarBaru } : t));
+                setDataPembayaran(p => p.some(item => item.id === invId) ? p : [newTrx, ...p]);
             }
+        } else if (formData.id?.startsWith('INV-')) {
+            const existingInState = dataPembayaran.find(p => p.id === formData.id);
+            let invRef = formData.pendingTrx || existingInState;
 
             if (invRef) {
-                if (invRef.linkedTagihans?.length > 0) {
-                    setDataTagihan(prevTags => {
-                        const upTags = [...prevTags];
-                        invRef.linkedTagihans.forEach(tid => {
-                            const tagIndex = upTags.findIndex(t => t.id === tid);
-                            if (tagIndex > -1) {
-                                const t = upTags[tagIndex];
-                                if (invRef.linkedTagihans.length === 1) {
-                                    const totalTerbayarBaru = (t.terbayar || 0) + invRef.nominal;
-                                    const statusTrx = totalTerbayarBaru < t.nominal ? 'Cicil' : 'Lunas';
-                                    upTags[tagIndex] = { ...t, status: statusTrx, terbayar: totalTerbayarBaru };
-                                } else { upTags[tagIndex] = { ...t, status: 'Lunas', terbayar: t.nominal }; }
-                            }
-                        });
-                        return upTags;
-                    });
-                } else {
-                    setDataTagihan(prevTags => {
-                        const upTags = [...prevTags];
-                        const cleanedNis = String(invRef.nis).replace(/^0+/, '');
-                        const parsedInvItems = typeof invRef.items === 'string' ? JSON.parse(invRef.items) : invRef.items;
-                        const itemsToProcess = parsedInvItems && parsedInvItems.length > 0 ? parsedInvItems : [{ tagihan: invRef.tagihan.replace(' (Via QRIS)', ''), periode: invRef.periode, nominal: invRef.nominal }];
+                const baseTagihan = String(invRef.tagihan || 'Pembayaran Tagihan');
+                const tagihanWithMethod = baseTagihan.includes('(Via ') ? baseTagihan : baseTagihan + methodTag;
+                const updatedInv = { ...invRef, status: 'Lunas', sisa: 0, tanggal: invRef.tanggal || tanggalStr, tagihan: tagihanWithMethod };
+                const itemsForDb = typeof updatedInv.items === 'string' ? updatedInv.items : JSON.stringify(updatedInv.items || []);
+                const linkedForDb = typeof updatedInv.linkedTagihans === 'string'
+                    ? updatedInv.linkedTagihans
+                    : (Array.isArray(updatedInv.linkedTagihans) && updatedInv.linkedTagihans.length > 0 ? JSON.stringify(updatedInv.linkedTagihans) : null);
 
+                const { error: payErr } = await supabase.from('Pembayaran').upsert([{
+                    id: updatedInv.id,
+                    tanggal: updatedInv.tanggal,
+                    nis: updatedInv.nis,
+                    nama: updatedInv.nama,
+                    tagihan: updatedInv.tagihan,
+                    periode: updatedInv.periode,
+                    nominal: Number(updatedInv.nominal || 0),
+                    status: 'Lunas',
+                    sisa: 0,
+                    items: itemsForDb,
+                    linkedTagihans: linkedForDb
+                }], { onConflict: 'id' });
+                if (payErr) console.error('Gagal simpan Pembayaran INV online:', payErr);
+
+                setDataPembayaran(prev => {
+                    const idx = prev.findIndex(p => p.id === updatedInv.id);
+                    if (idx > -1) {
+                        const updated = [...prev];
+                        updated[idx] = updatedInv;
+                        return updated;
+                    }
+                    return [updatedInv, ...prev];
+                });
+
+                if (updatedInv.linkedTagihans?.length > 0) {
+                    const nextTags = dataTagihan.map(t => {
+                        if (!updatedInv.linkedTagihans.includes(t.id)) return t;
+                        if (updatedInv.linkedTagihans.length === 1) {
+                            const totalTerbayarBaru = (Number(t.terbayar) || 0) + Number(updatedInv.nominal || 0);
+                            const statusTrx = totalTerbayarBaru < Number(t.nominal || 0) ? 'Cicil' : 'Lunas';
+                            supabase.from('Tagihan').update({ status: statusTrx, terbayar: totalTerbayarBaru }).eq('id', t.id);
+                            return { ...t, status: statusTrx, terbayar: totalTerbayarBaru };
+                        }
+                        supabase.from('Tagihan').update({ status: 'Lunas', terbayar: t.nominal }).eq('id', t.id);
+                        return { ...t, status: 'Lunas', terbayar: t.nominal };
+                    });
+                    setDataTagihan(nextTags);
+                } else {
+                    const cleanedNis = String(updatedInv.nis || '').replace(/^0+/, '');
+                    const parsedInvItems = typeof updatedInv.items === 'string' ? JSON.parse(updatedInv.items) : updatedInv.items;
+                    const cleanBaseTagihan = baseTagihan.replace(/ \(Via .*\)$/, '');
+                    const itemsToProcess = parsedInvItems && parsedInvItems.length > 0
+                        ? parsedInvItems
+                        : [{ tagihan: cleanBaseTagihan, periode: updatedInv.periode, nominal: updatedInv.nominal }];
+
+                    setDataTagihan(prevTags => {
+                        const upTags = [...prevTags];
                         itemsToProcess.forEach(item => {
-                            const cleanTagihan = String(item.tagihan).replace(' (Via QRIS)', '').toLowerCase().trim();
+                            const cleanTagihan = String(item.tagihan || '').replace(/ \(Via .*\)$/, '').toLowerCase().trim();
                             const cleanPeriode = formatPeriodeStr(item.periode).toLowerCase().trim();
 
                             const tagIndex = upTags.findIndex(t =>
@@ -2152,23 +2224,26 @@ function App() {
 
                             if (tagIndex > -1) {
                                 const t = upTags[tagIndex];
-                                const currentTerbayar = (t.terbayar || 0) + item.nominal;
-                                const statusTrx = currentTerbayar >= t.nominal ? 'Lunas' : 'Cicil';
+                                const currentTerbayar = (Number(t.terbayar) || 0) + Number(item.nominal || 0);
+                                const statusTrx = currentTerbayar >= Number(t.nominal || 0) ? 'Lunas' : 'Cicil';
                                 upTags[tagIndex] = { ...t, status: statusTrx, terbayar: currentTerbayar };
+                                supabase.from('Tagihan').update({ status: statusTrx, terbayar: currentTerbayar }).eq('id', t.id);
                             } else {
-                                upTags.unshift({
+                                const newTgh = {
                                     id: generateInvoiceId(item.tagihan, upTags),
-                                    tanggal: invRef.tanggal,
-                                    nis: invRef.nis,
-                                    nama: invRef.nama,
-                                    tagihan: item.tagihan.replace(' (Via QRIS)', ''),
+                                    tanggal: updatedInv.tanggal,
+                                    nis: updatedInv.nis,
+                                    nama: updatedInv.nama,
+                                    tagihan: String(item.tagihan || '').replace(/ \(Via .*\)$/, ''),
                                     periode: item.periode,
                                     nominalAwal: item.nominal,
                                     diskon: 0,
                                     nominal: item.nominal,
                                     terbayar: item.nominal,
                                     status: 'Lunas'
-                                });
+                                };
+                                upTags.unshift(newTgh);
+                                supabase.from('Tagihan').upsert([newTgh], { onConflict: 'id' });
                             }
                         });
                         return upTags;
@@ -2176,31 +2251,36 @@ function App() {
                 }
             }
         }
-        addLog('CREATE', 'PEMBAYARAN ONLINE', `Konfirmasi pembayaran otomatis lunas`);
+        addLog('CREATE', 'PEMBAYARAN ONLINE', `Konfirmasi pembayaran otomatis lunas${methodTag}`);
         showNotification("Sistem: Pembayaran Terkonfirmasi LUNAS!");
         closeModal();
     };
 
     const handleCekStatusPakasir = async () => {
         if (!pakasirData.qrString) return;
+        const targetOrderId = pakasirData.uniqueOrderId || formData.id;
         setPakasirData(prev => ({ ...prev, loading: true }));
         try {
-            const tRef = dataTagihan.find(t => t.id === formData.id);
-            const targetTagihanName = (tRef ? tRef.tagihan : formData.tagihan) || '';
-            const masterRef = masterTagihanList.find(m => String(targetTagihanName).toLowerCase().includes(String(m.tagihan).toLowerCase()));
-            const slug = masterRef?.pakasirSlug || masterRef?.pakasir_slug || masterRef?.PAKASIR_SLUG || appConfig.pakasirSlug || appConfig.pakasir_slug || appConfig.PAKASIR_SLUG || 'depodomain';
-            const apiKey = masterRef?.pakasirApiKey || masterRef?.pakasir_apikey || masterRef?.PAKASIR_APIKEY || appConfig.pakasirApiKey || appConfig.pakasir_apikey || appConfig.PAKASIR_APIKEY || 'xxx123';
-
             let data;
-            const res = await fetch('/api/pakasir', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ action: 'pollPakasirStatus', data: { slug, txnId: pakasirData.txnId, apiKey } })
-            });
-            data = await res.json();
+            const reqBody = JSON.stringify({ action: 'checkStatus', data: { orderId: targetOrderId } });
+            try {
+                const res = await fetch('/api/wijayapay', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: reqBody
+                });
+                if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                data = await res.json();
+            } catch (localErr) {
+                const fallbackRes = await fetch('https://salapp-bendahara.web.id/api/wijayapay', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: reqBody
+                });
+                data = await fallbackRes.json();
+            }
 
-            const status = (data?.transaction?.status || data?.payment?.status || data?.status || '').toLowerCase();
-            if (['completed', 'success', 'settlement', 'paid'].includes(status)) {
+            if (data?.isPaid || data?.status === 'SUCCESS') {
                 setPakasirData(prev => ({ ...prev, isPaid: true, loading: false }));
                 showNotification("Pembayaran berhasil dikonfirmasi!");
                 setTimeout(() => {
@@ -2208,7 +2288,7 @@ function App() {
                 }, 1000);
             } else {
                 setPakasirData(prev => ({ ...prev, loading: false }));
-                showNotification(`Pembayaran belum diterima (Status: ${status || 'Unknown'}). Silakan selesaikan pembayaran.`, "error");
+                showNotification(`Pembayaran belum diterima (Status: ${data?.status || 'PENDING'}). Silakan selesaikan pembayaran.`, "error");
             }
         } catch (error) {
             console.error("Cek Status Error:", error);
