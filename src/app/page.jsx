@@ -1713,8 +1713,44 @@ function App() {
                 setDataPembayaran(prev => prev.filter(p => !ids.includes(p.id)));
             }
             if (bType === 'TABUNGAN') {
-                if (ids.length > 0) supabase.from('Tabungan').delete().in('id', ids).then(({ error }) => { if (error) console.error("Gagal bulk delete tabungan:", error); });
-                setDataTabungan(prev => prev.filter(t => !ids.includes(t.id)));
+                const remainingList = dataTabungan.filter(t => !ids.includes(t.id));
+                const deletedRows = dataTabungan.filter(t => ids.includes(t.id));
+                const affectedNisMap = {};
+                deletedRows.forEach(r => {
+                    if (r.nis) affectedNisMap[String(r.nis).trim()] = r.nama || r.nis;
+                });
+                const minusViolations = [];
+                Object.entries(affectedNisMap).forEach(([nisKey, namaSantri]) => {
+                    const projectedSaldo = getSantriSaldoTabungan(nisKey, remainingList);
+                    if (projectedSaldo < 0) {
+                        minusViolations.push(`${namaSantri} (NIS: ${nisKey}) -> menjadi -Rp ${Math.abs(projectedSaldo).toLocaleString('id-ID')}`);
+                    }
+                });
+                if (minusViolations.length > 0) {
+                    alert(
+                        `PROTEKSI ANTI-MINUS:\n\n` +
+                        `Penghapusan massal ini DIBATALKAN karena akan membuat saldo tabungan santri berikut menjadi MINUS:\n\n` +
+                        minusViolations.map(v => `• ${v}`).join('\n') +
+                        `\n\nData setoran tidak boleh dihapus jika dana tersebut sudah terpakai untuk jajan/penarikan.`
+                    );
+                    setConfirmDialog(null);
+                    return;
+                }
+                if (ids.length > 0) {
+                    supabase.from('Tabungan').delete().in('id', ids).then(({ error }) => {
+                        if (error) {
+                            console.error("Gagal bulk delete tabungan:", error);
+                            showNotification(`Ditolak oleh server: ${error.message}`, 'error');
+                        }
+                    });
+                }
+                setDataTabungan(remainingList);
+                const detailSummary = deletedRows.slice(0, 3).map(r => `${r.jenis} Rp ${Number(r.nominal || 0).toLocaleString('id-ID')} (${r.nama})`).join(', ');
+                addLog('BULK_DELETE', 'TABUNGAN', `Menghapus ${ids.length} transaksi tabungan: ${detailSummary}${deletedRows.length > 3 ? '...' : ''}`);
+                showNotification(`${ids.length} data berhasil dihapus!`);
+                setSelectedIds([]);
+                setConfirmDialog(null);
+                return;
             }
             if (bType === 'KAS') {
                 if (ids.length > 0) supabase.from('Kas').delete().in('id', ids).then(({ error }) => { if (error) console.error("Gagal bulk delete kas:", error); });
@@ -1809,7 +1845,27 @@ function App() {
             setDataPembayaran(prev => prev.filter(p => p.id !== confirmDialog.id));
         }
         if (confirmDialog.type === 'TABUNGAN') {
-            supabase.from('Tabungan').delete().eq('id', confirmDialog.id).then(({ error }) => { if (error) console.error("Gagal hapus tabungan:", error); });
+            const targetRow = dataTabungan.find(t => t.id === confirmDialog.id);
+            if (targetRow) {
+                const remainingList = dataTabungan.filter(t => t.id !== confirmDialog.id);
+                const projectedSaldo = getSantriSaldoTabungan(targetRow.nis, remainingList);
+                if (projectedSaldo < 0) {
+                    alert(
+                        `PROTEKSI ANTI-MINUS:\n\n` +
+                        `Transaksi "${targetRow.jenis} Rp ${Number(targetRow.nominal || 0).toLocaleString('id-ID')}" milik ${targetRow.nama} (NIS: ${targetRow.nis}) TIDAK BOLEH DIHAPUS!\n\n` +
+                        `Menghapus setoran ini akan membuat saldo tabungan ${targetRow.nama} menjadi MINUS (-Rp ${Math.abs(projectedSaldo).toLocaleString('id-ID')}) karena dananya sudah terpakai untuk jajan/penarikan.`
+                    );
+                    setConfirmDialog(null);
+                    return;
+                }
+                deletedName = `${targetRow.jenis} Rp ${Number(targetRow.nominal || 0).toLocaleString('id-ID')} - ${targetRow.nama} (NIS: ${targetRow.nis}, Tgl: ${targetRow.tanggal})`;
+            }
+            supabase.from('Tabungan').delete().eq('id', confirmDialog.id).then(({ error }) => {
+                if (error) {
+                    console.error("Gagal hapus tabungan:", error);
+                    showNotification(`Ditolak oleh server: ${error.message}`, 'error');
+                }
+            });
             setDataTabungan(prev => prev.filter(t => t.id !== confirmDialog.id));
         }
         if (confirmDialog.type === 'KAS') {
@@ -5567,6 +5623,15 @@ function App() {
         const nom = Number(formEditRiwayatInsidental.nominal || 0);
         if (nom <= 0) return showNotification('Nominal transaksi harus lebih dari Rp 0!', 'error');
 
+        const simulatedList = dataTabungan.map(t => t.id === formEditRiwayatInsidental.id ? { ...t, nominal: nom } : t);
+        const projectedSaldo = getSantriSaldoTabungan(formEditRiwayatInsidental.nis, simulatedList);
+        if (projectedSaldo < 0) {
+            return showNotification(
+                `PROTEKSI ANTI-MINUS: Perubahan nominal ditolak karena akan membuat saldo ${formEditRiwayatInsidental.nama} menjadi minus (-Rp ${Math.abs(projectedSaldo).toLocaleString('id-ID')})!`,
+                'error'
+            );
+        }
+
         try {
             const { error } = await supabase.from('Tabungan').update({
                 tanggal: formEditRiwayatInsidental.tanggal,
@@ -5604,6 +5669,15 @@ function App() {
     const handleHapusRiwayatInsidental = async (item) => {
         const isTarik = String(item.jenis).toLowerCase() === 'tarik';
         const nominalStr = Number(item.nominal || 0).toLocaleString('id-ID');
+        const remainingList = dataTabungan.filter(t => t.id !== item.id);
+        const projectedSaldo = getSantriSaldoTabungan(item.nis, remainingList);
+        if (projectedSaldo < 0) {
+            return showNotification(
+                `PROTEKSI ANTI-MINUS: Penghapusan ditolak karena akan membuat saldo ${item.nama} menjadi minus (-Rp ${Math.abs(projectedSaldo).toLocaleString('id-ID')})!`,
+                'error'
+            );
+        }
+
         const confirmText = isTarik
             ? `Hapus & batalkan pemotongan kas/iuran ini?\n\n• Santri: ${item.nama} (${item.nis})\n• Nominal: Rp ${nominalStr}\n• Keterangan: ${item.keterangan}\n\nSaldo tabungan santri sebesar Rp ${nominalStr} akan OTOMATIS DIPULIHKAN kembali.`
             : `Hapus transaksi penerimaan kas ini?\n\n• Akun: ${item.nama} (${item.nis})\n• Nominal: Rp ${nominalStr}\n• Keterangan: ${item.keterangan}\n\nSaldo kas akun akan berkurang sebesar Rp ${nominalStr}.`;
@@ -9208,7 +9282,7 @@ function App() {
                                                     {String(trx.keterangan || '').toLowerCase().includes('kantin') && (
                                                         <button onClick={() => handleDetailTabungan(trx)} className="text-steel hover:text-accent transition-colors" title="Lihat Detail Belanja"><Eye className="w-4 h-4" /></button>
                                                     )}
-                                                    <button onClick={() => confirmDelete('TABUNGAN', trx.id, 'Transaksi Tabungan')} className="text-rose-600 hover:text-rose-800"><Trash2 className="w-4 h-4" /></button>
+                                                    <button onClick={() => confirmDelete('TABUNGAN', trx.id, `${trx.jenis} Rp ${Number(trx.nominal || 0).toLocaleString('id-ID')} - ${trx.nama} (NIS: ${trx.nis})`)} className="text-rose-600 hover:text-rose-800"><Trash2 className="w-4 h-4" /></button>
                                                 </td>
                                             </tr>
                                         );
@@ -9250,7 +9324,7 @@ function App() {
                                             {String(trx.keterangan || '').toLowerCase().includes('kantin') && (
                                                 <button onClick={() => handleDetailTabungan(trx)} className="flex items-center gap-1 text-steel hover:text-accent bg-canvas hover:bg-whisper/50 font-medium text-xs px-3 py-1.5 rounded-lg border border-whisper"><Eye className="w-3.5 h-3.5" /> Detail</button>
                                             )}
-                                            <button onClick={() => confirmDelete('TABUNGAN', trx.id, 'Transaksi Tabungan')} className="flex items-center gap-1 text-danger bg-dangerBg hover:bg-red-100 font-medium text-xs px-3 py-1.5 rounded-lg border border-red-100"><Trash2 className="w-3.5 h-3.5" /> Hapus</button>
+                                            <button onClick={() => confirmDelete('TABUNGAN', trx.id, `${trx.jenis} Rp ${Number(trx.nominal || 0).toLocaleString('id-ID')} - ${trx.nama} (NIS: ${trx.nis})`)} className="flex items-center gap-1 text-danger bg-dangerBg hover:bg-red-100 font-medium text-xs px-3 py-1.5 rounded-lg border border-red-100"><Trash2 className="w-3.5 h-3.5" /> Hapus</button>
                                         </div>
                                     </div>
                                 );
